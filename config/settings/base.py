@@ -19,6 +19,13 @@ environ.Env.read_env(BASE_DIR / ".env")
 
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="django-insecure-dev-only-change-me")
 
+# The key the Kotlin app currently ships inside the APK (BuildConfig.
+# OPENAI_API_KEY) -- this is the whole point of Phase 7's proxy: the key
+# lives here instead, server-side, never shipped to a device. Leave this
+# unset (or MY_OPENAI_API_KEY) to run on local-fallback-only responses;
+# add a real key to .env to start using the real API, no code changes.
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="MY_OPENAI_API_KEY")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -27,7 +34,14 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "drf_spectacular",
+    "core",
     "accounts",
+    "articles",
+    "directory",
+    "milkbank",
+    "notifications",
+    "chat",
 ]
 
 # Must be set before the first migration that touches auth tables --
@@ -85,6 +99,13 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 
+# Where uploaded files (e.g. serology photos) get saved on disk.
+# Deliberately no static()/serve() route wired up for this in urls.py --
+# see milkbank.models.DonorQuestionnaire for why: files here are only
+# ever readable through a permission-checked view, never a bare URL.
+MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_URL = "/media/"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
@@ -97,4 +118,14 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    # Tells drf-spectacular (the auto-doc page) to read every view and
+    # build the endpoint list from them, instead of us hand-writing docs
+    # that inevitably drift out of sync with the actual code.
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "KalingApp API",
+    "DESCRIPTION": "Backend for the KalingApp mobile app -- accounts, articles, and the support directory.",
+    "VERSION": "1.0.0",
 }

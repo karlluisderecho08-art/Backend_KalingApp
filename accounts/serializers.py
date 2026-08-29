@@ -12,6 +12,7 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "email", "role",
             "mom_name", "baby_name", "baby_age_weeks", "breastfeeding_status",
             "baby_birth_date", "pediatric_clinic", "tracking_streaks", "total_drawn_oz",
+            "latitude", "longitude", "location_consent_given",
         ]
 
 
@@ -36,3 +37,21 @@ class RegisterSerializer(serializers.ModelSerializer):
         # instead of just being another column.
         user = User.objects.create_user(password=password, **validated_data)
         return user
+
+
+class LocationConsentSerializer(serializers.Serializer):
+    """
+    Not a ModelSerializer -- this isn't "edit some User fields," it's
+    "record one consent event." `consent` must be sent and be true, or
+    we refuse to store coordinates at all (RA 10173: no GPS storage
+    without an explicit yes).
+    """
+
+    latitude = serializers.FloatField()
+    longitude = serializers.FloatField()
+    consent = serializers.BooleanField()
+
+    def validate_consent(self, value):
+        if not value:
+            raise serializers.ValidationError("Location cannot be stored without consent.")
+        return value
