@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -20,6 +21,7 @@ class MarkNotificationReadView(generics.GenericAPIView):
     """POST /notifications/<id>/read/ -- owner-only."""
 
     queryset = NotificationItem.objects.all()
+    serializer_class = NotificationItemSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
@@ -28,6 +30,7 @@ class MarkNotificationReadView(generics.GenericAPIView):
         # instead of 403ing -- doesn't even confirm it exists.
         return NotificationItem.objects.filter(owner=self.request.user)
 
+    @extend_schema(request=None)
     def post(self, request, pk):
         notification = self.get_object()
         notification.is_read = True
@@ -40,6 +43,7 @@ class MarkAllNotificationsReadView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
+    @extend_schema(request=None, responses={204: None})
     def post(self, request):
         NotificationItem.objects.filter(owner=request.user, is_read=False).update(is_read=True)
         return Response(status=204)

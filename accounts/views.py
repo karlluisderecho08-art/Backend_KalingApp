@@ -1,4 +1,5 @@
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -51,6 +52,10 @@ class DemoLoginView(APIView):
 
     permission_classes = [permissions.AllowAny]
 
+    # responses=UserSerializer is an approximation -- the real response
+    # also includes access/refresh tokens alongside the user fields, but
+    # drf-spectacular needs a concrete serializer to document at all.
+    @extend_schema(request=None, responses=UserSerializer)
     def post(self, request):
         try:
             user = User.objects.get(email="rachel@kalingapp.demo")
@@ -88,6 +93,7 @@ class LocationConsentView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = LocationConsentSerializer
 
     def post(self, request):
         serializer = LocationConsentSerializer(data=request.data)

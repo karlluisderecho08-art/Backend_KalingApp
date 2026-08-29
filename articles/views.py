@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -10,6 +11,8 @@ from .serializers import (
     ArticleCommentSerializer,
     ArticleListSerializer,
     ArticleSerializer,
+    ReportCommentSerializer,
+    ResolveCommentSerializer,
     ResourceLinkSerializer,
 )
 
@@ -63,7 +66,12 @@ class ArticleCommentDeleteView(generics.DestroyAPIView):
     """DELETE /articles/comments/<id>/ -- author-only delete."""
 
     queryset = ArticleComment.objects.all()
+    serializer_class = ArticleCommentSerializer
     permission_classes = [permissions.IsAuthenticated, IsCommentAuthor]
+
+    @extend_schema(request=None)
+    def delete(self, request, *args, **kwargs):
+        return super().delete(request, *args, **kwargs)
 
 
 class ArticleCommentReportView(APIView):
@@ -76,18 +84,15 @@ class ArticleCommentReportView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ReportCommentSerializer
 
     def post(self, request, pk):
         comment = generics.get_object_or_404(ArticleComment, pk=pk)
-        valid_reasons = dict(ArticleComment.ReportReason.choices)
-        reason = request.data.get("reason", "")
-        if reason not in valid_reasons:
-            return Response(
-                {"detail": f"reason must be one of {list(valid_reasons)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        serializer = ReportCommentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
         comment.is_reported = True
-        comment.report_reason = reason
+        comment.report_reason = serializer.validated_data["reason"]
         comment.save(update_fields=["is_reported", "report_reason"])
         return Response(ArticleCommentSerializer(comment).data)
 
@@ -104,10 +109,13 @@ class ArticleCommentResolveView(APIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    serializer_class = ResolveCommentSerializer
 
     def post(self, request, pk):
         comment = generics.get_object_or_404(ArticleComment, pk=pk)
-        action = request.data.get("action")
+        serializer = ResolveCommentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        action = serializer.validated_data["action"]
 
         if action == "remove":
             target = f"ArticleComment:{comment.id}"
@@ -115,17 +123,11 @@ class ArticleCommentResolveView(APIView):
             log_action(request.user, "comment.removed", target)
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        if action == "no_violation":
-            comment.is_reported = False
-            comment.report_reason = ""
-            comment.save(update_fields=["is_reported", "report_reason"])
-            log_action(request.user, "comment.dismissed_report", f"ArticleComment:{comment.id}")
-            return Response(ArticleCommentSerializer(comment).data)
-
-        return Response(
-            {"detail": "action must be 'remove' or 'no_violation'"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        comment.is_reported = False
+        comment.report_reason = ""
+        comment.save(update_fields=["is_reported", "report_reason"])
+        log_action(request.user, "comment.dismissed_report", f"ArticleComment:{comment.id}")
+        return Response(ArticleCommentSerializer(comment).data)
 
 
 class ResourceLinkListView(generics.ListAPIView):

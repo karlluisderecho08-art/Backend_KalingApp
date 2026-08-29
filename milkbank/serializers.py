@@ -3,6 +3,10 @@ from rest_framework import serializers
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 
 
+class AllocationRequestSerializer(serializers.Serializer):
+    request_type = serializers.ChoiceField(choices=MilkBankRequest.RequestType.choices)
+
+
 class FacilitySerializer(serializers.ModelSerializer):
     class Meta:
         model = Facility
@@ -34,7 +38,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
     """Read shape for a booking -- includes the derived `stages` list and
     the facility's name, so the client doesn't need a second lookup."""
 
-    stages = serializers.ReadOnlyField()
+    stages = serializers.ListField(child=serializers.CharField(), read_only=True)
     allocated_facility_name = serializers.CharField(source="allocated_facility.name", read_only=True)
 
     class Meta:
@@ -110,7 +114,7 @@ class DonorQuestionnaireSerializer(serializers.ModelSerializer):
             "photo_attached", "submitted_at",
         ]
 
-    def get_photo_attached(self, obj):
+    def get_photo_attached(self, obj) -> bool:
         return bool(obj.serology_photo)
 
     def validate_serology_photo(self, value):

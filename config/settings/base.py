@@ -51,6 +51,11 @@ AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Must sit immediately after SecurityMiddleware -- lets gunicorn
+    # (which has no built-in static file serving, unlike `runserver`)
+    # serve CSS/JS/admin assets directly, without needing a separate
+    # nginx/CDN step just to get a testing deploy running.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -98,6 +103,13 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+# collectstatic (run during the Render build step) gathers every app's
+# static files into this one folder, which WhiteNoise then serves from.
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 # Where uploaded files (e.g. serology photos) get saved on disk.
 # Deliberately no static()/serve() route wired up for this in urls.py --
@@ -128,4 +140,12 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "KalingApp API",
     "DESCRIPTION": "Backend for the KalingApp mobile app -- accounts, articles, and the support directory.",
     "VERSION": "1.0.0",
+    # Article.category and NotificationItem.category are unrelated
+    # choice sets that both happen to be named "category" -- without
+    # this, drf-spectacular auto-names the second one something opaque
+    # like "CategoryFe6Enum" in the generated docs.
+    "ENUM_NAME_OVERRIDES": {
+        "ArticleCategoryEnum": "articles.models.Article.Category",
+        "NotificationCategoryEnum": "notifications.models.NotificationItem.Category",
+    },
 }

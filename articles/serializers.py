@@ -17,7 +17,7 @@ class ArticleCommentSerializer(serializers.ModelSerializer):
         fields = ["id", "article", "author_name", "text", "created_at", "is_reported"]
         read_only_fields = ["id", "author_name", "created_at", "is_reported"]
 
-    def get_author_name(self, obj):
+    def get_author_name(self, obj) -> str:
         return obj.author.mom_name or obj.author.email
 
 
@@ -61,3 +61,12 @@ class ResourceLinkSerializer(serializers.ModelSerializer):
     class Meta:
         model = ResourceLink
         fields = ["id", "title", "description", "url", "type"]
+
+
+class ReportCommentSerializer(serializers.Serializer):
+    reason = serializers.ChoiceField(choices=ArticleComment.ReportReason.choices)
+
+
+class ResolveCommentSerializer(serializers.Serializer):
+    ACTION_CHOICES = [("remove", "remove"), ("no_violation", "no_violation")]
+    action = serializers.ChoiceField(choices=ACTION_CHOICES)

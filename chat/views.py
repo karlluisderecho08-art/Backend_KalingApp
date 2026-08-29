@@ -42,6 +42,7 @@ class SendMessageView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = SendMessageSerializer
 
     def post(self, request):
         serializer = SendMessageSerializer(data=request.data)

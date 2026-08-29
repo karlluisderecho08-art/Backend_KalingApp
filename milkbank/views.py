@@ -1,5 +1,6 @@
 from django.db.models import F
 from django.http import FileResponse, Http404
+from drf_spectacular.utils import OpenApiTypes, extend_schema
 from rest_framework import generics, permissions, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
@@ -13,6 +14,7 @@ from .allocation import AllocationError, LocationRequired, NoOperationalFacility
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
 from .serializers import (
+    AllocationRequestSerializer,
     DonorQuestionnaireCreateSerializer,
     DonorQuestionnaireSerializer,
     FacilitySerializer,
@@ -63,11 +65,12 @@ class SmartAllocationView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = AllocationRequestSerializer
 
     def post(self, request):
-        request_type = request.data.get("request_type")
-        if request_type not in ("DONOR", "RECIPIENT"):
-            return Response({"detail": "request_type must be 'DONOR' or 'RECIPIENT'"}, status=400)
+        serializer = AllocationRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        request_type = serializer.validated_data["request_type"]
 
         try:
             ranked = get_ranked_facilities(request.user, request_type)
@@ -93,6 +96,7 @@ class MilkBankRequestCreateView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    serializer_class = MilkBankRequestCreateSerializer
 
     def post(self, request):
         serializer = MilkBankRequestCreateSerializer(data=request.data)
@@ -163,8 +167,10 @@ class ConfirmAttendanceView(generics.GenericAPIView):
     """POST /milkbank/requests/<id>/confirm-attendance/ -- mother confirms an accepted slot."""
 
     queryset = MilkBankRequest.objects.all()
+    serializer_class = MilkBankRequestSerializer
     permission_classes = [permissions.IsAuthenticated, IsRequestOwner]
 
+    @extend_schema(request=None)
     def post(self, request, pk):
         req = self.get_object()
         try:
@@ -181,8 +187,10 @@ class AcceptCounterOfferView(generics.GenericAPIView):
     """POST /milkbank/requests/<id>/accept-counter-offer/ -- mother accepts the facility's proposed slot."""
 
     queryset = MilkBankRequest.objects.all()
+    serializer_class = MilkBankRequestSerializer
     permission_classes = [permissions.IsAuthenticated, IsRequestOwner]
 
+    @extend_schema(request=None)
     def post(self, request, pk):
         req = self.get_object()
         try:
@@ -273,8 +281,10 @@ class StaffExpireView(generics.GenericAPIView):
     """POST /milkbank/requests/<id>/expire/"""
 
     queryset = MilkBankRequest.objects.all()
+    serializer_class = MilkBankRequestSerializer
     permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
 
+    @extend_schema(request=None)
     def post(self, request, pk):
         req = self.get_object()
         try:
@@ -309,8 +319,10 @@ class StaffConfirmCompletionView(generics.GenericAPIView):
     """POST /milkbank/requests/<id>/confirm-completion/ -- also creates the TransactionRecord."""
 
     queryset = MilkBankRequest.objects.all()
+    serializer_class = MilkBankRequestSerializer
     permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
 
+    @extend_schema(request=None)
     def post(self, request, pk):
         req = self.get_object()
         try:
@@ -349,6 +361,7 @@ class DonorQuestionnaireView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
+    @extend_schema(request=None, responses=DonorQuestionnaireSerializer)
     def get(self, request, pk):
         req = generics.get_object_or_404(MilkBankRequest, pk=pk)
         if not _can_view_questionnaire(request.user, req):
@@ -357,6 +370,7 @@ class DonorQuestionnaireView(APIView):
             raise Http404
         return Response(DonorQuestionnaireSerializer(req.donor_questionnaire).data)
 
+    @extend_schema(request=DonorQuestionnaireCreateSerializer, responses=DonorQuestionnaireSerializer)
     def post(self, request, pk):
         req = generics.get_object_or_404(MilkBankRequest, pk=pk)
         if req.owner_id != request.user.id:
@@ -385,6 +399,7 @@ class SerologyPhotoView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
+    @extend_schema(request=None, responses={200: OpenApiTypes.BINARY})
     def get(self, request, pk):
         req = generics.get_object_or_404(MilkBankRequest, pk=pk)
         if not _can_view_questionnaire(request.user, req):
