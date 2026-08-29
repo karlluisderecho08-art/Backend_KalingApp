@@ -1,0 +1,5 @@
+# build.sh runs on Render's Linux build step -- if git ever checks it
+# out (or re-commits it) with Windows line endings, the shebang line
+# breaks with a cryptic "bad interpreter: No such file or directory".
+# This pins it to LF regardless of any local git autocrlf setting.
+build.sh text eol=lf
