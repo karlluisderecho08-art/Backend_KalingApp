@@ -2,14 +2,13 @@
 # when you connect this GitHub repo, instead of clicking through its
 # dashboard by hand. See https://render.com/docs/deploy-django.
 #
-# ASSUMPTIONS to double-check the first time you actually deploy:
-#   - `name: kalingapp-backend` becomes the URL kalingapp-backend.onrender.com
-#     (Render appends a random suffix instead if that name's already taken --
-#     if so, update DJANGO_ALLOWED_HOSTS below to match the real one).
-#   - `plan: free` on both services -- fine for testing, but Render's free
-#     Postgres expires after ~30 days (already flagged in the roadmap) and
-#     the free web service "spins down" after 15 minutes of no traffic,
-#     so the first request after a quiet period is slow to wake it up.
+# `name: kalingapp-backend` -> confirmed live at kalingapp-backend.onrender.com
+# (verified 2026-08-30, matches DJANGO_ALLOWED_HOSTS below).
+#
+# `plan: free` on both services -- fine for testing, but Render's free
+# Postgres expires after ~30 days (already flagged in the roadmap) and
+# the free web service "spins down" after 15 minutes of no traffic, so
+# the first request after a quiet period is slow to wake it up.
 
 services:
   - type: web
@@ -34,6 +33,17 @@ services:
       # in the local .env. Leaving it unset keeps chat on local-fallback
       # responses, same safe default as local dev.
       - key: OPENAI_API_KEY
+        sync: false
+      # ensure_admin (run from build.sh) reads these to create the
+      # first admin account -- free-tier workaround for not having
+      # Shell access to run `createsuperuser` by hand. ADMIN_PASSWORD
+      # is a real secret: fill it in via Render's dashboard, never here.
+      # It's only ever used once (see accounts/management/commands/
+      # ensure_admin.py) -- change it through /admin/ after first login,
+      # not by editing this value again.
+      - key: ADMIN_EMAIL
+        value: admin@kalingapp.onrender.com
+      - key: ADMIN_PASSWORD
         sync: false
 
 databases:
