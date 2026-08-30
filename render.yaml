@@ -45,6 +45,15 @@ services:
         value: admin@kalingapp.onrender.com
       - key: ADMIN_PASSWORD
         sync: false
+      # Comma-separated list of web frontend URLs allowed to call this API
+      # from a browser (Android is unaffected -- CORS is a browser-only
+      # rule). localhost:3000 is here so the Facility/Admin Next.js apps
+      # can be developed locally against this live backend, without
+      # needing to also run Django locally. Add each app's real deployed
+      # URL here once it exists, e.g.:
+      #   http://localhost:3000,https://kalingapp-admin.vercel.app,https://kalingapp-facility.vercel.app
+      - key: CORS_ALLOWED_ORIGINS
+        value: "http://localhost:3000"
 
 databases:
   - name: kalingapp-db

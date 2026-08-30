@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "drf_spectacular",
+    "corsheaders",
     "core",
     "accounts",
     "articles",
@@ -56,6 +57,11 @@ MIDDLEWARE = [
     # serve CSS/JS/admin assets directly, without needing a separate
     # nginx/CDN step just to get a testing deploy running.
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    # Must sit above CommonMiddleware (django-cors-headers' own
+    # requirement) -- this is what lets the admin/facility web dashboards
+    # call this API from a different origin (e.g. localhost:5173) at all.
+    # The Android app doesn't need this: CORS is a browser-only rule.
+    "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

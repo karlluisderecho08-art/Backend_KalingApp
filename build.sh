@@ -18,4 +18,5 @@ python manage.py migrate
 python manage.py seed_articles
 python manage.py seed_support_contacts
 python manage.py seed_facilities
+python manage.py seed_facility_staff
 python manage.py ensure_admin

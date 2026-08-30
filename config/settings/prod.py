@@ -23,3 +23,11 @@ CSRF_COOKIE_SECURE = True
 # confirmed solid (a browser will refuse plain HTTP for the HSTS window
 # even if something's misconfigured). Add SECURE_HSTS_SECONDS once
 # you've verified HTTPS works cleanly on the real deployed URL.
+
+# Comma-separated list of real web frontend URLs, e.g.
+#   CORS_ALLOWED_ORIGINS=https://kalingapp-admin.vercel.app,https://kalingapp-facility.vercel.app
+# Defaults to empty -- until this is set, no web frontend can call this
+# API from a browser (the Android app is unaffected either way, CORS is
+# a browser-only rule). Set this in Render's dashboard once the web
+# dashboards have real hosting URLs.
+CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
