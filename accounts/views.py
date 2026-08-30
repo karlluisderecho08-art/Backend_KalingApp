@@ -8,7 +8,18 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from core.audit import log_action
 
 from .models import User
-from .serializers import LocationConsentSerializer, RegisterSerializer, UserSerializer
+from .serializers import LocationConsentSerializer, RegisterSerializer, StaffUserListSerializer, UserSerializer
+
+
+class IsFacilityStaff(permissions.BasePermission):
+    """
+    Same check as milkbank.permissions.IsFacilityStaff -- duplicated
+    (not imported) so accounts, the lower-level app, never has to
+    depend on milkbank.
+    """
+
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and request.user.role == User.Role.FACILITY_STAFF)
 
 
 def _tokens_for(user):
@@ -78,6 +89,46 @@ class MeView(generics.RetrieveAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class StaffUserListView(generics.ListAPIView):
+    """GET /auth/users/ -- every mother account, newest first, for the
+    facility dashboard's User Management table."""
+
+    serializer_class = StaffUserListSerializer
+    permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
+
+    def get_queryset(self):
+        return User.objects.filter(role=User.Role.MOTHER).order_by("-date_joined")
+
+
+class StaffUserSetActiveView(APIView):
+    """
+    POST /auth/users/<id>/activate/
+    POST /auth/users/<id>/deactivate/
+
+    Toggles Django's own is_active flag -- an inactive user's tokens
+    still decode fine (JWTs aren't looked up in the DB per request),
+    but simplejwt's default OutstandingToken check isn't enabled here,
+    so this is enforced the usual Django way: every DRF view already
+    requires IsAuthenticated, and Django's ModelBackend refuses to
+    authenticate (and thus issue a new login) for is_active=False.
+    Already-issued tokens keep working until they expire -- fine for a
+    facility dashboard action, not a "lock this account out instantly"
+    control.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
+    # Set per-URL via as_view(active=True/False) -- see urls.py.
+    active = None
+
+    @extend_schema(request=None, responses=StaffUserListSerializer)
+    def post(self, request, pk):
+        user = generics.get_object_or_404(User, pk=pk, role=User.Role.MOTHER)
+        user.is_active = self.active
+        user.save(update_fields=["is_active"])
+        log_action(request.user, "user.activated" if self.active else "user.deactivated", f"User:{user.id}")
+        return Response(StaffUserListSerializer(user).data)
 
 
 class LocationConsentView(APIView):

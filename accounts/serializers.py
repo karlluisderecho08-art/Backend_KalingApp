@@ -44,6 +44,21 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
 
 
+class StaffUserListSerializer(serializers.ModelSerializer):
+    """Read shape for the facility dashboard's User Management table --
+    only the fields that actually exist on a mother's account (no phone,
+    no city -- the model never captured either; see UserSerializer)."""
+
+    class Meta:
+        model = User
+        fields = [
+            "id", "email", "mom_name", "baby_name", "baby_age_weeks",
+            "breastfeeding_status", "baby_birth_date", "pediatric_clinic",
+            "tracking_streaks", "total_drawn_oz", "location_consent_given",
+            "is_active", "date_joined",
+        ]
+
+
 class LocationConsentSerializer(serializers.Serializer):
     """
     Not a ModelSerializer -- this isn't "edit some User fields," it's

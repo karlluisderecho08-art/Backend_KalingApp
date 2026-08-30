@@ -1,7 +1,14 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .views import DemoLoginView, LocationConsentView, MeView, RegisterView
+from .views import (
+    DemoLoginView,
+    LocationConsentView,
+    MeView,
+    RegisterView,
+    StaffUserListView,
+    StaffUserSetActiveView,
+)
 
 urlpatterns = [
     path("register/", RegisterView.as_view(), name="register"),
@@ -13,4 +20,7 @@ urlpatterns = [
     path("demo-login/", DemoLoginView.as_view(), name="demo_login"),
     path("me/", MeView.as_view(), name="me"),
     path("location/", LocationConsentView.as_view(), name="location-consent"),
+    path("users/", StaffUserListView.as_view(), name="staff-user-list"),
+    path("users/<int:pk>/activate/", StaffUserSetActiveView.as_view(active=True), name="staff-user-activate"),
+    path("users/<int:pk>/deactivate/", StaffUserSetActiveView.as_view(active=False), name="staff-user-deactivate"),
 ]
