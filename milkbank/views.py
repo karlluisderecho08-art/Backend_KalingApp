@@ -31,18 +31,33 @@ from .transitions import InvalidTransition, apply_transition
 Status = MilkBankRequest.Status
 
 
-class FacilityListView(generics.ListAPIView):
-    """GET /milkbank/facilities/ -- plain facility list, e.g. for the scheduler screen."""
+class FacilityListView(generics.ListCreateAPIView):
+    """
+    GET  /milkbank/facilities/ -- plain facility list, e.g. for the scheduler screen. Public.
+    POST /milkbank/facilities/ -- add a new facility. Platform-admin only
+    (is_staff, not the facility_staff role -- this is the "who runs
+    KalingApp" panel, not a single facility's own staff).
+    """
 
     queryset = Facility.objects.all()
     serializer_class = FacilitySerializer
-    permission_classes = [permissions.AllowAny]
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [permissions.IsAdminUser()]
+        return [permissions.AllowAny()]
 
 
-class FacilityDetailView(generics.RetrieveAPIView):
+class FacilityDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET is public; PUT/PATCH/DELETE are platform-admin only (see FacilityListView)."""
+
     queryset = Facility.objects.all()
     serializer_class = FacilitySerializer
-    permission_classes = [permissions.AllowAny]
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [permissions.AllowAny()]
+        return [permissions.IsAdminUser()]
 
 
 def _allocation_error_response(exc):

@@ -7,11 +7,13 @@ from core.audit import log_action
 
 from .models import Article, ArticleComment, ResourceLink
 from .serializers import (
+    AdminArticleSerializer,
     ArticleCommentCreateSerializer,
     ArticleCommentSerializer,
     ArticleListSerializer,
     ArticleSerializer,
     ReportCommentSerializer,
+    ReportedCommentSerializer,
     ResolveCommentSerializer,
     ResourceLinkSerializer,
 )
@@ -31,6 +33,28 @@ class ArticleDetailView(generics.RetrieveAPIView):
     queryset = Article.objects.all()
     serializer_class = ArticleSerializer
     permission_classes = [permissions.AllowAny]
+
+
+class AdminArticleListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /articles/admin/ -- every article, for the platform admin's
+    Knowledge Base table (ArticleListView's lighter shape omits
+    `content`, which the admin table needs for the edit form).
+    POST /articles/admin/ -- create one.
+    Platform-admin only (is_staff).
+    """
+
+    queryset = Article.objects.all()
+    serializer_class = AdminArticleSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+
+class AdminArticleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """PATCH/PUT/DELETE /articles/admin/<id>/ -- platform-admin only."""
+
+    queryset = Article.objects.all()
+    serializer_class = AdminArticleSerializer
+    permission_classes = [permissions.IsAdminUser]
 
 
 class ArticleCommentCreateView(generics.CreateAPIView):
@@ -95,6 +119,20 @@ class ArticleCommentReportView(APIView):
         comment.report_reason = serializer.validated_data["reason"]
         comment.save(update_fields=["is_reported", "report_reason"])
         return Response(ArticleCommentSerializer(comment).data)
+
+
+class ReportedCommentListView(generics.ListAPIView):
+    """
+    GET /articles/comments/reported/ -- every currently-flagged comment,
+    across all articles, newest first. The admin Moderation queue: a
+    comment leaves this list the moment ArticleCommentResolveView below
+    clears or deletes it, so there's no separate pending/approved/
+    rejected status to track here -- "flagged" is the whole queue.
+    """
+
+    queryset = ArticleComment.objects.filter(is_reported=True).select_related("article", "author")
+    serializer_class = ReportedCommentSerializer
+    permission_classes = [permissions.IsAdminUser]
 
 
 class ArticleCommentResolveView(APIView):

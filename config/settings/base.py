@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     "milkbank",
     "notifications",
     "chat",
+    "dashboard",
 ]
 
 # Must be set before the first migration that touches auth tables --

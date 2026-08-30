@@ -14,11 +14,23 @@ class ArticleCommentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ArticleComment
-        fields = ["id", "article", "author_name", "text", "created_at", "is_reported"]
-        read_only_fields = ["id", "author_name", "created_at", "is_reported"]
+        fields = ["id", "article", "author_name", "text", "created_at", "is_reported", "report_reason"]
+        read_only_fields = ["id", "author_name", "created_at", "is_reported", "report_reason"]
 
     def get_author_name(self, obj) -> str:
         return obj.author.mom_name or obj.author.email
+
+
+class ReportedCommentSerializer(ArticleCommentSerializer):
+    """Same shape as ArticleCommentSerializer plus the article's title,
+    for the admin Moderation screen -- one flat list across every
+    article instead of the client fetching each article to find its
+    comments."""
+
+    article_title = serializers.CharField(source="article.title", read_only=True)
+
+    class Meta(ArticleCommentSerializer.Meta):
+        fields = ArticleCommentSerializer.Meta.fields + ["article_title"]
 
 
 class ArticleCommentCreateSerializer(serializers.ModelSerializer):
@@ -54,6 +66,19 @@ class ArticleSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "category", "read_time", "teaser", "content",
             "author", "rating", "evidence_label", "date", "comments",
+        ]
+
+
+class AdminArticleSerializer(serializers.ModelSerializer):
+    """Read/write shape for the platform admin's Knowledge Base CRUD --
+    no nested comments (unlike ArticleSerializer), since writing an
+    article never touches its comments."""
+
+    class Meta:
+        model = Article
+        fields = [
+            "id", "title", "category", "read_time", "teaser", "content",
+            "author", "rating", "evidence_label", "date",
         ]
 
 

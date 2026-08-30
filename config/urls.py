@@ -26,6 +26,7 @@ urlpatterns = [
     path('milkbank/', include('milkbank.urls')),
     path('notifications/', include('notifications.urls')),
     path('chat/', include('chat.urls')),
+    path('dashboard/', include('dashboard.urls')),
     # /api/schema/ -- the raw, machine-readable endpoint list (JSON/YAML).
     # /api/docs/   -- the same thing, but as a clickable page a human can read.
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
