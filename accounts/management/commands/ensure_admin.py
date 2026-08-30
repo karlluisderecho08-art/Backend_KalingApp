@@ -18,6 +18,14 @@ class Command(BaseCommand):
     Deliberately does NOT touch the password on an already-existing
     admin account: once created, a redeploy should never silently
     overwrite a password someone may have since changed through /admin/.
+
+    Role is a different story: create_superuser doesn't set one, so it
+    fell back to the model default (Role.MOTHER) and the admin account
+    was showing up in the facility dashboard's User Management table,
+    a mother-accounts-only list (see accounts.views.StaffUserListView).
+    Self-healed here on every deploy, same free-tier-workaround pattern
+    as the rest of this command -- correcting a role is safe to repeat,
+    unlike a password.
     """
 
     help = "Create the initial admin account from ADMIN_EMAIL/ADMIN_PASSWORD, if it doesn't exist yet"
@@ -30,9 +38,16 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("ADMIN_EMAIL/ADMIN_PASSWORD not set -- skipping admin creation."))
             return
 
-        if User.objects.filter(email=email).exists():
-            self.stdout.write(f"Admin account already exists: {email} (password left untouched)")
+        try:
+            admin = User.objects.get(email=email)
+        except User.DoesNotExist:
+            User.objects.create_superuser(email=email, password=password, role=User.Role.FACILITY_STAFF)
+            self.stdout.write(self.style.SUCCESS(f"Created admin account: {email}"))
             return
 
-        User.objects.create_superuser(email=email, password=password)
-        self.stdout.write(self.style.SUCCESS(f"Created admin account: {email}"))
+        if admin.role != User.Role.FACILITY_STAFF:
+            admin.role = User.Role.FACILITY_STAFF
+            admin.save(update_fields=["role"])
+            self.stdout.write(self.style.SUCCESS(f"Fixed role on existing admin account: {email}"))
+        else:
+            self.stdout.write(f"Admin account already exists: {email} (password left untouched)")
