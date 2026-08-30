@@ -9,11 +9,16 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            "id", "email", "role",
+            "id", "email", "role", "is_staff",
             "mom_name", "baby_name", "baby_age_weeks", "breastfeeding_status",
             "baby_birth_date", "pediatric_clinic", "tracking_streaks", "total_drawn_oz",
             "latitude", "longitude", "location_consent_given",
         ]
+        # Nothing writes through this serializer today (only ever used in
+        # read paths -- MeView is a RetrieveAPIView), but is_staff controls
+        # Django admin/content-moderation access, so it's marked read-only
+        # here too in case a write path is ever added later.
+        read_only_fields = ["is_staff"]
 
 
 class RegisterSerializer(serializers.ModelSerializer):
