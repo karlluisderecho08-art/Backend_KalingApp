@@ -40,6 +40,10 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
 
     stages = serializers.ListField(child=serializers.CharField(), read_only=True)
     allocated_facility_name = serializers.CharField(source="allocated_facility.name", read_only=True)
+    # Owner contact, for the facility-staff list/detail views -- harmless
+    # to also hand back to the owner themselves, it's their own info.
+    owner_email = serializers.EmailField(source="owner.email", read_only=True)
+    owner_name = serializers.CharField(source="owner.mom_name", read_only=True)
 
     class Meta:
         model = MilkBankRequest
@@ -47,7 +51,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "id", "request_type", "allocated_facility", "allocated_facility_name",
             "stages", "current_stage_index", "current_sub_status", "staff_message",
             "submitted_at", "preferred_date", "preferred_time", "attendance_confirmed",
-            "counter_offer_date", "counter_offer_time",
+            "counter_offer_date", "counter_offer_time", "owner_email", "owner_name",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",

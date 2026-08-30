@@ -147,6 +147,29 @@ class MyMilkBankRequestsView(generics.ListAPIView):
         return MilkBankRequest.objects.filter(owner=self.request.user).order_by("-submitted_at")
 
 
+class AllMilkBankRequestsView(generics.ListAPIView):
+    """
+    GET /milkbank/requests/all/?status=pending -- every booking, for the
+    facility dashboard's Pending/Confirmed/Declined tabs. `status` is
+    optional and matches MilkBankRequest.Status (e.g. "pending",
+    "declined"); omit it to get everything. Staff aren't scoped to a
+    single facility today (see accounts.models.User -- no facility FK
+    on the role), so this intentionally returns requests for every
+    facility, same as MilkBankRequestDetailView already allows any
+    facility_staff to view any single request by id.
+    """
+
+    serializer_class = MilkBankRequestSerializer
+    permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
+
+    def get_queryset(self):
+        qs = MilkBankRequest.objects.select_related("owner", "allocated_facility").order_by("-submitted_at")
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(current_sub_status=status_param)
+        return qs
+
+
 class MilkBankRequestDetailView(generics.RetrieveAPIView):
     """GET /milkbank/requests/<id>/ -- viewable by the owner or any facility staff."""
 

@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     AcceptCounterOfferView,
+    AllMilkBankRequestsView,
     ConfirmAttendanceView,
     DonorQuestionnaireView,
     FacilityDetailView,
@@ -27,6 +28,7 @@ urlpatterns = [
 
     path("requests/", MilkBankRequestCreateView.as_view(), name="request-create"),
     path("requests/mine/", MyMilkBankRequestsView.as_view(), name="request-mine"),
+    path("requests/all/", AllMilkBankRequestsView.as_view(), name="request-all"),
     path("requests/<int:pk>/", MilkBankRequestDetailView.as_view(), name="request-detail"),
 
     path("requests/<int:pk>/confirm-attendance/", ConfirmAttendanceView.as_view(), name="request-confirm-attendance"),
