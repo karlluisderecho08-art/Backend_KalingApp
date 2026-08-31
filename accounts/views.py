@@ -8,7 +8,13 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from core.audit import log_action
 
 from .models import User
-from .serializers import LocationConsentSerializer, RegisterSerializer, StaffUserListSerializer, UserSerializer
+from .serializers import (
+    LocationConsentSerializer,
+    RegisterSerializer,
+    StaffUserListSerializer,
+    UpdateProfileSerializer,
+    UserSerializer,
+)
 
 
 class IsFacilityStaff(permissions.BasePermission):
@@ -81,14 +87,29 @@ class DemoLoginView(APIView):
         })
 
 
-class MeView(generics.RetrieveAPIView):
-    """GET /auth/me/ -- the profile of whoever the access token belongs to."""
+class MeView(generics.RetrieveUpdateAPIView):
+    """
+    GET /auth/me/ -- the profile of whoever the access token belongs to.
+    PATCH/PUT /auth/me/ -- update her own mom/baby profile info (see
+    UpdateProfileSerializer for exactly which fields). Responds with
+    the full UserSerializer shape either way, so the client doesn't
+    need a second GET after saving.
+    """
 
-    serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
         return self.request.user
+
+    def get_serializer_class(self):
+        return UpdateProfileSerializer if self.request.method in ("PUT", "PATCH") else UserSerializer
+
+    def update(self, request, *args, **kwargs):
+        super().update(request, *args, **kwargs)
+        # Respond with the full read shape, not UpdateProfileSerializer's
+        # narrower write shape -- the client's UserInfo parsing expects
+        # email/role/etc. to always be present.
+        return Response(UserSerializer(self.get_object()).data)
 
 
 class StaffUserListView(generics.ListAPIView):

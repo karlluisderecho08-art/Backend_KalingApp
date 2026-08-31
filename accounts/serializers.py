@@ -21,6 +21,23 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_staff"]
 
 
+class UpdateProfileSerializer(serializers.ModelSerializer):
+    """
+    Write shape for PATCH /auth/me/ -- the fields the Edit Profile
+    screen actually lets a mother change about herself and her baby.
+    Deliberately narrower than UserSerializer's full read shape:
+    email/role/is_staff aren't account-editable here, and
+    tracking_streaks/total_drawn_oz/latitude/longitude/
+    location_consent_given are system-computed or consent-gated, not
+    something a plain profile edit should be able to overwrite.
+    """
+
+    class Meta:
+        model = User
+        fields = ["mom_name", "baby_name", "baby_age_weeks", "pediatric_clinic"]
+        extra_kwargs = {field: {"required": False} for field in fields}
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     # write_only: accepted on the way in, never echoed back in a response.
     password = serializers.CharField(write_only=True, min_length=8)
