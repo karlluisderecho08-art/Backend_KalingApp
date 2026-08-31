@@ -72,6 +72,13 @@ class User(AbstractUser):
     baby_birth_date = models.DateField(null=True, blank=True)
     pediatric_clinic = models.CharField(max_length=255, blank=True)
     tracking_streaks = models.PositiveIntegerField(default=0)
+    # Drives tracking_streaks: not exposed to the client directly, just
+    # what CheckInView compares "today" against to decide whether to
+    # advance the streak, hold it flat (already checked in today), or
+    # reset it to 1 (a day was missed). Ported from nothing -- the
+    # original Kotlin trackingStreaks was a static seed value with no
+    # real increment logic anywhere, client or server.
+    last_active_date = models.DateField(null=True, blank=True)
     total_drawn_oz = models.FloatField(default=0.0)
 
     # --- New: location, for Phase 3's Smart Allocation distance term ---

@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
@@ -110,6 +112,36 @@ class MeView(generics.RetrieveUpdateAPIView):
         # narrower write shape -- the client's UserInfo parsing expects
         # email/role/etc. to always be present.
         return Response(UserSerializer(self.get_object()).data)
+
+
+class CheckInView(APIView):
+    """
+    POST /auth/check-in/ -- called once per app session, right after
+    login/the cold-start session check confirms she's authenticated,
+    to advance the "breastfeeding journey streak" on the Home
+    Dashboard by a calendar day. Compares today against
+    last_active_date:
+      - same day already -> no-op (calling this more than once today
+        doesn't inflate the count)
+      - exactly one day later -> streak += 1
+      - anything else (first ever check-in, or a gap) -> streak reset
+        to 1, not left at whatever it was
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(request=None, responses=UserSerializer)
+    def post(self, request):
+        user = request.user
+        today = timezone.localdate()
+        last = user.last_active_date
+
+        if last != today:
+            user.tracking_streaks = user.tracking_streaks + 1 if last == today - timedelta(days=1) else 1
+            user.last_active_date = today
+            user.save(update_fields=["tracking_streaks", "last_active_date"])
+
+        return Response(UserSerializer(user).data)
 
 
 class StaffUserListView(generics.ListAPIView):
