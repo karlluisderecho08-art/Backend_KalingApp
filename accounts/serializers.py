@@ -12,7 +12,7 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "email", "role", "is_staff",
             "mom_name", "baby_name", "baby_age_weeks", "breastfeeding_status",
             "baby_birth_date", "pediatric_clinic", "tracking_streaks", "total_drawn_oz",
-            "latitude", "longitude", "location_consent_given",
+            "latitude", "longitude", "location_consent_given", "has_seen_walkthrough",
         ]
         # Nothing writes through this serializer today (only ever used in
         # read paths -- MeView is a RetrieveAPIView), but is_staff controls
@@ -24,17 +24,20 @@ class UserSerializer(serializers.ModelSerializer):
 class UpdateProfileSerializer(serializers.ModelSerializer):
     """
     Write shape for PATCH /auth/me/ -- the fields the Edit Profile
-    screen actually lets a mother change about herself and her baby.
-    Deliberately narrower than UserSerializer's full read shape:
-    email/role/is_staff aren't account-editable here, and
-    tracking_streaks/total_drawn_oz/latitude/longitude/
-    location_consent_given are system-computed or consent-gated, not
-    something a plain profile edit should be able to overwrite.
+    screen actually lets a mother change about herself and her baby,
+    plus has_seen_walkthrough (the app sends {"has_seen_walkthrough":
+    true} alone, via the same PATCH, once she dismisses the onboarding
+    tour -- a partial PATCH here only touches whichever fields it's
+    given, not the rest). Deliberately narrower than UserSerializer's
+    full read shape otherwise: email/role/is_staff aren't
+    account-editable here, and tracking_streaks/total_drawn_oz/
+    latitude/longitude/location_consent_given are system-computed or
+    consent-gated, not something a plain profile edit should overwrite.
     """
 
     class Meta:
         model = User
-        fields = ["mom_name", "baby_name", "baby_age_weeks", "pediatric_clinic"]
+        fields = ["mom_name", "baby_name", "baby_age_weeks", "pediatric_clinic", "has_seen_walkthrough"]
         extra_kwargs = {field: {"required": False} for field in fields}
 
 

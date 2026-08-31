@@ -90,5 +90,12 @@ class User(AbstractUser):
     location_consent_given = models.BooleanField(default=False)
     location_consent_at = models.DateTimeField(null=True, blank=True)
 
+    # Per-account, not per-device on purpose: the Kotlin app's onboarding
+    # tour used to be a local-only flag that reset on every fresh login,
+    # so a mother who'd already dismissed it saw it again next session.
+    # Whether she's dismissed it is a fact about her account, so it
+    # belongs here, not in device storage.
+    has_seen_walkthrough = models.BooleanField(default=False)
+
     def __str__(self):
         return self.email
