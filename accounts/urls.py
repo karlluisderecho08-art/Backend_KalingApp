@@ -7,15 +7,21 @@ from .views import (
     LocationConsentView,
     MeView,
     RegisterView,
+    ResendVerificationView,
     StaffUserListView,
     StaffUserSetActiveView,
+    VerifyEmailView,
 )
 
 urlpatterns = [
     path("register/", RegisterView.as_view(), name="register"),
+    path("verify-email/", VerifyEmailView.as_view(), name="verify-email"),
+    path("resend-verification/", ResendVerificationView.as_view(), name="resend-verification"),
     # TokenObtainPairView is simplejwt's built-in "login": it checks
     # email+password (USERNAME_FIELD="email" on our model) and returns
     # {access, refresh}. We don't need to write login logic ourselves.
+    # Also doubles as the is_active gate: ModelBackend refuses to
+    # authenticate an unverified (is_active=False) account here.
     path("login/", TokenObtainPairView.as_view(), name="login"),
     path("refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("demo-login/", DemoLoginView.as_view(), name="demo_login"),

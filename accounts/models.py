@@ -97,5 +97,20 @@ class User(AbstractUser):
     # belongs here, not in device storage.
     has_seen_walkthrough = models.BooleanField(default=False)
 
+    # --- Email verification (RegisterView creates the account with
+    # is_active=False; nothing here changes for accounts that already
+    # existed before this field was added, since is_active already
+    # defaulted to True for them and this migration doesn't touch it) ---
+    email_verified = models.BooleanField(default=False)
+    email_verification_code = models.CharField(max_length=6, blank=True)
+    # Doubles as both the resend cooldown clock and the code's expiry
+    # clock (see accounts/emails.py) -- one timestamp, two purposes,
+    # rather than a separate field for each.
+    email_verification_sent_at = models.DateTimeField(null=True, blank=True)
+    # Wrong-code guesses since the last code was (re)sent -- caps brute
+    # forcing a 6-digit code before its 15-minute expiry; resend resets
+    # this back to 0 along with issuing a new code.
+    email_verification_attempts = models.PositiveSmallIntegerField(default=0)
+
     def __str__(self):
         return self.email

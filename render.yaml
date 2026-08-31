@@ -34,6 +34,17 @@ services:
       # responses, same safe default as local dev.
       - key: OPENAI_API_KEY
         sync: false
+      # Same pattern: paste the real SendGrid API key into Render's
+      # dashboard yourself, never here. Without it, account-verification
+      # emails silently fall back to Django's console backend (printed
+      # to Render's server log, which a mother can never see) -- see
+      # config/settings/base.py. DEFAULT_FROM_EMAIL must be the address
+      # you verified as a Single Sender (or domain) in SendGrid, or
+      # SendGrid will reject every send.
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
       # ensure_admin (run from build.sh) reads these to create the
       # first admin account -- free-tier workaround for not having
       # Shell access to run `createsuperuser` by hand. ADMIN_PASSWORD

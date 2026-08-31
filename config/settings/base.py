@@ -26,6 +26,27 @@ SECRET_KEY = env("DJANGO_SECRET_KEY", default="django-insecure-dev-only-change-m
 # add a real key to .env to start using the real API, no code changes.
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="MY_OPENAI_API_KEY")
 
+# --- Outgoing email (account verification codes -- see accounts/emails.py) ---
+# SendGrid's SMTP relay always authenticates with the literal username
+# "apikey"; the real secret is the password. Falls back to Django's
+# console backend (prints the email to the terminal instead of actually
+# sending it) whenever no key is configured, so local dev/tests work
+# without needing a real SendGrid account -- but this means production
+# MUST have SENDGRID_API_KEY set in Render's env, or verification codes
+# will only ever reach the server log, never a mother's inbox.
+SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="")
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@kalingapp.local")
+
+if SENDGRID_API_KEY:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = "smtp.sendgrid.net"
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = "apikey"
+    EMAIL_HOST_PASSWORD = SENDGRID_API_KEY
+else:
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

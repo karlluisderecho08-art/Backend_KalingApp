@@ -9,6 +9,12 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from core.audit import log_action
 
+from .emails import (
+    MAX_VERIFICATION_ATTEMPTS,
+    RESEND_COOLDOWN_SECONDS,
+    VERIFICATION_CODE_TTL_MINUTES,
+    send_verification_email,
+)
 from .models import User
 from .serializers import (
     LocationConsentSerializer,
@@ -40,9 +46,14 @@ class RegisterView(generics.CreateAPIView):
     """
     POST /auth/register/  {email, password, mom_name, baby_name}
 
-    Replaces RegisterScreen's `isLoggedIn = true` boolean flip: on success
-    we hand back real JWTs, so the client is logged in the moment the
-    account exists -- same UX, real auth underneath.
+    No longer hands back JWTs directly: the account is created with
+    is_active=False and a 6-digit code is emailed to her. is_active=False
+    means TokenObtainPairView (login) and JWTAuthentication both refuse
+    this account until VerifyEmailView flips it back on -- Django's
+    ModelBackend and simplejwt's JWTAuthentication.get_user() both check
+    is_active on their own, so nothing else has to police this. The
+    client now shows an "enter your code" screen instead of logging her
+    straight in; see VerifyEmailView for what happens once she does.
     """
 
     queryset = User.objects.all()
@@ -52,11 +63,94 @@ class RegisterView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
+        user = serializer.save(is_active=False)
+        send_verification_email(user)
+        return Response({
+            "detail": "Account created. Check your email for a 6-digit verification code.",
+            "email": user.email,
+        }, status=201)
+
+
+class VerifyEmailView(APIView):
+    """
+    POST /auth/verify-email/  {email, code}
+
+    Confirms the code RegisterView emailed, flips is_active and
+    email_verified to True, then hands back the same {user, access,
+    refresh} shape RegisterView used to return directly -- so the
+    Kotlin app can log her in immediately once she's verified, instead
+    of sending her back to Login to type her password again.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = (request.data.get("email") or "").strip().lower()
+        code = (request.data.get("code") or "").strip()
+
+        try:
+            user = User.objects.get(email__iexact=email, is_active=False)
+        except User.DoesNotExist:
+            return Response({"detail": "Invalid email, or this account is already verified."}, status=400)
+
+        if (
+            not user.email_verification_sent_at
+            or timezone.now() - user.email_verification_sent_at > timedelta(minutes=VERIFICATION_CODE_TTL_MINUTES)
+        ):
+            return Response({"detail": "This code has expired. Please request a new one."}, status=400)
+
+        if user.email_verification_attempts >= MAX_VERIFICATION_ATTEMPTS:
+            return Response({"detail": "Too many incorrect attempts. Please request a new code."}, status=400)
+
+        if not code or not user.email_verification_code or code != user.email_verification_code:
+            user.email_verification_attempts += 1
+            user.save(update_fields=["email_verification_attempts"])
+            return Response({"detail": "Incorrect verification code."}, status=400)
+
+        user.is_active = True
+        user.email_verified = True
+        user.email_verification_code = ""
+        user.email_verification_attempts = 0
+        user.save(update_fields=[
+            "is_active", "email_verified", "email_verification_code", "email_verification_attempts",
+        ])
+
+        log_action(user, "account.email_verified", f"User:{user.id}")
+
         return Response({
             "user": UserSerializer(user).data,
             **_tokens_for(user),
-        }, status=201)
+        })
+
+
+class ResendVerificationView(APIView):
+    """
+    POST /auth/resend-verification/  {email}
+
+    Same response whether the account doesn't exist, is already
+    verified, or a code really was just sent -- deliberately doesn't
+    reveal which emails have KalingApp accounts.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = (request.data.get("email") or "").strip().lower()
+        generic_response = Response({"detail": "If that email needs verifying, a new code has been sent."})
+
+        try:
+            user = User.objects.get(email__iexact=email, is_active=False)
+        except User.DoesNotExist:
+            return generic_response
+
+        if (
+            user.email_verification_sent_at
+            and timezone.now() - user.email_verification_sent_at < timedelta(seconds=RESEND_COOLDOWN_SECONDS)
+        ):
+            return generic_response
+
+        send_verification_email(user)
+        return generic_response
 
 
 class DemoLoginView(APIView):
