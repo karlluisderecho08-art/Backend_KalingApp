@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 
 from django.utils import timezone
@@ -23,6 +24,8 @@ from .serializers import (
     UpdateProfileSerializer,
     UserSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class IsFacilityStaff(permissions.BasePermission):
@@ -64,7 +67,25 @@ class RegisterView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save(is_active=False)
-        send_verification_email(user)
+
+        # The account row is already committed above -- a broken SMTP
+        # relay (wrong credentials, an unverified SendGrid sender
+        # identity, a network hiccup) must not turn that into a 500 and
+        # leave her wondering if she even has an account. She can always
+        # retry via /auth/resend-verification/ once the underlying issue
+        # is fixed; this just keeps registration itself from crashing.
+        try:
+            send_verification_email(user)
+        except Exception:
+            logger.exception("Failed to send verification email to %s", user.email)
+            return Response({
+                "detail": (
+                    "Account created, but we couldn't send the verification email right now. "
+                    "Please try requesting a new code shortly."
+                ),
+                "email": user.email,
+            }, status=201)
+
         return Response({
             "detail": "Account created. Check your email for a 6-digit verification code.",
             "email": user.email,
@@ -149,7 +170,12 @@ class ResendVerificationView(APIView):
         ):
             return generic_response
 
-        send_verification_email(user)
+        try:
+            send_verification_email(user)
+        except Exception:
+            logger.exception("Failed to resend verification email to %s", user.email)
+            # Still the generic response -- same reasoning as above: don't
+            # reveal anything about why, just don't 500 either.
         return generic_response
 
 

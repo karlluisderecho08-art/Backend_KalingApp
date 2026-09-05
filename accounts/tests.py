@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.core import mail
 from django.utils import timezone
@@ -162,6 +163,31 @@ class RegistrationAndVerificationTests(APITestCase):
         response = self.client.post("/auth/resend-verification/", {"email": "nobody@example.com"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(mail.outbox), 0)
+
+    @patch("accounts.views.send_verification_email", side_effect=Exception("SMTP rejected: sender not verified"))
+    def test_register_survives_an_email_sending_failure(self, mock_send):
+        """
+        Reproduces the real bug found while testing against the live
+        backend: a broken SendGrid config (bad credentials, unverified
+        sender identity) was crashing /auth/register/ with a raw 500,
+        even though the account had already been created. The account
+        must still be created and the endpoint must still respond
+        cleanly -- just honestly telling her the email didn't go out.
+        """
+        response = self.register()
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["email"], "mother@example.com")
+        self.assertIn("couldn't send", response.data["detail"])
+        self.assertTrue(User.objects.filter(email="mother@example.com").exists())
+
+    @patch("accounts.views.send_verification_email", side_effect=Exception("SMTP rejected: sender not verified"))
+    def test_resend_survives_an_email_sending_failure(self, mock_send):
+        user = User.objects.create_user(email="mother@example.com", password="x", is_active=False)
+
+        response = self.client.post("/auth/resend-verification/", {"email": user.email})
+
+        self.assertEqual(response.status_code, 200)
 
 
 class ProfileAndConsentTests(APITestCase):
