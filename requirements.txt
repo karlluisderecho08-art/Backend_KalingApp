@@ -1,5 +1,6 @@
 asgiref==3.12.1
 attrs==26.1.0
+boto3==1.43.89
 coverage==7.16.0
 Django==6.1
 django-cors-headers==4.9.0

@@ -5,7 +5,7 @@ from .models import ChatMessage, ChatSession
 
 @admin.register(ChatSession)
 class ChatSessionAdmin(admin.ModelAdmin):
-    list_display = ("owner", "prompt_count", "token_count", "current_model", "model_switched")
+    list_display = ("owner", "prompt_count", "token_count")
 
 
 @admin.register(ChatMessage)

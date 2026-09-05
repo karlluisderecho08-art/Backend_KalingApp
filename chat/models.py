@@ -6,20 +6,21 @@ class ChatSession(models.Model):
     """
     One per user -- the server-side home for the running counters the
     Kotlin app currently keeps in ViewModel state (chatSessionPromptCount,
-    chatSessionTokenCount, chatCurrentModel), which resets to zero the
-    moment the app process dies. Here it survives, and it's the same
-    counter no matter which device she's on.
-    """
+    chatSessionTokenCount), which resets to zero the moment the app
+    process dies. Here it survives, and it's the same counter no matter
+    which device she's on.
 
-    class Model(models.TextChoices):
-        PRIMARY = "gpt-4o", "gpt-4o"
-        FALLBACK_MODEL = "gpt-4o-mini", "gpt-4o-mini"
+    Used to also track current_model/model_switched, for a two-tier
+    gpt-4o -> gpt-4o-mini cost-saving downgrade once a session grew
+    long (see git history if that behavior needs reviving) -- dropped
+    when the real model behind chat moved to AWS Bedrock/DeepSeek-R1
+    (chat/bedrock_client.py), since there's only one model now and
+    those fields had nothing left to track.
+    """
 
     owner = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="chat_session")
     prompt_count = models.PositiveIntegerField(default=0)
     token_count = models.PositiveIntegerField(default=0)
-    current_model = models.CharField(max_length=20, choices=Model.choices, default=Model.PRIMARY)
-    model_switched = models.BooleanField(default=False)
 
     def __str__(self):
         return f"Chat session for {self.owner}"

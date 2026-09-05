@@ -2,21 +2,10 @@ from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .bedrock_client import get_ai_response
 from .guardrail import OFF_TOPIC_RESPONSE, is_breastfeeding_topic
 from .models import ChatMessage, ChatSession
-from .openai_client import get_ai_response
 from .serializers import ChatMessageSerializer, SendMessageSerializer
-
-# The exact thresholds from CODEBASE-1.md section 5: cross either one,
-# once, and the session permanently downgrades to the cheaper model.
-PROMPT_THRESHOLD = 15
-TOKEN_THRESHOLD = 4000
-
-MODEL_SWITCH_NOTICE = (
-    "This conversation has grown long enough that Kali has switched to a lighter "
-    "model to keep things running smoothly. For in-depth guidance, browse the "
-    "Verified Knowledge page."
-)
 
 
 class ChatHistoryView(generics.ListAPIView):
@@ -61,16 +50,9 @@ class SendMessageView(APIView):
 
         session.prompt_count += 1
 
-        already_switched = session.model_switched
-        should_switch = session.prompt_count >= PROMPT_THRESHOLD or session.token_count >= TOKEN_THRESHOLD
-        if should_switch and not already_switched:
-            session.current_model = ChatSession.Model.FALLBACK_MODEL
-            session.model_switched = True
-            ChatMessage.objects.create(session=session, text=MODEL_SWITCH_NOTICE, is_user=False, is_system_notice=True)
-
-        reply_text, tokens, used_fallback = get_ai_response(text, session.current_model)
+        reply_text, tokens, used_fallback = get_ai_response(text)
         session.token_count += tokens
-        session.save(update_fields=["prompt_count", "token_count", "current_model", "model_switched"])
+        session.save(update_fields=["prompt_count", "token_count"])
 
         reply = ChatMessage.objects.create(session=session, text=reply_text, is_user=False)
 
@@ -85,6 +67,4 @@ def _session_state(session):
     return {
         "prompt_count": session.prompt_count,
         "token_count": session.token_count,
-        "current_model": session.current_model,
-        "model_switched": session.model_switched,
     }

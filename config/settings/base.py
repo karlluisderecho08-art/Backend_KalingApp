@@ -26,6 +26,32 @@ SECRET_KEY = env("DJANGO_SECRET_KEY", default="django-insecure-dev-only-change-m
 # add a real key to .env to start using the real API, no code changes.
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="MY_OPENAI_API_KEY")
 
+# --- AWS Bedrock (Kali chat, DeepSeek-R1) ---
+# Superseded OPENAI_API_KEY above as the real model behind chat -- see
+# chat/bedrock_client.py. Left OPENAI_API_KEY in place rather than
+# deleting it: chat/openai_client.py still exists as a fallback path
+# nothing currently calls, in case AWS access ever needs to be reverted.
+#
+# Unlike OPENAI_API_KEY's single bearer token, Bedrock authenticates
+# with a real AWS IAM access key pair (SigV4 signing, handled by
+# boto3) -- generated for an IAM user with bedrock:InvokeModel-only
+# permission, not the AWS account's root credentials. Leave both blank
+# to run on local-fallback-only responses, same as an unset
+# OPENAI_API_KEY did.
+AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default="")
+AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default="")
+# us-east-1 is where DeepSeek-R1's Bedrock availability was confirmed
+# at integration time -- change this only if AWS moves/expands that,
+# and only together with AWS_BEDROCK_MODEL_ID below (a model enabled in
+# one region isn't automatically enabled in another).
+AWS_BEDROCK_REGION = env("AWS_BEDROCK_REGION", default="us-east-1")
+# The cross-region inference profile ID, not the bare model ID --
+# DeepSeek-R1 (like several newer Bedrock models) is invoked through an
+# inference profile rather than a plain on-demand model ID. Confirm the
+# exact ID shown in your own Bedrock console's Model catalog after
+# requesting access -- AWS has been known to adjust these.
+AWS_BEDROCK_MODEL_ID = env("AWS_BEDROCK_MODEL_ID", default="us.deepseek.r1-v1:0")
+
 # --- Outgoing email (account verification codes -- see accounts/emails.py) ---
 # SendGrid's SMTP relay always authenticates with the literal username
 # "apikey"; the real secret is the password. Falls back to Django's
