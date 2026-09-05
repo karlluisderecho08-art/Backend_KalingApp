@@ -10,6 +10,31 @@ from .emails import MAX_VERIFICATION_ATTEMPTS, RESEND_COOLDOWN_SECONDS, VERIFICA
 from .models import User
 
 
+class _SynchronousThread:
+    """
+    Test double for threading.Thread: runs target(*args) immediately on
+    .start() instead of actually spawning a thread.
+
+    RegisterView/ResendVerificationView send the verification email on a
+    real background thread (see accounts/views.py -- a slow/hung SMTP
+    connection must never make the HTTP response wait on it). Without
+    this, tests that check mail.outbox right after calling register()
+    would be racing a real thread with no guarantee it's finished yet --
+    flaky by construction, and a background thread still running once
+    the test's DB transaction is torn down is its own separate problem.
+    Patching threading.Thread to this for the duration of a test makes
+    the "background" work happen deterministically, inline.
+    """
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+
 class RegistrationAndVerificationTests(APITestCase):
     """
     Covers the account lifecycle a real mother goes through: register ->
@@ -19,6 +44,11 @@ class RegistrationAndVerificationTests(APITestCase):
     where the app still expects the OLD response shape from before
     email verification existed.
     """
+
+    def setUp(self):
+        patcher = patch("accounts.views.threading.Thread", new=_SynchronousThread)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def register(self, **overrides):
         payload = {
@@ -167,19 +197,23 @@ class RegistrationAndVerificationTests(APITestCase):
     @patch("accounts.views.send_verification_email", side_effect=Exception("SMTP rejected: sender not verified"))
     def test_register_survives_an_email_sending_failure(self, mock_send):
         """
-        Reproduces the real bug found while testing against the live
-        backend: a broken SendGrid config (bad credentials, unverified
-        sender identity) was crashing /auth/register/ with a raw 500,
-        even though the account had already been created. The account
-        must still be created and the endpoint must still respond
-        cleanly -- just honestly telling her the email didn't go out.
+        Reproduces the real bug found while testing this against the
+        live backend: a broken SendGrid config (bad credentials, an
+        unverified sender identity, or just a slow/blocked connection)
+        was crashing -- or in one case, simply hanging -- /auth/register/,
+        even though the account had already been created. The email is
+        now sent on a background thread specifically so a failure or a
+        slow connection there can never affect this response at all;
+        the account must still be created and the response must still
+        be the normal success shape, immediately.
         """
         response = self.register()
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["email"], "mother@example.com")
-        self.assertIn("couldn't send", response.data["detail"])
+        self.assertIn("Check your email", response.data["detail"])
         self.assertTrue(User.objects.filter(email="mother@example.com").exists())
+        mock_send.assert_called_once()
 
     @patch("accounts.views.send_verification_email", side_effect=Exception("SMTP rejected: sender not verified"))
     def test_resend_survives_an_email_sending_failure(self, mock_send):
@@ -188,6 +222,7 @@ class RegistrationAndVerificationTests(APITestCase):
         response = self.client.post("/auth/resend-verification/", {"email": user.email})
 
         self.assertEqual(response.status_code, 200)
+        mock_send.assert_called_once()
 
 
 class ProfileAndConsentTests(APITestCase):

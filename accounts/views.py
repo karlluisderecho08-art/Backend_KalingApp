@@ -1,4 +1,5 @@
 import logging
+import threading
 from datetime import timedelta
 
 from django.utils import timezone
@@ -26,6 +27,34 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _send_verification_email_in_background(user):
+    """
+    Fire-and-forget wrapper around send_verification_email(), run on a
+    background thread so a slow or hung SMTP connection can never make
+    the HTTP response wait on it.
+
+    Found the hard way against the live backend: EMAIL_TIMEOUT bounds
+    how long the SMTP *connection* can hang, but gunicorn's own worker
+    timeout can still kill the whole request from outside Python before
+    that ever matters -- no try/except inside the request/response cycle
+    can catch that, because the process is gone. Moving the send off
+    the request thread entirely sidesteps the problem instead of trying
+    to out-race it with shorter and shorter timeouts.
+
+    daemon=True: this thread must never block the worker process from
+    shutting down. Real tradeoff, accepted deliberately: if the worker
+    recycles before the send finishes, that one email is lost, same as
+    any other fire-and-forget background job without a real task queue
+    (Celery, etc.) in front of it -- a reasonable size fix for this
+    project's current scale, not a claim that this is the fully robust
+    long-term answer.
+    """
+    try:
+        send_verification_email(user)
+    except Exception:
+        logger.exception("Failed to send verification email to %s", user.email)
 
 
 class IsFacilityStaff(permissions.BasePermission):
@@ -68,23 +97,11 @@ class RegisterView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save(is_active=False)
 
-        # The account row is already committed above -- a broken SMTP
-        # relay (wrong credentials, an unverified SendGrid sender
-        # identity, a network hiccup) must not turn that into a 500 and
-        # leave her wondering if she even has an account. She can always
-        # retry via /auth/resend-verification/ once the underlying issue
-        # is fixed; this just keeps registration itself from crashing.
-        try:
-            send_verification_email(user)
-        except Exception:
-            logger.exception("Failed to send verification email to %s", user.email)
-            return Response({
-                "detail": (
-                    "Account created, but we couldn't send the verification email right now. "
-                    "Please try requesting a new code shortly."
-                ),
-                "email": user.email,
-            }, status=201)
+        # Fire-and-forget: the account row above is already committed,
+        # so the response below is accurate regardless of how the send
+        # itself turns out. See _send_verification_email_in_background's
+        # docstring for why this can't just be a try/except here.
+        threading.Thread(target=_send_verification_email_in_background, args=(user,), daemon=True).start()
 
         return Response({
             "detail": "Account created. Check your email for a 6-digit verification code.",
@@ -170,12 +187,7 @@ class ResendVerificationView(APIView):
         ):
             return generic_response
 
-        try:
-            send_verification_email(user)
-        except Exception:
-            logger.exception("Failed to resend verification email to %s", user.email)
-            # Still the generic response -- same reasoning as above: don't
-            # reveal anything about why, just don't 500 either.
+        threading.Thread(target=_send_verification_email_in_background, args=(user,), daemon=True).start()
         return generic_response
 
 
