@@ -44,6 +44,14 @@ if SENDGRID_API_KEY:
     EMAIL_USE_TLS = True
     EMAIL_HOST_USER = "apikey"
     EMAIL_HOST_PASSWORD = SENDGRID_API_KEY
+    # Without this, a blocked/slow outbound connection to SendGrid hangs
+    # with no timeout at all -- found the hard way: a stuck send_mail()
+    # call held the request open long enough for gunicorn's own worker
+    # timeout to kill the process, which happens *outside* Python's
+    # control and can't be caught by a try/except in the view. A short,
+    # explicit timeout means a bad connection fails fast, as a normal
+    # catchable exception, well within that worker timeout.
+    EMAIL_TIMEOUT = 10
 else:
     EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
