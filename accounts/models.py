@@ -64,6 +64,31 @@ class User(AbstractUser):
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.MOTHER)
 
+    # Which facility a facility_staff account works at -- meaningless
+    # for a mother account, always null there. Without this, EVERY
+    # facility_staff login could see and act on EVERY facility's
+    # bookings (that was the actual behavior until this field was
+    # added -- see milkbank/permissions.py and the views it gates).
+    # A real deployment needs one facility_staff account per hospital,
+    # each pointed at that hospital's own Facility row.
+    #
+    # String reference ("milkbank.Facility"), not a direct import of
+    # milkbank.models: milkbank already depends on accounts (every FK
+    # to a user goes through settings.AUTH_USER_MODEL), and this
+    # project deliberately keeps that a one-way dependency at the
+    # Python-import level -- see accounts/views.py's IsFacilityStaff,
+    # duplicated rather than imported from milkbank for the same
+    # reason. A string-based FK resolves lazily at app-loading time
+    # and needs no `import milkbank...` here, so it doesn't violate
+    # that -- Django uses this exact pattern for AUTH_USER_MODEL itself.
+    #
+    # SET_NULL, not CASCADE/PROTECT: deleting a Facility shouldn't take
+    # a staff account down with it (nor should it be blocked by one) --
+    # it should just leave that account facility-less until reassigned.
+    facility = models.ForeignKey(
+        "milkbank.Facility", null=True, blank=True, on_delete=models.SET_NULL, related_name="staff",
+    )
+
     # --- Ported verbatim from the Kotlin UserProfile data class ---
     mom_name = models.CharField(max_length=150, blank=True)
     baby_name = models.CharField(max_length=150, blank=True)

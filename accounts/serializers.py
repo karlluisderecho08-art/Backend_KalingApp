@@ -6,19 +6,27 @@ from .models import User
 class UserSerializer(serializers.ModelSerializer):
     """Read-only shape returned for 'who am I' / after login+register."""
 
+    # A plain string, not a nested FacilitySerializer -- the Facility
+    # dashboard just needs to show "you're viewing bookings for X" after
+    # login, not the full facility record. None for a mother account, or
+    # a facility_staff account not yet assigned one.
+    facility_name = serializers.CharField(source="facility.name", read_only=True, default=None)
+
     class Meta:
         model = User
         fields = [
-            "id", "email", "role", "is_staff",
+            "id", "email", "role", "is_staff", "facility", "facility_name",
             "mom_name", "baby_name", "baby_age_weeks", "breastfeeding_status",
             "baby_birth_date", "pediatric_clinic", "tracking_streaks", "total_drawn_oz",
             "latitude", "longitude", "location_consent_given", "has_seen_walkthrough",
         ]
         # Nothing writes through this serializer today (only ever used in
-        # read paths -- MeView is a RetrieveAPIView), but is_staff controls
-        # Django admin/content-moderation access, so it's marked read-only
-        # here too in case a write path is ever added later.
-        read_only_fields = ["is_staff"]
+        # read paths -- MeView is a RetrieveAPIView), but is_staff and
+        # facility both control real access (Django admin/moderation,
+        # and now which facility's bookings this account can see), so
+        # both are marked read-only here in case a write path is ever
+        # added later -- facility assignment stays an admin-only action.
+        read_only_fields = ["is_staff", "facility"]
 
 
 class UpdateProfileSerializer(serializers.ModelSerializer):

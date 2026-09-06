@@ -9,12 +9,18 @@ class UserAdmin(DjangoUserAdmin):
     # DjangoUserAdmin's defaults assume a `username` field; we log in
     # with email instead, so the fieldsets/list need to say so.
     ordering = ("email",)
-    list_display = ("email", "mom_name", "role", "is_staff")
+    list_display = ("email", "mom_name", "role", "facility", "is_staff")
+    list_filter = ("role", "facility")
+    # facility only means anything for a facility_staff account -- this
+    # is where a real hospital's account actually gets assigned to its
+    # own Facility row (there's no self-serve signup for staff accounts,
+    # so admin is genuinely the only place this happens today).
+    autocomplete_fields = ("facility",)
     fieldsets = (
         (None, {"fields": ("email", "password")}),
         ("Profile", {
             "fields": (
-                "role", "mom_name", "baby_name", "baby_age_weeks",
+                "role", "facility", "mom_name", "baby_name", "baby_age_weeks",
                 "breastfeeding_status", "baby_birth_date", "pediatric_clinic",
                 "tracking_streaks", "total_drawn_oz",
             ),

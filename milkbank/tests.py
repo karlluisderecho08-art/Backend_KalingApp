@@ -6,6 +6,7 @@ from notifications.models import NotificationItem
 from .allocation import LocationRequired, NoOperationalFacility, get_ranked_facilities, rank_facilities
 from .models import Facility, MilkBankRequest, TransactionRecord
 from .transitions import ALLOWED_TRANSITIONS, InvalidTransition, apply_transition
+from .views import _can_view_questionnaire
 
 Status = MilkBankRequest.Status
 
@@ -238,10 +239,19 @@ class BookingEndpointPermissionTests(APITestCase):
     def setUp(self):
         self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
         self.other_mother = User.objects.create_user(email="other@example.com", password="x", is_active=True)
+        self.facility = make_facility(name="St. Luke's")
+        self.other_facility = make_facility(name="PGH")
         self.staff = User.objects.create_user(
-            email="staff@example.com", password="x", is_active=True, role=User.Role.FACILITY_STAFF,
+            email="staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
         )
-        self.facility = make_facility()
+        self.other_facility_staff = User.objects.create_user(
+            email="other-staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.other_facility,
+        )
+        self.unassigned_staff = User.objects.create_user(
+            email="unassigned-staff@example.com", password="x", is_active=True, role=User.Role.FACILITY_STAFF,
+        )
         self.req = make_request(self.mother, self.facility)
 
     def test_mother_cannot_call_staff_accept(self):
@@ -253,6 +263,45 @@ class BookingEndpointPermissionTests(APITestCase):
         self.client.force_authenticate(user=self.staff)
         response = self.client.post(f"/milkbank/requests/{self.req.id}/accept/")
         self.assertEqual(response.status_code, 200)
+
+    def test_staff_at_a_different_facility_cannot_touch_this_booking(self):
+        """
+        The actual point of the whole facility-scoping change: PGH's
+        staff must not be able to accept (or view, or do anything else
+        to) a booking that belongs to St. Luke's, even though both are
+        facility_staff and both know the booking's real id.
+        """
+        self.client.force_authenticate(user=self.other_facility_staff)
+        response = self.client.post(f"/milkbank/requests/{self.req.id}/accept/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_staff_at_a_different_facility_cannot_view_this_booking(self):
+        self.client.force_authenticate(user=self.other_facility_staff)
+        response = self.client.get(f"/milkbank/requests/{self.req.id}/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_unassigned_staff_account_cannot_touch_any_booking(self):
+        # Fail closed: an account that's facility_staff in role but has
+        # no facility assigned yet (an incompletely-provisioned account)
+        # must see nothing, not everything.
+        self.client.force_authenticate(user=self.unassigned_staff)
+        response = self.client.post(f"/milkbank/requests/{self.req.id}/accept/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_all_requests_list_only_shows_this_staff_members_facility(self):
+        other_req = make_request(self.other_mother, self.other_facility)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get("/milkbank/requests/all/")
+
+        returned_ids = {row["id"] for row in response.data}
+        self.assertIn(self.req.id, returned_ids)
+        self.assertNotIn(other_req.id, returned_ids)
+
+    def test_all_requests_list_is_empty_for_unassigned_staff(self):
+        self.client.force_authenticate(user=self.unassigned_staff)
+        response = self.client.get("/milkbank/requests/all/")
+        self.assertEqual(len(response.data), 0)
 
     def test_a_different_mother_cannot_confirm_someone_elses_attendance(self):
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
@@ -277,3 +326,35 @@ class BookingEndpointPermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("already have an open request", response.data["detail"])
+
+
+class CanViewQuestionnaireTests(APITestCase):
+    """
+    _can_view_questionnaire() gates the donor screening form and
+    serology photo -- more sensitive than the booking record itself, so
+    it gets the same facility-scoping treatment (tested directly here
+    rather than through the full multipart submission flow).
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
+        self.facility = make_facility(name="St. Luke's")
+        self.other_facility = make_facility(name="PGH")
+        self.staff = User.objects.create_user(
+            email="staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+        self.other_facility_staff = User.objects.create_user(
+            email="other-staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.other_facility,
+        )
+        self.req = make_request(self.mother, self.facility)
+
+    def test_owner_can_view_her_own_questionnaire(self):
+        self.assertTrue(_can_view_questionnaire(self.mother, self.req))
+
+    def test_staff_at_the_same_facility_can_view_it(self):
+        self.assertTrue(_can_view_questionnaire(self.staff, self.req))
+
+    def test_staff_at_a_different_facility_cannot_view_it(self):
+        self.assertFalse(_can_view_questionnaire(self.other_facility_staff, self.req))

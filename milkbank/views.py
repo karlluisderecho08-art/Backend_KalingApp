@@ -164,21 +164,28 @@ class MyMilkBankRequestsView(generics.ListAPIView):
 
 class AllMilkBankRequestsView(generics.ListAPIView):
     """
-    GET /milkbank/requests/all/?status=pending -- every booking, for the
-    facility dashboard's Pending/Confirmed/Declined tabs. `status` is
-    optional and matches MilkBankRequest.Status (e.g. "pending",
-    "declined"); omit it to get everything. Staff aren't scoped to a
-    single facility today (see accounts.models.User -- no facility FK
-    on the role), so this intentionally returns requests for every
-    facility, same as MilkBankRequestDetailView already allows any
-    facility_staff to view any single request by id.
+    GET /milkbank/requests/all/?status=pending -- every booking AT THIS
+    STAFF MEMBER'S OWN FACILITY, for the facility dashboard's
+    Pending/Confirmed/Declined tabs. `status` is optional and matches
+    MilkBankRequest.Status (e.g. "pending", "declined"); omit it to get
+    everything for this facility.
+
+    Used to return every booking for every facility, system-wide --
+    fixed once accounts.models.User gained a facility FK. A staff
+    account with no facility assigned yet sees an empty list rather
+    than an error or everyone else's bookings (fail closed).
     """
 
     serializer_class = MilkBankRequestSerializer
     permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
 
     def get_queryset(self):
-        qs = MilkBankRequest.objects.select_related("owner", "allocated_facility").order_by("-submitted_at")
+        qs = (
+            MilkBankRequest.objects
+            .filter(allocated_facility=self.request.user.facility_id)
+            .select_related("owner", "allocated_facility")
+            .order_by("-submitted_at")
+        )
         status_param = self.request.query_params.get("status")
         if status_param:
             qs = qs.filter(current_sub_status=status_param)
@@ -186,7 +193,12 @@ class AllMilkBankRequestsView(generics.ListAPIView):
 
 
 class MilkBankRequestDetailView(generics.RetrieveAPIView):
-    """GET /milkbank/requests/<id>/ -- viewable by the owner or any facility staff."""
+    """
+    GET /milkbank/requests/<id>/ -- viewable by the owner, or by
+    facility_staff at the facility this booking was allocated to (not
+    facility_staff generally -- a different hospital's staff must not
+    be able to view this just by knowing/guessing its id).
+    """
 
     queryset = MilkBankRequest.objects.all()
     serializer_class = MilkBankRequestSerializer
@@ -194,7 +206,12 @@ class MilkBankRequestDetailView(generics.RetrieveAPIView):
 
     def get_object(self):
         obj = super().get_object()
-        if obj.owner_id != self.request.user.id and self.request.user.role != self.request.user.Role.FACILITY_STAFF:
+        user = self.request.user
+        is_owner = obj.owner_id == user.id
+        is_staff_at_this_facility = (
+            user.role == user.Role.FACILITY_STAFF and user.facility_id == obj.allocated_facility_id
+        )
+        if not is_owner and not is_staff_at_this_facility:
             self.permission_denied(self.request)
         return obj
 
@@ -383,7 +400,13 @@ class MyTransactionsView(generics.ListAPIView):
 
 
 def _can_view_questionnaire(user, req):
-    return req.owner_id == user.id or user.role == user.Role.FACILITY_STAFF
+    # Same facility-scoping as MilkBankRequestDetailView: this is a
+    # donor's health screening data (and possibly a serology photo) --
+    # arguably more sensitive than the booking record itself, so a
+    # different hospital's staff having blanket access here would be
+    # worse than the MilkBankRequestDetailView gap, not just as bad.
+    is_staff_at_this_facility = user.role == user.Role.FACILITY_STAFF and user.facility_id == req.allocated_facility_id
+    return req.owner_id == user.id or is_staff_at_this_facility
 
 
 class DonorQuestionnaireView(APIView):
