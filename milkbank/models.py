@@ -78,7 +78,12 @@ class MilkBankRequest(models.Model):
         COMPLETED = "completed", "Completed"
 
     DONOR_STAGES = [
-        "Status", "Booking Confirmation", "Counseling & Serology Screening",
+        # Index 2 renamed from "Counseling & Serology Screening" per the
+        # Fabella interview: this stage covers serology, physical, AND
+        # blood tests, not serology alone -- the old label named only one
+        # of the three. Matches the manuscript's "Counseling and Testing"
+        # wording throughout.
+        "Status", "Booking Confirmation", "Counseling and Testing",
         "Breastmilk Analysis", "Results",
     ]
     RECIPIENT_STAGES = ["Requirements", "Status", "Booking Confirmation", "Results"]
