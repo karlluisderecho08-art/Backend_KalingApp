@@ -37,20 +37,25 @@ SYSTEM_PROMPT = (
     "answers in WHO, AAP, and IBCLC guidance. Stay strictly within breastfeeding "
     "and lactation topics. For anything resembling a medical emergency or a "
     "mental health crisis, direct the user to a real healthcare professional "
-    "instead of attempting to handle it yourself."
+    "instead of attempting to handle it yourself. "
+    "Keep replies conversational and concise -- a short paragraph or two, or a "
+    "brief bulleted list, the way a real chat message reads, not an exhaustive "
+    "article. Cover the most important points fully rather than listing every "
+    "possible point briefly; if there's clearly more that could help, end by "
+    "offering to go deeper rather than cramming it all in at once."
 )
 
-# 4000 was carried over from bedrock_client.py without re-checking
-# whether it still made sense: DeepSeek-R1 (a *reasoning* model) needed
-# that headroom for an invisible chain-of-thought before its visible
-# answer, which Gemini doesn't do. Left at 4000 here, real generations
-# took long enough to trip a 504 DEADLINE_EXCEEDED against a 25s client
-# timeout (and would have kept tripping gunicorn's worker timeout before
-# that fix) -- 1024 is still a generous, thorough-answer-length budget
-# for an actual chat reply, and finishes fast enough that neither
-# timeout below should realistically be needed as anything but a safety
-# net for a genuinely stuck call.
-MAX_TOKENS = 1024
+# 4000 (carried over from bedrock_client.py, see the module docstring)
+# made real generations slow enough to trip gunicorn's worker timeout.
+# Dropping to 1024 alone fixed the timeouts but traded them for a new
+# problem: confirmed via response.candidates[0].finish_reason ==
+# MAX_TOKENS that Gemini was hitting that cap mid-answer and just
+# stopping -- an incomplete reply instead of a slow/failed one. The
+# SYSTEM_PROMPT addition above is the real fix (asking for an actually
+# concise reply instead of relying on a hard cutoff to enforce brevity);
+# this bump to 1536 is just extra headroom so a reply that runs slightly
+# long still finishes as a complete thought instead of getting cut off.
+MAX_TOKENS = 1536
 # Milliseconds -- see the module docstring. Must stay comfortably under
 # gunicorn's --timeout (render.yaml) so a slow call fails as a catchable
 # Python exception well before gunicorn would kill the process instead.

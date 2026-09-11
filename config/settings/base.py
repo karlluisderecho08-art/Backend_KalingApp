@@ -66,7 +66,15 @@ AWS_BEDROCK_MODEL_ID = env("AWS_BEDROCK_MODEL_ID", default="us.deepseek.r1-v1:0"
 # Leave blank to run on local-fallback-only responses, same as an unset
 # OPENAI_API_KEY/AWS_ACCESS_KEY_ID did.
 GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
-GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.6-flash")
+# gemini-3.6-flash (the newest flagship model at integration time) has a
+# free-tier quota of only 20 requests/DAY -- confirmed by actually
+# hitting it: "429 RESOURCE_EXHAUSTED ... limit: 20". gemini-3.5-flash-
+# lite is a separate, much less in-demand model with its own quota
+# bucket, and also tested noticeably faster (1-2s vs 7-20s) and never
+# hit finish_reason=MAX_TOKENS the way the flagship model did -- a
+# better choice on every axis for this app's actual needs, not just a
+# workaround for the quota.
+GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.5-flash-lite")
 
 # --- Outgoing email (account verification codes -- see accounts/emails.py) ---
 # Superseded Gmail below as the real email sender. Gmail SMTP proved
