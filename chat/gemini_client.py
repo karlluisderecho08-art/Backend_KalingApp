@@ -12,11 +12,18 @@ signing -- so this reads simpler than bedrock_client.py, not because
 less care went into it, but because Gemini's auth genuinely needs less
 code around it.
 
-NOTE: like bedrock_client.py before it, written against Google's
-documented google-genai SDK contract but not yet exercised against a
-real key at the time this was written -- if the first real call fails,
-paste the exact exception back and this can be adjusted quickly rather
-than guessed at twice.
+NOTE: exercised against a real key now -- it works (confirmed with a
+genuine, on-topic reply and a real token count), but the first attempt
+against the live Render backend hit exactly the SendGrid-style bug
+already documented in accounts/views.py: a long generation (this model
+can legitimately take a while for a detailed, MAX_TOKENS=4000 answer)
+ran past gunicorn's default 30s worker timeout, which kills the whole
+process from *outside* Python -- no try/except here can catch that,
+because the process is gone. HTTP_TIMEOUT_MS below bounds the SDK call
+itself to something shorter than gunicorn's timeout (see render.yaml,
+bumped alongside this), so a slow call fails fast as a normal,
+catchable exception and falls back gracefully instead of taking the
+whole worker down with it.
 """
 
 from django.conf import settings
@@ -33,7 +40,21 @@ SYSTEM_PROMPT = (
     "instead of attempting to handle it yourself."
 )
 
-MAX_TOKENS = 4000
+# 4000 was carried over from bedrock_client.py without re-checking
+# whether it still made sense: DeepSeek-R1 (a *reasoning* model) needed
+# that headroom for an invisible chain-of-thought before its visible
+# answer, which Gemini doesn't do. Left at 4000 here, real generations
+# took long enough to trip a 504 DEADLINE_EXCEEDED against a 25s client
+# timeout (and would have kept tripping gunicorn's worker timeout before
+# that fix) -- 1024 is still a generous, thorough-answer-length budget
+# for an actual chat reply, and finishes fast enough that neither
+# timeout below should realistically be needed as anything but a safety
+# net for a genuinely stuck call.
+MAX_TOKENS = 1024
+# Milliseconds -- see the module docstring. Must stay comfortably under
+# gunicorn's --timeout (render.yaml) so a slow call fails as a catchable
+# Python exception well before gunicorn would kill the process instead.
+HTTP_TIMEOUT_MS = 25_000
 
 _client = None
 
@@ -73,6 +94,7 @@ def get_ai_response(prompt, model=None):
                 system_instruction=SYSTEM_PROMPT,
                 max_output_tokens=MAX_TOKENS,
                 temperature=0.4,
+                http_options=types.HttpOptions(timeout=HTTP_TIMEOUT_MS),
             ),
         )
         reply = response.text
