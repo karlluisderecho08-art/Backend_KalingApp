@@ -17,6 +17,12 @@ TOPIC_KEYWORDS = [
     "colostrum", "engorge", "engorgement", "mastitis", "milk supply", "let-down",
     "wean", "weaning", "formula", "milk bank", "donor milk", "milk storage",
     "newborn", "infant feeding", "baby feeding",
+    # Added after real questions were incorrectly rejected as off-topic:
+    # only compound phrases like "milk supply"/"breast milk" were listed
+    # before, so a perfectly on-topic question phrased around plain
+    # "milk" or "feed"/"feeding" alone (e.g. "is my baby getting enough
+    # milk", "is cluster feeding normal") matched nothing here.
+    "milk", "feed", "feeding", "cluster feeding", "growth spurt", "hunger cues",
 ]
 
 

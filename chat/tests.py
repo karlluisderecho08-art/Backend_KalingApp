@@ -5,7 +5,31 @@ from rest_framework.test import APITestCase
 from accounts.models import User
 
 from .gemini_client import get_ai_response
+from .guardrail import is_breastfeeding_topic
 from .models import ChatSession
+
+
+class GuardrailTests(APITestCase):
+    """
+    Reproduces a real bug found by actually testing chat against the
+    live backend: genuinely on-topic questions ("is my baby getting
+    enough milk", "is cluster feeding normal") were being rejected as
+    off-topic because the keyword list only had compound phrases like
+    "milk supply"/"breast milk", nothing matching plain "milk" or
+    "feed"/"feeding" alone.
+    """
+
+    def test_recognizes_questions_that_were_previously_missed(self):
+        self.assertTrue(is_breastfeeding_topic("How do I know if my baby is getting enough milk?"))
+        self.assertTrue(is_breastfeeding_topic("Is it normal for my baby to cluster feed in the evening?"))
+
+    def test_still_recognizes_the_original_compound_phrases(self):
+        self.assertTrue(is_breastfeeding_topic("What's a good way to increase my milk supply?"))
+        self.assertTrue(is_breastfeeding_topic("How long can I store breast milk in the fridge?"))
+
+    def test_still_rejects_clearly_unrelated_questions(self):
+        self.assertFalse(is_breastfeeding_topic("what's the weather like today"))
+        self.assertFalse(is_breastfeeding_topic("can you recommend a good movie"))
 
 
 class GeminiClientFallbackTests(APITestCase):
