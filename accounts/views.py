@@ -15,6 +15,7 @@ from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
     RESEND_COOLDOWN_SECONDS,
     VERIFICATION_CODE_TTL_MINUTES,
+    send_password_reset_email,
     send_verification_email,
 )
 from .models import User
@@ -55,6 +56,14 @@ def _send_verification_email_in_background(user):
         send_verification_email(user)
     except Exception:
         logger.exception("Failed to send verification email to %s", user.email)
+
+
+def _send_password_reset_email_in_background(user):
+    """Same fire-and-forget reasoning as _send_verification_email_in_background above."""
+    try:
+        send_password_reset_email(user)
+    except Exception:
+        logger.exception("Failed to send password reset email to %s", user.email)
 
 
 class IsFacilityStaff(permissions.BasePermission):
@@ -189,6 +198,96 @@ class ResendVerificationView(APIView):
 
         threading.Thread(target=_send_verification_email_in_background, args=(user,), daemon=True).start()
         return generic_response
+
+
+class ForgotPasswordView(APIView):
+    """
+    POST /auth/forgot-password/  {email}
+
+    Same "always generic response" discipline as ResendVerificationView,
+    and for the same reason: whether this email doesn't have a
+    KalingApp account, has one that's never been verified (password
+    reset isn't the right flow there -- verify-email/resend-verification
+    is), or genuinely got a code just now, the response is identical
+    either way. Only targets is_active=True accounts, unlike
+    ResendVerificationView's is_active=False.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = (request.data.get("email") or "").strip().lower()
+        generic_response = Response({"detail": "If that email has a KalingApp account, a reset code has been sent."})
+
+        try:
+            user = User.objects.get(email__iexact=email, is_active=True)
+        except User.DoesNotExist:
+            return generic_response
+
+        if (
+            user.password_reset_sent_at
+            and timezone.now() - user.password_reset_sent_at < timedelta(seconds=RESEND_COOLDOWN_SECONDS)
+        ):
+            return generic_response
+
+        threading.Thread(target=_send_password_reset_email_in_background, args=(user,), daemon=True).start()
+        return generic_response
+
+
+class ResetPasswordView(APIView):
+    """
+    POST /auth/reset-password/  {email, code, new_password}
+
+    Confirms the code ForgotPasswordView emailed and sets the new
+    password. Same expiry/attempt-lockout shape as VerifyEmailView, and
+    like it, hands back a fresh {user, access, refresh} on success --
+    no reason to make her go type the password she just set into a
+    separate Login screen right after.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = (request.data.get("email") or "").strip().lower()
+        code = (request.data.get("code") or "").strip()
+        new_password = request.data.get("new_password") or ""
+
+        try:
+            user = User.objects.get(email__iexact=email, is_active=True)
+        except User.DoesNotExist:
+            return Response({"detail": "Invalid email or code."}, status=400)
+
+        if (
+            not user.password_reset_sent_at
+            or timezone.now() - user.password_reset_sent_at > timedelta(minutes=VERIFICATION_CODE_TTL_MINUTES)
+        ):
+            return Response({"detail": "This code has expired. Please request a new one."}, status=400)
+
+        if user.password_reset_attempts >= MAX_VERIFICATION_ATTEMPTS:
+            return Response({"detail": "Too many incorrect attempts. Please request a new code."}, status=400)
+
+        if not code or not user.password_reset_code or code != user.password_reset_code:
+            user.password_reset_attempts += 1
+            user.save(update_fields=["password_reset_attempts"])
+            return Response({"detail": "Incorrect reset code."}, status=400)
+
+        # Same rule RegisterSerializer's password field enforces --
+        # checked here, not there, since this never goes through that
+        # serializer.
+        if len(new_password) < 8:
+            return Response({"detail": "Password must be at least 8 characters."}, status=400)
+
+        user.set_password(new_password)
+        user.password_reset_code = ""
+        user.password_reset_attempts = 0
+        user.save(update_fields=["password", "password_reset_code", "password_reset_attempts"])
+
+        log_action(user, "account.password_reset", f"User:{user.id}")
+
+        return Response({
+            "user": UserSerializer(user).data,
+            **_tokens_for(user),
+        })
 
 
 class DemoLoginView(APIView):

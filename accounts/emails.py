@@ -44,3 +44,32 @@ def send_verification_email(user):
         recipient_list=[user.email],
         fail_silently=False,
     )
+
+
+def send_password_reset_email(user):
+    """
+    (Re)generates a 6-digit password reset code for `user`, saves it, and
+    emails it. Mirrors send_verification_email() above, but against the
+    separate password_reset_* fields (see the User model comment).
+    Called from ForgotPasswordView -- each call wipes any previous reset
+    code/attempt count so an old, possibly-already-guessed-at code can't
+    still work alongside the new one.
+    """
+    user.password_reset_code = f"{secrets.randbelow(1_000_000):06d}"
+    user.password_reset_sent_at = timezone.now()
+    user.password_reset_attempts = 0
+    user.save(update_fields=["password_reset_code", "password_reset_sent_at", "password_reset_attempts"])
+
+    send_mail(
+        subject="Your KalingApp password reset code",
+        message=(
+            f"Hi {user.mom_name or 'there'},\n\n"
+            f"Your KalingApp password reset code is {user.password_reset_code}.\n"
+            f"It expires in {VERIFICATION_CODE_TTL_MINUTES} minutes.\n\n"
+            "If you didn't ask to reset your KalingApp password, you can safely ignore this "
+            "email -- your password hasn't been changed."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        fail_silently=False,
+    )

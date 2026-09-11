@@ -257,6 +257,142 @@ class RegistrationAndVerificationTests(APITestCase):
         mock_send.assert_called_once()
 
 
+class ForgotPasswordTests(APITestCase):
+    """
+    Covers the "Forgot Password?" flow: request a code -> confirm code +
+    new password -> logged in with the new password. Was a pure UI stub
+    before this (ForgotPasswordScreen just flipped a local
+    "checkSent = true" flag -- no request ever left the app), so there
+    was no backend behavior at all to have previously tested.
+    """
+
+    def setUp(self):
+        patcher = patch("accounts.views.threading.Thread", new=_SynchronousThread)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.user = User.objects.create_user(email="mother@example.com", password="old-password", is_active=True)
+
+    def test_forgot_password_emails_a_code_for_an_active_account(self):
+        response = self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(len(self.user.password_reset_code), 6)
+        self.assertTrue(self.user.password_reset_code.isdigit())
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.user.password_reset_code, mail.outbox[0].body)
+        self.assertEqual(mail.outbox[0].to, ["mother@example.com"])
+
+    def test_forgot_password_does_not_reveal_whether_an_email_exists(self):
+        response = self.client.post("/auth/forgot-password/", {"email": "nobody@example.com"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_forgot_password_ignores_a_never_verified_account(self):
+        """
+        An account that never finished email verification isn't a
+        "forgot my password" case -- she needs verify-email/
+        resend-verification instead, not a reset code for a password
+        she can't even log in with yet.
+        """
+        User.objects.create_user(email="unverified@example.com", password="x", is_active=False)
+
+        response = self.client.post("/auth/forgot-password/", {"email": "unverified@example.com"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_reset_with_correct_code_changes_password_and_returns_tokens(self):
+        self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+        code = User.objects.get(email="mother@example.com").password_reset_code
+
+        response = self.client.post("/auth/reset-password/", {
+            "email": "mother@example.com", "code": code, "new_password": "brand-new-password",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.password_reset_code, "")
+        self.assertTrue(self.user.check_password("brand-new-password"))
+        self.assertFalse(self.user.check_password("old-password"))
+
+        # And now login works with the new password, not the old one.
+        login = self.client.post("/auth/login/", {"email": "mother@example.com", "password": "brand-new-password"})
+        self.assertEqual(login.status_code, 200)
+
+    def test_reset_with_wrong_code_increments_attempts_and_fails(self):
+        self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+
+        response = self.client.post("/auth/reset-password/", {
+            "email": "mother@example.com", "code": "000000", "new_password": "brand-new-password",
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.password_reset_attempts, 1)
+        self.assertTrue(self.user.check_password("old-password"))  # unchanged
+
+    def test_reset_locks_out_after_max_attempts(self):
+        self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+
+        for _ in range(MAX_VERIFICATION_ATTEMPTS):
+            self.client.post("/auth/reset-password/", {
+                "email": "mother@example.com", "code": "000000", "new_password": "brand-new-password",
+            })
+
+        response = self.client.post("/auth/reset-password/", {
+            "email": "mother@example.com",
+            "code": User.objects.get(email="mother@example.com").password_reset_code,
+            "new_password": "brand-new-password",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Too many", response.data["detail"])
+
+    def test_reset_rejects_expired_code(self):
+        self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+        self.user.refresh_from_db()
+        self.user.password_reset_sent_at = timezone.now() - timedelta(minutes=VERIFICATION_CODE_TTL_MINUTES + 1)
+        self.user.save(update_fields=["password_reset_sent_at"])
+
+        response = self.client.post("/auth/reset-password/", {
+            "email": "mother@example.com", "code": self.user.password_reset_code, "new_password": "brand-new-password",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("expired", response.data["detail"])
+
+    def test_reset_rejects_a_too_short_new_password(self):
+        self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+        code = User.objects.get(email="mother@example.com").password_reset_code
+
+        response = self.client.post("/auth/reset-password/", {
+            "email": "mother@example.com", "code": code, "new_password": "short",
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("old-password"))  # unchanged
+
+    def test_resend_respects_cooldown(self):
+        self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+        first_code = User.objects.get(email="mother@example.com").password_reset_code
+
+        self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.password_reset_code, first_code)
+        self.assertEqual(len(mail.outbox), 1)
+
+    @patch("accounts.views.send_password_reset_email", side_effect=Exception("SMTP rejected: sender not verified"))
+    def test_forgot_password_survives_an_email_sending_failure(self, mock_send):
+        response = self.client.post("/auth/forgot-password/", {"email": "mother@example.com"})
+
+        self.assertEqual(response.status_code, 200)
+        mock_send.assert_called_once()
+
+
 class ProfileAndConsentTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="rachel@example.com", password="password123", is_active=True)

@@ -137,5 +137,17 @@ class User(AbstractUser):
     # this back to 0 along with issuing a new code.
     email_verification_attempts = models.PositiveSmallIntegerField(default=0)
 
+    # --- Password reset ("Forgot Password?") -- same shape as email
+    # verification above (a 6-digit code, a sent-at timestamp that
+    # doubles as both the expiry and resend-cooldown clock, an attempt
+    # counter), deliberately kept as separate fields rather than reused:
+    # an in-progress email verification and an in-progress password
+    # reset are unrelated events that can legitimately overlap (e.g. she
+    # requests a reset for an already-verified account), so one
+    # shouldn't clear or expire the other. ---
+    password_reset_code = models.CharField(max_length=6, blank=True)
+    password_reset_sent_at = models.DateTimeField(null=True, blank=True)
+    password_reset_attempts = models.PositiveSmallIntegerField(default=0)
+
     def __str__(self):
         return self.email

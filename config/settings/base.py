@@ -69,24 +69,39 @@ GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
 GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.6-flash")
 
 # --- Outgoing email (account verification codes -- see accounts/emails.py) ---
-# Superseded SendGrid below as the real email sender -- SendGrid's free
-# tier runs on a trial that expires (this account's was set to end in
-# October), where Gmail's App Password approach has no trial to run out.
-# Left the SendGrid settings in place rather than deleting them, same
-# reasoning as the other provider swaps in this file: an easy revert.
+# Superseded Gmail below as the real email sender. Gmail SMTP proved
+# technically correct but practically unusable: Gmail's own server
+# accepted every message with a clean final 250 OK (confirmed with a
+# raw smtplib trace, debug output and all), yet mail to a different
+# real address never arrived -- no bounce, no spam-folder hit, nothing.
+# The likely cause: a personal Gmail account programmatically sending
+# "here's your code" emails is exactly the behavioral signature of a
+# phishing/account-takeover bot, so Gmail's spam ML can silently bin it
+# well before it would ever reach a Spam folder -- no SPF/DKIM/DMARC
+# configuration fixes that, because there's no owned sending domain to
+# configure those on. A real transactional email provider has already
+# earned the sender reputation a personal inbox never can. Left the
+# Gmail/SendGrid settings in place rather than deleting them, same
+# "easy revert" reasoning as the other provider swaps in this file.
 #
+# Brevo's SMTP relay login is the account's own email address; the
+# password is a dedicated "SMTP key" (not the account login password),
+# generated at Brevo's dashboard -- SMTP & API -> SMTP tab. Like every
+# real ESP, Brevo also requires verifying the sending address/domain
+# under Senders & IP -> Senders before it'll relay mail from it.
+BREVO_SMTP_LOGIN = env("BREVO_SMTP_LOGIN", default="")
+BREVO_SMTP_KEY = env("BREVO_SMTP_KEY", default="")
+
+# --- Gmail (superseded by Brevo above) ---
 # Gmail SMTP needs 2-Step Verification turned on for the sending Google
 # account, then a 16-character "App Password" generated at
 # https://myaccount.google.com/apppasswords -- GMAIL_APP_PASSWORD below
 # is that App Password, NOT the account's normal login password (Google
-# blocks plain-password SMTP login entirely now). Gmail's relay also
-# requires the From address to actually be that same Gmail account (or
-# a verified "Send As" alias on it) -- an arbitrary DEFAULT_FROM_EMAIL
-# will get rejected, unlike SendGrid's separate sender-verification step.
+# blocks plain-password SMTP login entirely now).
 GMAIL_ADDRESS = env("GMAIL_ADDRESS", default="")
 GMAIL_APP_PASSWORD = env("GMAIL_APP_PASSWORD", default="")
 
-# --- SendGrid (superseded by Gmail above; see chat/bedrock_client.py's
+# --- SendGrid (superseded by Brevo above; see chat/bedrock_client.py's
 # NOTE-style comments for why unused settings are left rather than
 # deleted) ---
 # SendGrid's SMTP relay always authenticates with the literal username
@@ -94,21 +109,30 @@ GMAIL_APP_PASSWORD = env("GMAIL_APP_PASSWORD", default="")
 SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="")
 
 # Falls back to Django's console backend (prints the email to the
-# terminal instead of actually sending it) whenever neither Gmail nor
-# SendGrid is configured, so local dev/tests work without needing a
-# real account -- but this means production MUST have GMAIL_ADDRESS/
-# GMAIL_APP_PASSWORD (or SENDGRID_API_KEY) set in Render's env, or
-# verification codes will only ever reach the server log, never a
+# terminal instead of actually sending it) whenever none of the above
+# is configured, so local dev/tests work without needing a real
+# account -- but this means production MUST have BREVO_SMTP_LOGIN/
+# BREVO_SMTP_KEY (or one of the fallbacks below) set in Render's env,
+# or verification codes will only ever reach the server log, never a
 # mother's inbox.
-DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default=GMAIL_ADDRESS or "noreply@kalingapp.local")
+# Deliberately does NOT fall back to BREVO_SMTP_LOGIN: that's an
+# auth-only credential (often an opaque auto-generated alias like
+# b8f6a7001@smtp-relay.brevo.com), not a real address -- it was never
+# verified as a sender in Brevo and Brevo will reject it as the From.
+# GMAIL_ADDRESS is a reasonable fallback because it's an actual address
+# a human owns, and in this project's case is also the one verified as
+# a Brevo sender.
+DEFAULT_FROM_EMAIL = env(
+    "DEFAULT_FROM_EMAIL", default=GMAIL_ADDRESS or "noreply@kalingapp.local",
+)
 
-if GMAIL_ADDRESS and GMAIL_APP_PASSWORD:
+if BREVO_SMTP_LOGIN and BREVO_SMTP_KEY:
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-    EMAIL_HOST = "smtp.gmail.com"
+    EMAIL_HOST = "smtp-relay.brevo.com"
     EMAIL_PORT = 587
     EMAIL_USE_TLS = True
-    EMAIL_HOST_USER = GMAIL_ADDRESS
-    EMAIL_HOST_PASSWORD = GMAIL_APP_PASSWORD
+    EMAIL_HOST_USER = BREVO_SMTP_LOGIN
+    EMAIL_HOST_PASSWORD = BREVO_SMTP_KEY
     # Without this, a blocked/slow outbound connection hangs with no
     # timeout at all -- found the hard way against SendGrid: a stuck
     # send_mail() call held the request open long enough for gunicorn's
@@ -116,6 +140,14 @@ if GMAIL_ADDRESS and GMAIL_APP_PASSWORD:
     # Python's control and can't be caught by a try/except in the view.
     # A short, explicit timeout means a bad connection fails fast, as a
     # normal catchable exception, well within that worker timeout.
+    EMAIL_TIMEOUT = 10
+elif GMAIL_ADDRESS and GMAIL_APP_PASSWORD:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = "smtp.gmail.com"
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = GMAIL_ADDRESS
+    EMAIL_HOST_PASSWORD = GMAIL_APP_PASSWORD
     EMAIL_TIMEOUT = 10
 elif SENDGRID_API_KEY:
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
