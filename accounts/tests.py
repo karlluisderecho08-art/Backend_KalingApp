@@ -86,11 +86,43 @@ class RegistrationAndVerificationTests(APITestCase):
         user = User.objects.get(email="mother@example.com")
         self.assertEqual(user.baby_name, "James")
 
-    def test_register_rejects_duplicate_email(self):
+    def test_register_rejects_duplicate_email_once_verified(self):
         self.register()
+        User.objects.filter(email="mother@example.com").update(is_active=True)
+
         response = self.register()
+
         self.assertEqual(response.status_code, 400)
         self.assertIn("email", response.data)
+
+    def test_register_again_with_an_abandoned_unverified_email_succeeds(self):
+        """
+        Reproduces a real bug: the first registration attempt creates an
+        inactive account and emails a code (RegisterView), but if she
+        never completes verification -- lost the email, the app crashed,
+        whatever -- that email was permanently stuck. User.email is
+        unique, so a second /auth/register/ for the same address was
+        rejected as a duplicate forever, even though nothing was ever
+        actually confirmed. It must instead quietly replace the stale
+        attempt and let her register again for real.
+        """
+        first_response = self.register()
+        first_code = User.objects.get(email="mother@example.com").email_verification_code
+
+        second_response = self.register(mom_name="Rachel Retry")
+
+        self.assertEqual(first_response.status_code, 201)
+        self.assertEqual(second_response.status_code, 201)
+        # Exactly one row for this email -- the stale attempt was
+        # replaced, not left behind as a second row (email is unique).
+        self.assertEqual(User.objects.filter(email="mother@example.com").count(), 1)
+        user = User.objects.get(email="mother@example.com")
+        self.assertEqual(user.mom_name, "Rachel Retry")
+        self.assertFalse(user.is_active)
+        # A fresh code, not the one from the abandoned attempt -- and the
+        # old one must no longer work (see VerifyEmailView's account
+        # lookup, which would otherwise still match).
+        self.assertNotEqual(user.email_verification_code, first_code)
 
     def test_cannot_log_in_before_verifying(self):
         self.register()
