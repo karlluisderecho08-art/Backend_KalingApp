@@ -4,22 +4,21 @@ from rest_framework.test import APITestCase
 
 from accounts.models import User
 
-from .bedrock_client import get_ai_response
+from .gemini_client import get_ai_response
 from .models import ChatSession
 
 
-class BedrockClientFallbackTests(APITestCase):
+class GeminiClientFallbackTests(APITestCase):
     """
     get_ai_response() must never raise and must never actually attempt
-    a real AWS call in the test environment (no credentials are ever
+    a real Gemini call in the test environment (no key is ever
     configured for tests, and none should be needed to run them) --
     every path here should land on the local fallback.
     """
 
-    @patch("chat.bedrock_client.settings")
-    def test_falls_back_locally_with_no_credentials_configured(self, mock_settings):
-        mock_settings.AWS_ACCESS_KEY_ID = ""
-        mock_settings.AWS_SECRET_ACCESS_KEY = ""
+    @patch("chat.gemini_client.settings")
+    def test_falls_back_locally_with_no_key_configured(self, mock_settings):
+        mock_settings.GEMINI_API_KEY = ""
 
         reply, tokens, used_fallback = get_ai_response("What is a good latch?")
 
@@ -27,16 +26,15 @@ class BedrockClientFallbackTests(APITestCase):
         self.assertEqual(tokens, 0)
         self.assertTrue(reply)
 
-    @patch("chat.bedrock_client._get_client")
-    @patch("chat.bedrock_client.settings")
+    @patch("chat.gemini_client._get_client")
+    @patch("chat.gemini_client.settings")
     def test_falls_back_locally_on_a_malformed_response(self, mock_settings, mock_get_client):
-        mock_settings.AWS_ACCESS_KEY_ID = "fake-key-id"
-        mock_settings.AWS_SECRET_ACCESS_KEY = "fake-secret"
-        # A response with no text content anywhere -- e.g. the model
-        # returned only a reasoningContent block -- should be treated
-        # as a failure (raises internally, caught below), not returned
-        # to the mother as an empty reply.
-        mock_get_client.return_value.converse.return_value = {"output": {"message": {"content": []}}}
+        mock_settings.GEMINI_API_KEY = "fake-key"
+        mock_settings.GEMINI_MODEL = "gemini-2.5-flash"
+        # A response with no text content at all should be treated as a
+        # failure (raises internally, caught below), not returned to
+        # the mother as an empty reply.
+        mock_get_client.return_value.models.generate_content.return_value.text = ""
 
         reply, tokens, used_fallback = get_ai_response("What is a good latch?")
 

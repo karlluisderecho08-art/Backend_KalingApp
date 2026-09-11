@@ -2,7 +2,7 @@ from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .bedrock_client import get_ai_response
+from .gemini_client import get_ai_response
 from .guardrail import OFF_TOPIC_RESPONSE, is_breastfeeding_topic
 from .models import ChatMessage, ChatSession
 from .serializers import ChatMessageSerializer, SendMessageSerializer

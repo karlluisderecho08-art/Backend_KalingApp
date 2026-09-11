@@ -52,31 +52,78 @@ AWS_BEDROCK_REGION = env("AWS_BEDROCK_REGION", default="us-east-1")
 # requesting access -- AWS has been known to adjust these.
 AWS_BEDROCK_MODEL_ID = env("AWS_BEDROCK_MODEL_ID", default="us.deepseek.r1-v1:0")
 
-# --- Outgoing email (account verification codes -- see accounts/emails.py) ---
-# SendGrid's SMTP relay always authenticates with the literal username
-# "apikey"; the real secret is the password. Falls back to Django's
-# console backend (prints the email to the terminal instead of actually
-# sending it) whenever no key is configured, so local dev/tests work
-# without needing a real SendGrid account -- but this means production
-# MUST have SENDGRID_API_KEY set in Render's env, or verification codes
-# will only ever reach the server log, never a mother's inbox.
-SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="")
-DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@kalingapp.local")
+# --- Google Gemini (Kali chat) ---
+# Superseded AWS_* above as the real model behind chat -- see
+# chat/gemini_client.py. The Bedrock Marketplace subscription never
+# actually went live (a billing/card decline blocked it), so this moves
+# to Gemini's free tier instead. Left the Bedrock/OpenAI settings above
+# in place rather than deleting them, same reasoning as before: an easy
+# revert if either provider is ever picked back up, not because they're
+# still used.
+#
+# Gemini authenticates with a single API key (like OPENAI_API_KEY did),
+# not a signed request -- generate one at https://aistudio.google.com/apikey.
+# Leave blank to run on local-fallback-only responses, same as an unset
+# OPENAI_API_KEY/AWS_ACCESS_KEY_ID did.
+GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
+GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.6-flash")
 
-if SENDGRID_API_KEY:
+# --- Outgoing email (account verification codes -- see accounts/emails.py) ---
+# Superseded SendGrid below as the real email sender -- SendGrid's free
+# tier runs on a trial that expires (this account's was set to end in
+# October), where Gmail's App Password approach has no trial to run out.
+# Left the SendGrid settings in place rather than deleting them, same
+# reasoning as the other provider swaps in this file: an easy revert.
+#
+# Gmail SMTP needs 2-Step Verification turned on for the sending Google
+# account, then a 16-character "App Password" generated at
+# https://myaccount.google.com/apppasswords -- GMAIL_APP_PASSWORD below
+# is that App Password, NOT the account's normal login password (Google
+# blocks plain-password SMTP login entirely now). Gmail's relay also
+# requires the From address to actually be that same Gmail account (or
+# a verified "Send As" alias on it) -- an arbitrary DEFAULT_FROM_EMAIL
+# will get rejected, unlike SendGrid's separate sender-verification step.
+GMAIL_ADDRESS = env("GMAIL_ADDRESS", default="")
+GMAIL_APP_PASSWORD = env("GMAIL_APP_PASSWORD", default="")
+
+# --- SendGrid (superseded by Gmail above; see chat/bedrock_client.py's
+# NOTE-style comments for why unused settings are left rather than
+# deleted) ---
+# SendGrid's SMTP relay always authenticates with the literal username
+# "apikey"; the real secret is the password.
+SENDGRID_API_KEY = env("SENDGRID_API_KEY", default="")
+
+# Falls back to Django's console backend (prints the email to the
+# terminal instead of actually sending it) whenever neither Gmail nor
+# SendGrid is configured, so local dev/tests work without needing a
+# real account -- but this means production MUST have GMAIL_ADDRESS/
+# GMAIL_APP_PASSWORD (or SENDGRID_API_KEY) set in Render's env, or
+# verification codes will only ever reach the server log, never a
+# mother's inbox.
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default=GMAIL_ADDRESS or "noreply@kalingapp.local")
+
+if GMAIL_ADDRESS and GMAIL_APP_PASSWORD:
+    EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+    EMAIL_HOST = "smtp.gmail.com"
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = GMAIL_ADDRESS
+    EMAIL_HOST_PASSWORD = GMAIL_APP_PASSWORD
+    # Without this, a blocked/slow outbound connection hangs with no
+    # timeout at all -- found the hard way against SendGrid: a stuck
+    # send_mail() call held the request open long enough for gunicorn's
+    # own worker timeout to kill the process, which happens *outside*
+    # Python's control and can't be caught by a try/except in the view.
+    # A short, explicit timeout means a bad connection fails fast, as a
+    # normal catchable exception, well within that worker timeout.
+    EMAIL_TIMEOUT = 10
+elif SENDGRID_API_KEY:
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
     EMAIL_HOST = "smtp.sendgrid.net"
     EMAIL_PORT = 587
     EMAIL_USE_TLS = True
     EMAIL_HOST_USER = "apikey"
     EMAIL_HOST_PASSWORD = SENDGRID_API_KEY
-    # Without this, a blocked/slow outbound connection to SendGrid hangs
-    # with no timeout at all -- found the hard way: a stuck send_mail()
-    # call held the request open long enough for gunicorn's own worker
-    # timeout to kill the process, which happens *outside* Python's
-    # control and can't be caught by a try/except in the view. A short,
-    # explicit timeout means a bad connection fails fast, as a normal
-    # catchable exception, well within that worker timeout.
     EMAIL_TIMEOUT = 10
 else:
     EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
