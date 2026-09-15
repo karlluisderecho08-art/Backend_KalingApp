@@ -1,13 +1,20 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.contrib.auth.hashers import check_password
 from django.core import mail
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .emails import MAX_VERIFICATION_ATTEMPTS, RESEND_COOLDOWN_SECONDS, VERIFICATION_CODE_TTL_MINUTES
-from .models import User
+from .emails import (
+    MAX_VERIFICATION_ATTEMPTS,
+    RESEND_COOLDOWN_SECONDS,
+    VERIFICATION_CODE_TTL_MINUTES,
+    send_verification_email,
+)
+from .models import PendingRegistration, User
+from .serializers import RegisterSerializer
 
 
 class _SynchronousThread:
@@ -60,165 +67,230 @@ class RegistrationAndVerificationTests(APITestCase):
         payload.update(overrides)
         return self.client.post("/auth/register/", payload)
 
-    def test_register_creates_inactive_account_and_emails_a_code(self):
+    def test_register_creates_no_account_only_a_pending_signup(self):
+        """
+        The central guarantee of this flow: signing up must not bring an
+        account into existence. Until the right code comes back, there
+        is nothing in the users table at all.
+        """
         response = self.register()
 
         self.assertEqual(response.status_code, 201)
-        # New contract: no tokens back directly -- just a confirmation
-        # and the email it was sent to. Access/refresh only ever come
-        # from /auth/verify-email/ now.
+        # No tokens back directly -- just a confirmation and the email it
+        # was sent to. Access/refresh only ever come from
+        # /auth/verify-email/ now.
         self.assertNotIn("access", response.data)
         self.assertNotIn("user", response.data)
         self.assertEqual(response.data["email"], "mother@example.com")
 
-        user = User.objects.get(email="mother@example.com")
-        self.assertFalse(user.is_active)
-        self.assertFalse(user.email_verified)
-        self.assertEqual(len(user.email_verification_code), 6)
-        self.assertTrue(user.email_verification_code.isdigit())
+        self.assertFalse(User.objects.filter(email="mother@example.com").exists())
+
+        pending = PendingRegistration.objects.get(email="mother@example.com")
+        self.assertEqual(len(pending.code), 6)
+        self.assertTrue(pending.code.isdigit())
 
         self.assertEqual(len(mail.outbox), 1)
-        self.assertIn(user.email_verification_code, mail.outbox[0].body)
+        self.assertIn(pending.code, mail.outbox[0].body)
         self.assertEqual(mail.outbox[0].to, ["mother@example.com"])
+
+    def test_pending_registration_never_stores_a_plaintext_password(self):
+        self.register()
+        pending = PendingRegistration.objects.get(email="mother@example.com")
+
+        self.assertNotEqual(pending.password, "correct-horse-battery-staple")
+        self.assertNotIn("correct-horse-battery-staple", pending.password)
+        # And it's the real hash, so the chosen password survives intact
+        # through to the account created at verification time.
+        self.assertTrue(check_password("correct-horse-battery-staple", pending.password))
+
+    def test_only_the_email_send_generates_the_code(self):
+        """
+        Regression test. The code used to be generated twice: once when
+        the pending row was created, then again by the send itself --
+        so the code sitting in the database could be replaced moments
+        after /auth/register/ returned, and which one she actually
+        received was a race against a background thread.
+
+        Caught only by exercising the real flow; the rest of this suite
+        misses it because _SynchronousThread makes the send finish
+        before any assertion runs, hiding the window entirely. Asserting
+        the invariant directly (creating a signup issues no code at all)
+        is what keeps it closed.
+        """
+        serializer = RegisterSerializer(data={
+            "email": "mother@example.com",
+            "password": "correct-horse-battery-staple",
+            "mom_name": "Rachel",
+            "baby_name": "James",
+        })
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        pending = serializer.save()
+
+        self.assertEqual(pending.code, "")
+        self.assertIsNone(pending.sent_at)
+
+        send_verification_email(pending)
+
+        pending.refresh_from_db()
+        self.assertEqual(len(pending.code), 6)
+        self.assertIsNotNone(pending.sent_at)
+        self.assertIn(pending.code, mail.outbox[0].body)
 
     def test_register_defaults_blank_baby_name_to_james(self):
         self.register(baby_name="")
-        user = User.objects.get(email="mother@example.com")
-        self.assertEqual(user.baby_name, "James")
+        pending = PendingRegistration.objects.get(email="mother@example.com")
+        self.assertEqual(pending.baby_name, "James")
 
-    def test_register_rejects_duplicate_email_once_verified(self):
-        self.register()
-        User.objects.filter(email="mother@example.com").update(is_active=True)
+    def test_register_rejects_an_email_that_already_has_an_account(self):
+        User.objects.create_user(email="mother@example.com", password="x", is_active=True)
 
         response = self.register()
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("email", response.data)
 
-    def test_register_again_with_an_abandoned_unverified_email_succeeds(self):
+    def test_a_legacy_unverified_account_does_not_lock_the_address_out(self):
         """
-        Reproduces a real bug: the first registration attempt creates an
-        inactive account and emails a code (RegisterView), but if she
-        never completes verification -- lost the email, the app crashed,
-        whatever -- that email was permanently stuck. User.email is
-        unique, so a second /auth/register/ for the same address was
-        rejected as a duplicate forever, even though nothing was ever
-        actually confirmed. It must instead quietly replace the stale
-        attempt and let her register again for real.
+        Signups made before this flow existed left inactive User rows
+        that can never be verified now -- nothing reads them any more.
+        Those addresses must still be registerable, or their owners are
+        permanently locked out of their own email. The stale row is
+        cleared when the replacement account is created.
+        """
+        User.objects.create_user(email="mother@example.com", password="x", is_active=False)
+
+        response = self.register()
+        self.assertEqual(response.status_code, 201)
+
+        code = PendingRegistration.objects.get(email="mother@example.com").code
+        verify = self.client.post("/auth/verify-email/", {"email": "mother@example.com", "code": code})
+
+        self.assertEqual(verify.status_code, 200)
+        # Exactly one account, and it's the new, usable one.
+        self.assertEqual(User.objects.filter(email="mother@example.com").count(), 1)
+        user = User.objects.get(email="mother@example.com")
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password("correct-horse-battery-staple"))
+
+    def test_register_again_before_verifying_replaces_the_pending_signup(self):
+        """
+        An abandoned attempt (she lost the email, the app closed, she
+        typo'd) must never lock an address out permanently. The second
+        attempt replaces the first rather than being rejected as a
+        duplicate -- and carries a fresh code, so the abandoned one
+        can't still be used.
         """
         first_response = self.register()
-        first_code = User.objects.get(email="mother@example.com").email_verification_code
+        first_code = PendingRegistration.objects.get(email="mother@example.com").code
 
         second_response = self.register(mom_name="Rachel Retry")
 
         self.assertEqual(first_response.status_code, 201)
         self.assertEqual(second_response.status_code, 201)
-        # Exactly one row for this email -- the stale attempt was
-        # replaced, not left behind as a second row (email is unique).
-        self.assertEqual(User.objects.filter(email="mother@example.com").count(), 1)
-        user = User.objects.get(email="mother@example.com")
-        self.assertEqual(user.mom_name, "Rachel Retry")
-        self.assertFalse(user.is_active)
-        # A fresh code, not the one from the abandoned attempt -- and the
-        # old one must no longer work (see VerifyEmailView's account
-        # lookup, which would otherwise still match).
-        self.assertNotEqual(user.email_verification_code, first_code)
+        self.assertEqual(PendingRegistration.objects.filter(email="mother@example.com").count(), 1)
+
+        pending = PendingRegistration.objects.get(email="mother@example.com")
+        self.assertEqual(pending.mom_name, "Rachel Retry")
+        self.assertNotEqual(pending.code, first_code)
+        # Still no account -- retrying a signup doesn't create one either.
+        self.assertFalse(User.objects.filter(email="mother@example.com").exists())
 
     def test_cannot_log_in_before_verifying(self):
         self.register()
         response = self.client.post("/auth/login/", {
             "email": "mother@example.com", "password": "correct-horse-battery-staple",
         })
-        # simplejwt's TokenObtainPairView refuses an is_active=False
-        # account the same way it refuses a wrong password -- both look
-        # like "no active account found" to the client.
+        # There is no account to authenticate against at all yet, which
+        # looks the same to the client as a wrong password.
         self.assertEqual(response.status_code, 401)
 
-    def test_verify_with_correct_code_activates_and_returns_tokens(self):
+    def test_verify_with_correct_code_creates_the_account_and_returns_tokens(self):
         self.register()
-        user = User.objects.get(email="mother@example.com")
-        code = user.email_verification_code
+        code = PendingRegistration.objects.get(email="mother@example.com").code
 
-        response = self.client.post("/auth/verify-email/", {"email": user.email, "code": code})
+        response = self.client.post("/auth/verify-email/", {"email": "mother@example.com", "code": code})
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("access", response.data)
         self.assertIn("refresh", response.data)
         self.assertEqual(response.data["user"]["email"], "mother@example.com")
 
-        user.refresh_from_db()
+        # The account exists only now, and the pending row is consumed.
+        user = User.objects.get(email="mother@example.com")
         self.assertTrue(user.is_active)
         self.assertTrue(user.email_verified)
-        self.assertEqual(user.email_verification_code, "")
-        self.assertEqual(user.email_verification_attempts, 0)
+        self.assertEqual(user.mom_name, "Rachel")
+        self.assertEqual(user.baby_name, "James")
+        self.assertFalse(PendingRegistration.objects.filter(email="mother@example.com").exists())
 
-        # And now login works.
+        # And the password she chose at signup still works.
         login = self.client.post("/auth/login/", {
             "email": "mother@example.com", "password": "correct-horse-battery-staple",
         })
         self.assertEqual(login.status_code, 200)
 
-    def test_verify_with_wrong_code_increments_attempts_and_fails(self):
+    def test_verify_with_wrong_code_increments_attempts_and_creates_nothing(self):
         self.register()
-        user = User.objects.get(email="mother@example.com")
 
-        response = self.client.post("/auth/verify-email/", {"email": user.email, "code": "000000"})
+        response = self.client.post("/auth/verify-email/", {"email": "mother@example.com", "code": "000000"})
 
         self.assertEqual(response.status_code, 400)
-        user.refresh_from_db()
-        self.assertFalse(user.is_active)
-        self.assertEqual(user.email_verification_attempts, 1)
+        self.assertEqual(PendingRegistration.objects.get(email="mother@example.com").attempts, 1)
+        self.assertFalse(User.objects.filter(email="mother@example.com").exists())
 
     def test_verify_locks_out_after_max_attempts(self):
         self.register()
-        user = User.objects.get(email="mother@example.com")
 
         for _ in range(MAX_VERIFICATION_ATTEMPTS):
-            self.client.post("/auth/verify-email/", {"email": user.email, "code": "000000"})
+            self.client.post("/auth/verify-email/", {"email": "mother@example.com", "code": "000000"})
 
         # The (MAX_VERIFICATION_ATTEMPTS + 1)th try is rejected on attempt
         # count alone, even with the real code -- can't be brute-forced
         # back in with a lucky guess after the cap is hit.
         response = self.client.post("/auth/verify-email/", {
-            "email": user.email, "code": user.email_verification_code,
+            "email": "mother@example.com",
+            "code": PendingRegistration.objects.get(email="mother@example.com").code,
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn("Too many", response.data["detail"])
+        self.assertFalse(User.objects.filter(email="mother@example.com").exists())
 
     def test_verify_rejects_expired_code(self):
         self.register()
-        user = User.objects.get(email="mother@example.com")
-        user.email_verification_sent_at = timezone.now() - timedelta(minutes=VERIFICATION_CODE_TTL_MINUTES + 1)
-        user.save(update_fields=["email_verification_sent_at"])
+        pending = PendingRegistration.objects.get(email="mother@example.com")
+        pending.sent_at = timezone.now() - timedelta(minutes=VERIFICATION_CODE_TTL_MINUTES + 1)
+        pending.save(update_fields=["sent_at"])
 
         response = self.client.post("/auth/verify-email/", {
-            "email": user.email, "code": user.email_verification_code,
+            "email": pending.email, "code": pending.code,
         })
         self.assertEqual(response.status_code, 400)
         self.assertIn("expired", response.data["detail"])
+        self.assertFalse(User.objects.filter(email="mother@example.com").exists())
 
     def test_resend_respects_cooldown(self):
         self.register()
-        user = User.objects.get(email="mother@example.com")
-        first_code = user.email_verification_code
+        pending = PendingRegistration.objects.get(email="mother@example.com")
+        first_code = pending.code
 
         # Immediately resending should be a no-op while inside the cooldown.
-        self.client.post("/auth/resend-verification/", {"email": user.email})
-        user.refresh_from_db()
-        self.assertEqual(user.email_verification_code, first_code)
+        self.client.post("/auth/resend-verification/", {"email": pending.email})
+
+        pending.refresh_from_db()
+        self.assertEqual(pending.code, first_code)
         self.assertEqual(len(mail.outbox), 1)  # only the original registration email
 
     def test_resend_after_cooldown_issues_a_new_code(self):
         self.register()
-        user = User.objects.get(email="mother@example.com")
-        first_code = user.email_verification_code
-        user.email_verification_sent_at = timezone.now() - timedelta(seconds=RESEND_COOLDOWN_SECONDS + 1)
-        user.save(update_fields=["email_verification_sent_at"])
+        pending = PendingRegistration.objects.get(email="mother@example.com")
+        first_code = pending.code
+        pending.sent_at = timezone.now() - timedelta(seconds=RESEND_COOLDOWN_SECONDS + 1)
+        pending.save(update_fields=["sent_at"])
 
-        self.client.post("/auth/resend-verification/", {"email": user.email})
+        self.client.post("/auth/resend-verification/", {"email": pending.email})
 
-        user.refresh_from_db()
-        self.assertNotEqual(user.email_verification_code, first_code)
+        pending.refresh_from_db()
+        self.assertNotEqual(pending.code, first_code)
         self.assertEqual(len(mail.outbox), 2)
 
     def test_resend_does_not_reveal_whether_an_email_exists(self):
@@ -233,27 +305,32 @@ class RegistrationAndVerificationTests(APITestCase):
         live backend: a broken SendGrid config (bad credentials, an
         unverified sender identity, or just a slow/blocked connection)
         was crashing -- or in one case, simply hanging -- /auth/register/,
-        even though the account had already been created. The email is
+        even though the signup had already been recorded. The email is
         now sent on a background thread specifically so a failure or a
         slow connection there can never affect this response at all;
-        the account must still be created and the response must still
-        be the normal success shape, immediately.
+        the pending signup must still be saved and the response must
+        still be the normal success shape, immediately.
         """
         response = self.register()
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["email"], "mother@example.com")
         self.assertIn("Check your email", response.data["detail"])
-        self.assertTrue(User.objects.filter(email="mother@example.com").exists())
+        self.assertTrue(PendingRegistration.objects.filter(email="mother@example.com").exists())
         mock_send.assert_called_once()
 
     @patch("accounts.views.send_verification_email", side_effect=Exception("SMTP rejected: sender not verified"))
     def test_resend_survives_an_email_sending_failure(self, mock_send):
-        user = User.objects.create_user(email="mother@example.com", password="x", is_active=False)
+        self.register()
+        mock_send.reset_mock()  # ignore the failed send from registration itself
 
-        response = self.client.post("/auth/resend-verification/", {"email": user.email})
+        response = self.client.post("/auth/resend-verification/", {"email": "mother@example.com"})
 
         self.assertEqual(response.status_code, 200)
+        # Attempted, and the failure was absorbed rather than surfacing.
+        # Note this isn't blocked by the resend cooldown: the send during
+        # registration failed, so sent_at was never set, and a first code
+        # that never actually went out should be immediately retryable.
         mock_send.assert_called_once()
 
 

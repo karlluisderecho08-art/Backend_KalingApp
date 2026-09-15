@@ -19,7 +19,7 @@ from .emails import (
     send_password_reset_email,
     send_verification_email,
 )
-from .models import User
+from .models import PendingRegistration, User
 from .serializers import (
     LocationConsentSerializer,
     RegisterSerializer,
@@ -31,7 +31,7 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
-def _send_verification_email_in_background(user):
+def _send_verification_email_in_background(pending):
     """
     Fire-and-forget wrapper around send_verification_email(), run on a
     background thread so a slow or hung SMTP connection can never make
@@ -53,7 +53,7 @@ def _send_verification_email_in_background(user):
     project's current scale, not a claim that this is the fully robust
     long-term answer.
     """
-    _send_in_background(send_verification_email, user, "verification")
+    _send_in_background(send_verification_email, pending, "verification")
 
 
 def _send_password_reset_email_in_background(user):
@@ -61,7 +61,7 @@ def _send_password_reset_email_in_background(user):
     _send_in_background(send_password_reset_email, user, "password_reset")
 
 
-def _send_in_background(send_func, user, kind):
+def _send_in_background(send_func, recipient, kind):
     """
     Runs one of the send_*_email() functions and records the outcome in
     the audit log, not just the Python logger.
@@ -72,25 +72,35 @@ def _send_in_background(send_func, user, kind):
     awkward to read after the fact and impossible to correlate with a
     specific mother's signup. Days were lost to "the code says it sent,
     she says nothing arrived" with no way to tell which of the two was
-    true. An audit row is queryable next to the account it belongs to,
-    and says plainly which SMTP host was actually used -- the thing that
-    matters most here, since which provider is live depends entirely on
-    which env vars happen to be set on the server (see settings/base.py).
+    true. An audit row is queryable, and says plainly which host was
+    actually used -- the thing that matters most here, since which
+    provider is live depends entirely on which env vars happen to be set
+    on the server (see settings/base.py).
 
-    Records the exception type and message on failure, and the SMTP host
-    on success. Never the credentials: EMAIL_HOST_PASSWORD is not
-    touched here, and the exception text from smtplib carries a status
-    code and server reply, not the password that was offered.
+    `recipient` is a User for password resets but a PendingRegistration
+    for signup verification, where no account exists yet -- hence the
+    actor below being None in that case, with the address recorded in
+    the target text instead. AuditLogEntry.actor is a FK to User and
+    documents null as "the system did it, not a person", which is
+    exactly right for a signup that hasn't become anyone yet.
+
+    Records the exception type and message on failure, and the host on
+    success. Never the credentials: EMAIL_HOST_PASSWORD is not touched
+    here, and the exception text from smtplib carries a status code and
+    server reply, not the password that was offered.
     """
     host = getattr(settings, "EMAIL_HOST", "") or settings.EMAIL_BACKEND
+    actor = recipient if isinstance(recipient, User) else None
+    who = f" for {recipient.email}" if actor is None else ""
+
     try:
-        send_func(user)
+        send_func(recipient)
     except Exception as exc:
-        logger.exception("Failed to send %s email to %s", kind, user.email)
+        logger.exception("Failed to send %s email to %s", kind, recipient.email)
         detail = f"{type(exc).__name__}: {exc}"
-        log_action(user, f"email.{kind}_failed", f"via {host} -- {detail}"[:255])
+        log_action(actor, f"email.{kind}_failed", f"via {host}{who} -- {detail}"[:255])
     else:
-        log_action(user, f"email.{kind}_sent", f"via {host}"[:255])
+        log_action(actor, f"email.{kind}_sent", f"via {host}{who}"[:255])
 
 
 class IsFacilityStaff(permissions.BasePermission):
@@ -114,34 +124,34 @@ class RegisterView(generics.CreateAPIView):
     """
     POST /auth/register/  {email, password, mom_name, baby_name}
 
-    No longer hands back JWTs directly: the account is created with
-    is_active=False and a 6-digit code is emailed to her. is_active=False
-    means TokenObtainPairView (login) and JWTAuthentication both refuse
-    this account until VerifyEmailView flips it back on -- Django's
-    ModelBackend and simplejwt's JWTAuthentication.get_user() both check
-    is_active on their own, so nothing else has to police this. The
-    client now shows an "enter your code" screen instead of logging her
-    straight in; see VerifyEmailView for what happens once she does.
+    Creates no account. The signup is held as a PendingRegistration and
+    a 6-digit code is emailed; the User row is only created once
+    VerifyEmailView sees that code come back correct. Until then there
+    is nothing to log into, nothing occupying the users table, and
+    nothing to clean up if she never finishes.
+
+    Response shape is unchanged from when this did create an inactive
+    account, so the mobile client needs no changes: it still shows the
+    "enter your code" screen next.
     """
 
-    queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save(is_active=False)
+        pending = serializer.save()
 
-        # Fire-and-forget: the account row above is already committed,
+        # Fire-and-forget: the pending row above is already committed,
         # so the response below is accurate regardless of how the send
         # itself turns out. See _send_verification_email_in_background's
         # docstring for why this can't just be a try/except here.
-        threading.Thread(target=_send_verification_email_in_background, args=(user,), daemon=True).start()
+        threading.Thread(target=_send_verification_email_in_background, args=(pending,), daemon=True).start()
 
         return Response({
             "detail": "Account created. Check your email for a 6-digit verification code.",
-            "email": user.email,
+            "email": pending.email,
         }, status=201)
 
 
@@ -149,11 +159,11 @@ class VerifyEmailView(APIView):
     """
     POST /auth/verify-email/  {email, code}
 
-    Confirms the code RegisterView emailed, flips is_active and
-    email_verified to True, then hands back the same {user, access,
-    refresh} shape RegisterView used to return directly -- so the
-    Kotlin app can log her in immediately once she's verified, instead
-    of sending her back to Login to type her password again.
+    Where the account actually gets created. Confirms the code
+    RegisterView emailed, turns the PendingRegistration into a real
+    User, and hands back {user, access, refresh} so the Kotlin app can
+    log her straight in rather than sending her to Login to retype the
+    password she just chose.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -163,31 +173,30 @@ class VerifyEmailView(APIView):
         code = (request.data.get("code") or "").strip()
 
         try:
-            user = User.objects.get(email__iexact=email, is_active=False)
-        except User.DoesNotExist:
+            pending = PendingRegistration.objects.get(email__iexact=email)
+        except PendingRegistration.DoesNotExist:
             return Response({"detail": "Invalid email, or this account is already verified."}, status=400)
 
+        # No sent_at means the first send hasn't completed yet (it runs on
+        # a background thread), so there is no code to match against --
+        # treated the same as expired rather than letting an empty code
+        # compare equal to an empty submission.
         if (
-            not user.email_verification_sent_at
-            or timezone.now() - user.email_verification_sent_at > timedelta(minutes=VERIFICATION_CODE_TTL_MINUTES)
+            not pending.sent_at
+            or timezone.now() - pending.sent_at > timedelta(minutes=VERIFICATION_CODE_TTL_MINUTES)
         ):
             return Response({"detail": "This code has expired. Please request a new one."}, status=400)
 
-        if user.email_verification_attempts >= MAX_VERIFICATION_ATTEMPTS:
+        if pending.attempts >= MAX_VERIFICATION_ATTEMPTS:
             return Response({"detail": "Too many incorrect attempts. Please request a new code."}, status=400)
 
-        if not code or not user.email_verification_code or code != user.email_verification_code:
-            user.email_verification_attempts += 1
-            user.save(update_fields=["email_verification_attempts"])
+        if not code or not pending.code or code != pending.code:
+            pending.attempts += 1
+            pending.save(update_fields=["attempts"])
             return Response({"detail": "Incorrect verification code."}, status=400)
 
-        user.is_active = True
-        user.email_verified = True
-        user.email_verification_code = ""
-        user.email_verification_attempts = 0
-        user.save(update_fields=[
-            "is_active", "email_verified", "email_verification_code", "email_verification_attempts",
-        ])
+        user = self._create_account(pending)
+        pending.delete()
 
         log_action(user, "account.email_verified", f"User:{user.id}")
 
@@ -196,14 +205,38 @@ class VerifyEmailView(APIView):
             **_tokens_for(user),
         })
 
+    @staticmethod
+    def _create_account(pending):
+        # Clears out any leftover inactive row for this address. Under
+        # the current design nothing creates one, but accounts from
+        # before this flow existed (signups that were stored as
+        # is_active=False users and never verified) are still out there,
+        # and they'd otherwise collide with User.email's unique
+        # constraint and make those addresses permanently unusable.
+        User.objects.filter(email__iexact=pending.email, is_active=False).delete()
+
+        user = User(
+            email=pending.email,
+            mom_name=pending.mom_name,
+            baby_name=pending.baby_name,
+            is_active=True,
+            email_verified=True,
+        )
+        # Assigned directly, not via set_password(): the value was
+        # already hashed at signup (RegisterSerializer), and re-hashing
+        # a hash would lock her out of the password she actually chose.
+        user.password = pending.password
+        user.save()
+        return user
+
 
 class ResendVerificationView(APIView):
     """
     POST /auth/resend-verification/  {email}
 
-    Same response whether the account doesn't exist, is already
-    verified, or a code really was just sent -- deliberately doesn't
-    reveal which emails have KalingApp accounts.
+    Same response whether there's no pending signup for that address,
+    it's already been verified, or a code really was just sent --
+    deliberately doesn't reveal which emails have KalingApp accounts.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -213,17 +246,17 @@ class ResendVerificationView(APIView):
         generic_response = Response({"detail": "If that email needs verifying, a new code has been sent."})
 
         try:
-            user = User.objects.get(email__iexact=email, is_active=False)
-        except User.DoesNotExist:
+            pending = PendingRegistration.objects.get(email__iexact=email)
+        except PendingRegistration.DoesNotExist:
             return generic_response
 
-        if (
-            user.email_verification_sent_at
-            and timezone.now() - user.email_verification_sent_at < timedelta(seconds=RESEND_COOLDOWN_SECONDS)
-        ):
+        # A pending signup whose first send hasn't landed yet (sent_at is
+        # null) is not inside any cooldown -- resending is exactly what
+        # should happen if that first attempt failed.
+        if pending.sent_at and timezone.now() - pending.sent_at < timedelta(seconds=RESEND_COOLDOWN_SECONDS):
             return generic_response
 
-        threading.Thread(target=_send_verification_email_in_background, args=(user,), daemon=True).start()
+        threading.Thread(target=_send_verification_email_in_background, args=(pending,), daemon=True).start()
         return generic_response
 
 

@@ -1,6 +1,7 @@
+from django.contrib.auth.hashers import make_password
 from rest_framework import serializers
 
-from .models import User
+from .models import PendingRegistration, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -49,49 +50,63 @@ class UpdateProfileSerializer(serializers.ModelSerializer):
         extra_kwargs = {field: {"required": False} for field in fields}
 
 
-class RegisterSerializer(serializers.ModelSerializer):
+class RegisterSerializer(serializers.Serializer):
+    """
+    Creates a PendingRegistration, NOT a User.
+
+    Signing up no longer brings an account into existence -- that only
+    happens once the emailed code comes back correct (see
+    VerifyEmailView). A plain Serializer rather than a ModelSerializer
+    for exactly that reason: there is no model instance being built
+    from these fields in the usual one-to-one way.
+    """
+
+    email = serializers.EmailField()
     # write_only: accepted on the way in, never echoed back in a response.
     password = serializers.CharField(write_only=True, min_length=8)
-    # Plain EmailField, not the model field: ModelSerializer would
-    # otherwise auto-attach a UniqueValidator from User.email's
-    # unique=True, which blocks re-registering an email that only ever
-    # got as far as an abandoned/never-verified attempt (she lost the
-    # code, the app crashed before she entered it, etc.) -- that email
-    # would be permanently stuck, unable to ever register again, even
-    # though nothing about it was ever actually confirmed. validate_email
-    # below enforces the uniqueness that actually matters: no second
-    # registration against an email that's already genuinely verified.
-    email = serializers.EmailField()
-
-    class Meta:
-        model = User
-        fields = ["email", "password", "mom_name", "baby_name"]
+    mom_name = serializers.CharField(required=False, allow_blank=True, max_length=150)
+    baby_name = serializers.CharField(required=False, allow_blank=True, max_length=150)
 
     def validate_email(self, value):
         value = value.strip().lower()
+        # is_active=True specifically, not just "a row exists". Under
+        # this flow every account is created verified and active, so for
+        # new data the two are the same -- but signups made before it
+        # existed were stored as inactive User rows that can never be
+        # verified now (nothing looks at them any more). Rejecting on
+        # those would permanently lock their owners out of their own
+        # addresses; VerifyEmailView clears them instead when the
+        # replacement account is created.
         if User.objects.filter(email__iexact=value, is_active=True).exists():
             raise serializers.ValidationError("An account with this email already exists.")
         return value
 
     def create(self, validated_data):
-        # Same default the Kotlin RegisterScreen applies today: an empty
-        # baby name becomes "James", not a blank string in the DB.
-        validated_data.setdefault("baby_name", "")
-        if not validated_data["baby_name"]:
-            validated_data["baby_name"] = "James"
+        email = validated_data["email"]
+        # Same default the Kotlin RegisterScreen applies: an empty baby
+        # name becomes "James", not a blank string.
+        baby_name = validated_data.get("baby_name") or "James"
 
-        # Clear out any stale, never-verified row for this email (see the
-        # email field comment above) so this attempt can start fresh --
-        # a fresh row means a fresh code/attempt-count too, not leftover
-        # state from whatever went wrong the first time.
-        User.objects.filter(email__iexact=validated_data["email"], is_active=False).delete()
+        # A previous attempt for this address may still be sitting here
+        # unverified (she lost the code, the app closed before she
+        # entered it, she typo'd and came back). Replacing it rather
+        # than erroring means an abandoned attempt can never lock an
+        # email address out permanently -- and the replacement carries a
+        # fresh code and attempt count, not leftover state from whatever
+        # went wrong the first time.
+        PendingRegistration.objects.filter(email__iexact=email).delete()
 
-        password = validated_data.pop("password")
-        # create_user (not create()) is what actually hashes the password --
-        # this is the whole reason a password field needs a manager method
-        # instead of just being another column.
-        user = User.objects.create_user(password=password, **validated_data)
-        return user
+        # No code or sent_at here on purpose -- send_verification_email()
+        # owns those, and generating one in both places meant the row's
+        # code could be replaced moments after this returned.
+        return PendingRegistration.objects.create(
+            email=email,
+            # Hashed here, at the boundary -- the plaintext never reaches
+            # the database, exactly as if this were a real account.
+            password=make_password(validated_data["password"]),
+            mom_name=validated_data.get("mom_name", ""),
+            baby_name=baby_name,
+        )
 
 
 class StaffUserListSerializer(serializers.ModelSerializer):
