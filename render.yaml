@@ -56,11 +56,20 @@ services:
       # Render's server log, which a mother can never see) -- see
       # config/settings/base.py.
       #
-      # BREVO_SMTP_LOGIN is the Brevo account's email; BREVO_SMTP_KEY is
-      # the dedicated SMTP key from Brevo's dashboard (SMTP & API -> SMTP
-      # tab), NOT the account login password. DEFAULT_FROM_EMAIL must be
-      # a sender verified under Brevo's Senders & IP -> Senders page, or
-      # Brevo will reject the send.
+      # BREVO_API_KEY is the one that matters here: Render blocks
+      # outbound SMTP (ports 25/465/587), confirmed by a real send
+      # attempt from this service recording "OSError: [Errno 101]
+      # Network is unreachable" against smtp.gmail.com. So every
+      # SMTP-based option below is dead on arrival in production
+      # regardless of provider, and email goes out over HTTPS instead
+      # (see core/email_backends.py). This is a DIFFERENT credential
+      # from BREVO_SMTP_KEY -- it starts with "xkeysib-" and lives under
+      # Brevo's SMTP & API -> API keys tab. DEFAULT_FROM_EMAIL must
+      # still be an address verified under Senders & IP -> Senders.
+      - key: BREVO_API_KEY
+        sync: false
+      # SMTP credentials, kept only because they're harmless and useful
+      # for local dev, where outbound SMTP isn't blocked.
       - key: BREVO_SMTP_LOGIN
         sync: false
       - key: BREVO_SMTP_KEY

@@ -77,9 +77,28 @@ GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
 GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.5-flash-lite")
 
 # --- Outgoing email (account verification codes -- see accounts/emails.py) ---
-# Gmail is tried FIRST, ahead of Brevo below, which is the opposite of
-# what this file originally did. Reason, found the hard way: Brevo's
-# SMTP relay rejects this account's credentials outright ("535 5.7.8
+# BREVO_API_KEY is the one that actually works in production, and it's
+# checked first below. Everything after it speaks SMTP, which the live
+# host blocks outright: a real send attempt from the server recorded
+#
+#     email.verification_failed -- via smtp.gmail.com
+#     -- OSError: [Errno 101] Network is unreachable
+#
+# i.e. outbound ports 25/465/587 are closed (standard anti-spam posture
+# on free hosting tiers). That is provider-independent -- Gmail, Brevo
+# and SendGrid all fail the same way before their servers are ever
+# reached -- which is why swapping SMTP providers never fixed anything,
+# and why identical code sent fine from a laptop and silently nothing
+# from the server. The API key path goes over HTTPS/443 instead; see
+# core/email_backends.py. This is a *different* credential from
+# BREVO_SMTP_KEY: it starts with "xkeysib-" and lives under Brevo's
+# SMTP & API -> API keys tab.
+BREVO_API_KEY = env("BREVO_API_KEY", default="")
+
+# --- SMTP fallbacks (kept for local dev, where SMTP isn't blocked) ---
+# Gmail is tried ahead of Brevo below, which is the opposite of what
+# this file originally did. Reason, found the hard way: Brevo's SMTP
+# relay rejects this account's credentials outright ("535 5.7.8
 # Authentication failed") and has done so consistently across several
 # days, two freshly-generated SMTP keys, and both accepted username
 # forms -- with the byte-for-byte AUTH payload verified against what
@@ -88,11 +107,11 @@ GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.5-flash-lite")
 #
 # That matters more than it looks: provider selection here is a plain
 # if/elif chain resolved once at import, with no runtime failover. So
-# while Brevo sat first, merely HAVING BREVO_SMTP_* set in Render's env
-# silently killed every outgoing email -- the send would fail auth and
-# there was no fallback to Gmail at send time. Ordering Gmail first
-# means a leftover/half-finished Brevo config can't take the whole
-# email system down with it.
+# while Brevo's SMTP sat first, merely HAVING BREVO_SMTP_* set in the
+# server env silently killed every outgoing email -- the send would
+# fail auth and there was no fallback to Gmail at send time. Ordering
+# Gmail first means a leftover/half-finished Brevo SMTP config can't
+# take the whole email system down with it.
 #
 # Gmail SMTP needs 2-Step Verification turned on for the sending Google
 # account, then a 16-character "App Password" generated at
@@ -140,7 +159,12 @@ DEFAULT_FROM_EMAIL = env(
     "DEFAULT_FROM_EMAIL", default=GMAIL_ADDRESS or "noreply@kalingapp.local",
 )
 
-if GMAIL_ADDRESS and GMAIL_APP_PASSWORD:
+if BREVO_API_KEY:
+    # HTTPS, not SMTP -- the only one of these that can actually reach
+    # the outside world from the live host. See the note above.
+    EMAIL_BACKEND = "core.email_backends.BrevoApiEmailBackend"
+    EMAIL_HOST = "api.brevo.com"  # informational: names the transport in audit rows
+elif GMAIL_ADDRESS and GMAIL_APP_PASSWORD:
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
     EMAIL_HOST = "smtp.gmail.com"
     EMAIL_PORT = 587
