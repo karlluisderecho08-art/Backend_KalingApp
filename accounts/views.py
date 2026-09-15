@@ -2,6 +2,7 @@ import logging
 import threading
 from datetime import timedelta
 
+from django.conf import settings
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
@@ -52,18 +53,44 @@ def _send_verification_email_in_background(user):
     project's current scale, not a claim that this is the fully robust
     long-term answer.
     """
-    try:
-        send_verification_email(user)
-    except Exception:
-        logger.exception("Failed to send verification email to %s", user.email)
+    _send_in_background(send_verification_email, user, "verification")
 
 
 def _send_password_reset_email_in_background(user):
     """Same fire-and-forget reasoning as _send_verification_email_in_background above."""
+    _send_in_background(send_password_reset_email, user, "password_reset")
+
+
+def _send_in_background(send_func, user, kind):
+    """
+    Runs one of the send_*_email() functions and records the outcome in
+    the audit log, not just the Python logger.
+
+    The logger alone turned out to be nearly useless in practice: these
+    sends happen on a background thread in a hosted environment, so a
+    failure only ever reached the platform's own log stream, which is
+    awkward to read after the fact and impossible to correlate with a
+    specific mother's signup. Days were lost to "the code says it sent,
+    she says nothing arrived" with no way to tell which of the two was
+    true. An audit row is queryable next to the account it belongs to,
+    and says plainly which SMTP host was actually used -- the thing that
+    matters most here, since which provider is live depends entirely on
+    which env vars happen to be set on the server (see settings/base.py).
+
+    Records the exception type and message on failure, and the SMTP host
+    on success. Never the credentials: EMAIL_HOST_PASSWORD is not
+    touched here, and the exception text from smtplib carries a status
+    code and server reply, not the password that was offered.
+    """
+    host = getattr(settings, "EMAIL_HOST", "") or settings.EMAIL_BACKEND
     try:
-        send_password_reset_email(user)
-    except Exception:
-        logger.exception("Failed to send password reset email to %s", user.email)
+        send_func(user)
+    except Exception as exc:
+        logger.exception("Failed to send %s email to %s", kind, user.email)
+        detail = f"{type(exc).__name__}: {exc}"
+        log_action(user, f"email.{kind}_failed", f"via {host} -- {detail}"[:255])
+    else:
+        log_action(user, f"email.{kind}_sent", f"via {host}"[:255])
 
 
 class IsFacilityStaff(permissions.BasePermission):
