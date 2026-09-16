@@ -366,6 +366,37 @@ class AuthThrottlingTests(ThrottleIsolatedTestCase):
     or fail depending on what ran before them.
     """
 
+    def test_throttling_survives_changing_proxy_hops(self):
+        """
+        Regression test for a limit that existed but never fired.
+
+        DRF keys anonymous clients on the whole X-Forwarded-For chain,
+        and behind this host's edge the proxy hops in that chain change
+        between requests. Every request therefore landed in its own
+        bucket and counted 1, so no number of attempts ever hit the
+        limit -- confirmed in production, where 14 rapid logins produced
+        14 separate counters.
+
+        Nothing in the suite caught it because the test client sends no
+        X-Forwarded-For at all, falling through to a stable REMOTE_ADDR.
+        So this sends one: same client, different proxy path each time,
+        exactly as the real edge does.
+        """
+        User.objects.create_user(email="mother@example.com", password="the-real-password", is_active=True)
+
+        statuses = []
+        for i in range(12):
+            statuses.append(
+                self.client.post(
+                    "/auth/login/",
+                    {"email": "mother@example.com", "password": f"guess-{i}"},
+                    # Same originating client; the hops behind it churn.
+                    HTTP_X_FORWARDED_FOR=f"203.0.113.7, 104.23.160.{i}, 10.28.132.{i}",
+                ).status_code
+            )
+
+        self.assertIn(429, statuses)
+
     def test_login_stops_accepting_unlimited_password_guesses(self):
         User.objects.create_user(email="mother@example.com", password="the-real-password", is_active=True)
 

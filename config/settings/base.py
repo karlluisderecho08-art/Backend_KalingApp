@@ -349,7 +349,7 @@ REST_FRAMEWORK = {
     # generously enough that no real mother meets them -- these are
     # blunt abuse limits, not usage quotas.
     "DEFAULT_THROTTLE_CLASSES": (
-        "rest_framework.throttling.AnonRateThrottle",
+        "core.throttling.ClientIPAnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
     ),
     "DEFAULT_THROTTLE_RATES": {

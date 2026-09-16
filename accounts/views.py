@@ -8,12 +8,12 @@ from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.audit import log_action
+from core.throttling import ClientIPScopedRateThrottle
 
 from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
@@ -134,7 +134,7 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
     """
 
     throttle_scope = "login"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ClientIPScopedRateThrottle]
 
 
 class RegisterView(generics.CreateAPIView):
@@ -155,7 +155,7 @@ class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
     throttle_scope = "register"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ClientIPScopedRateThrottle]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -187,7 +187,7 @@ class VerifyEmailView(APIView):
 
     permission_classes = [permissions.AllowAny]
     throttle_scope = "verify"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ClientIPScopedRateThrottle]
 
     def post(self, request):
         email = (request.data.get("email") or "").strip().lower()
@@ -262,7 +262,7 @@ class ResendVerificationView(APIView):
 
     permission_classes = [permissions.AllowAny]
     throttle_scope = "resend"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ClientIPScopedRateThrottle]
 
     def post(self, request):
         email = (request.data.get("email") or "").strip().lower()
@@ -298,7 +298,7 @@ class ForgotPasswordView(APIView):
 
     permission_classes = [permissions.AllowAny]
     throttle_scope = "resend"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ClientIPScopedRateThrottle]
 
     def post(self, request):
         email = (request.data.get("email") or "").strip().lower()
@@ -332,7 +332,7 @@ class ResetPasswordView(APIView):
 
     permission_classes = [permissions.AllowAny]
     throttle_scope = "verify"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ClientIPScopedRateThrottle]
 
     def post(self, request):
         email = (request.data.get("email") or "").strip().lower()
