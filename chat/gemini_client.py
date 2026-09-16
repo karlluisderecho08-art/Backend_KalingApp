@@ -30,20 +30,32 @@ from django.conf import settings
 
 from core.audit import log_action
 
+from .knowledge import build_system_prompt
 from .local_fallback import get_local_clinical_response
 
 SYSTEM_PROMPT = (
-    "You are Kali, a breastfeeding and lactation support assistant. Ground your "
-    "answers in WHO, AAP, and IBCLC guidance. Stay strictly within breastfeeding "
-    "and lactation topics. For anything resembling a medical emergency or a "
-    "mental health crisis, direct the user to a real healthcare professional "
-    "instead of attempting to handle it yourself. "
+    "You are Kali, a breastfeeding and lactation support assistant. Stay strictly "
+    "within breastfeeding and lactation topics. For anything resembling a medical "
+    "emergency or a mental health crisis, direct the user to a real healthcare "
+    "professional instead of attempting to handle it yourself. "
     "Keep replies conversational and concise -- a short paragraph or two, or a "
     "brief bulleted list, the way a real chat message reads, not an exhaustive "
     "article. Cover the most important points fully rather than listing every "
     "possible point briefly; if there's clearly more that could help, end by "
-    "offering to go deeper rather than cramming it all in at once."
+    "offering to go deeper rather than cramming it all in at once. "
+    "The conversation so far is provided; treat short replies like \"yes\", "
+    "\"sure\" or \"tell me more\" as answers to what you just asked, not as new "
+    "questions out of nowhere."
 )
+
+# How many past messages to replay to the model. Without any, every turn
+# arrived with no idea what came before, so a mother answering "yes" to
+# Kali's own "would you like to know more?" was read as a brand-new
+# question about nothing. Bounded rather than unbounded because the
+# whole Knowledge Hub already sits in the system prompt: history is the
+# part that grows without limit over a long session, and a runaway
+# prompt costs both latency and the MAX_TOKENS headroom for the answer.
+HISTORY_TURNS = 10
 
 # 4000 (carried over from bedrock_client.py, see the module docstring)
 # made real generations slow enough to trip gunicorn's worker timeout.
@@ -76,10 +88,14 @@ def _get_client():
     return _client
 
 
-def get_ai_response(prompt, model=None):
+def get_ai_response(prompt, model=None, history=None):
     """
     Returns (reply_text, token_count, used_fallback: bool). Never
     raises -- any failure just means used_fallback=True.
+
+    `history` is the earlier turns of this conversation, oldest first,
+    as (is_user, text) pairs. Without it every message reached the model
+    with no memory of the exchange it belonged to.
 
     `model` is accepted only to keep this a drop-in replacement for
     bedrock_client.get_ai_response()'s call sites -- unused here, same
@@ -91,12 +107,27 @@ def get_ai_response(prompt, model=None):
     try:
         from google.genai import types
 
+        contents = []
+        for is_user, text in (history or [])[-HISTORY_TURNS:]:
+            # Gemini names the assistant role "model", not "assistant".
+            contents.append(
+                types.Content(role="user" if is_user else "model", parts=[types.Part(text=text)])
+            )
+        contents.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
+
         client = _get_client()
         response = client.models.generate_content(
             model=settings.GEMINI_MODEL,
-            contents=prompt,
+            contents=contents,
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
+                # Rebuilt per call, not cached at import: it embeds the
+                # Knowledge Hub articles, and admins add those through
+                # the admin panel while the server is running. Caching
+                # would mean a new article silently not existing to Kali
+                # until the next deploy.
+                system_instruction=build_system_prompt(
+                    SYSTEM_PROMPT, strict=settings.CHAT_STRICT_KNOWLEDGE_ONLY
+                ),
                 max_output_tokens=MAX_TOKENS,
                 temperature=0.4,
                 http_options=types.HttpOptions(timeout=HTTP_TIMEOUT_MS),

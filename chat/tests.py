@@ -1,12 +1,85 @@
+from datetime import timedelta
 from unittest.mock import patch
 
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from accounts.models import User
+from articles.models import Article
 
 from .gemini_client import get_ai_response
-from .guardrail import is_breastfeeding_topic
-from .models import ChatSession
+from .guardrail import OFF_TOPIC_RESPONSE, is_breastfeeding_topic
+from .knowledge import build_system_prompt
+from .models import ChatMessage, ChatSession
+from .views import FOLLOW_UP_WINDOW
+
+
+class KnowledgeGroundingTests(APITestCase):
+    """
+    Kali answers from the Knowledge Hub articles rather than from
+    general training data. Deliberately not a vector store: the library
+    is small enough to send whole, so these assert that it actually
+    reaches the prompt and stays current as admins add articles.
+    """
+
+    def _article(self, **overrides):
+        fields = {
+            "title": "How to Breastfeed Correctly: Positioning and Latch",
+            "category": "Latching Techniques",
+            "read_time": "4 min read",
+            "teaser": "Positioning basics.",
+            "content": "Bring the baby to the breast, not the breast to the baby.",
+            "author": "KalingApp",
+        }
+        fields.update(overrides)
+        return Article.objects.create(**fields)
+
+    def test_articles_are_embedded_in_the_system_prompt(self):
+        self._article()
+
+        prompt = build_system_prompt("BASE", strict=True)
+
+        self.assertIn("BASE", prompt)
+        self.assertIn("How to Breastfeed Correctly: Positioning and Latch", prompt)
+        self.assertIn("Bring the baby to the breast", prompt)
+        self.assertIn("Latching Techniques", prompt)
+
+    def test_strict_mode_forbids_answering_beyond_the_articles(self):
+        self._article()
+
+        strict = build_system_prompt("BASE", strict=True)
+        preferred = build_system_prompt("BASE", strict=False)
+
+        self.assertIn("ONLY", strict)
+        self.assertIn("do not guess", strict)
+        # The looser mode is the one that still helps past the library.
+        self.assertNotIn("Answer ONLY using", preferred)
+
+    def test_a_newly_added_article_is_picked_up_without_a_restart(self):
+        """
+        Admins add articles through the admin panel on a running server.
+        The context is rebuilt per request rather than cached at import
+        precisely so a new article doesn't silently fail to exist for
+        Kali until the next deploy.
+        """
+        self._article()
+        self.assertNotIn("Mastitis", build_system_prompt("BASE"))
+
+        self._article(title="Recognising Mastitis Early", content="Mastitis often starts as a sore, red patch.")
+
+        prompt = build_system_prompt("BASE")
+        self.assertIn("Recognising Mastitis Early", prompt)
+        self.assertIn("sore, red patch", prompt)
+
+    def test_an_empty_knowledge_hub_falls_back_to_the_base_persona(self):
+        """
+        With no articles, strict grounding would produce a Kali that
+        refuses literally everything -- a worse failure than answering
+        from general guidance, so the rules are left off entirely.
+        """
+        self.assertEqual(Article.objects.count(), 0)
+
+        self.assertEqual(build_system_prompt("BASE", strict=True), "BASE")
 
 
 class GuardrailTests(APITestCase):
@@ -97,3 +170,73 @@ class SendMessageViewTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 2)  # her message + the reply
+
+
+class ConversationContinuityTests(APITestCase):
+    """
+    Reproduces a real complaint: Kali ends a reply with "would you like
+    to know more about that?", the mother answers "yes", and she's told
+    her own answer is off topic. Two separate defects caused it -- the
+    keyword guardrail judging each message alone, and the model being
+    sent one message with no memory of the exchange it belonged to --
+    and both had to be fixed for the conversation to hold together.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
+        self.client.force_authenticate(user=self.user)
+
+    def _kali_just_asked(self, question="Would you like to know more about that?"):
+        session, _ = ChatSession.objects.get_or_create(owner=self.user)
+        ChatMessage.objects.create(session=session, text="How do I get a good latch?", is_user=True)
+        ChatMessage.objects.create(session=session, text=question, is_user=False)
+        return session
+
+    @patch("chat.views.get_ai_response", return_value=("Here's more detail.", 20, False))
+    def test_yes_after_a_question_from_kali_is_not_rejected_as_off_topic(self, mock_get_ai_response):
+        self._kali_just_asked()
+
+        response = self.client.post("/chat/message/", {"text": "yes"})
+
+        self.assertEqual(response.status_code, 200)
+        mock_get_ai_response.assert_called_once()
+        self.assertNotEqual(response.data["reply"]["text"], OFF_TOPIC_RESPONSE)
+
+    @patch("chat.views.get_ai_response", return_value=("Here's more detail.", 20, False))
+    def test_the_model_receives_the_conversation_so_far(self, mock_get_ai_response):
+        self._kali_just_asked()
+
+        self.client.post("/chat/message/", {"text": "yes"})
+
+        history = mock_get_ai_response.call_args.kwargs["history"]
+        # Oldest first, and the current message is NOT duplicated in it --
+        # the client appends that itself.
+        self.assertEqual(
+            history,
+            [(True, "How do I get a good latch?"), (False, "Would you like to know more about that?")],
+        )
+
+    @patch("chat.views.get_ai_response", return_value=("Here's more detail.", 20, False))
+    def test_a_stale_conversation_is_judged_on_its_own_words_again(self, mock_get_ai_response):
+        """
+        The follow-up allowance is time-boxed: "yes" typed days later
+        isn't answering anything, so the keyword guardrail applies as
+        normal rather than the exchange staying open forever.
+        """
+        session = self._kali_just_asked()
+        stale = timezone.now() - FOLLOW_UP_WINDOW - timedelta(minutes=1)
+        session.messages.update(created_at=stale)
+
+        response = self.client.post("/chat/message/", {"text": "yes"})
+
+        self.assertEqual(response.status_code, 200)
+        mock_get_ai_response.assert_not_called()
+        self.assertEqual(response.data["reply"]["text"], OFF_TOPIC_RESPONSE)
+
+    def test_a_first_message_with_no_conversation_still_needs_to_be_on_topic(self):
+        with patch("chat.views.get_ai_response") as mock_get_ai_response:
+            response = self.client.post("/chat/message/", {"text": "yes"})
+
+        self.assertEqual(response.status_code, 200)
+        mock_get_ai_response.assert_not_called()
+        self.assertEqual(response.data["reply"]["text"], OFF_TOPIC_RESPONSE)

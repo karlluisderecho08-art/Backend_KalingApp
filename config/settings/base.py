@@ -76,6 +76,19 @@ GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
 # workaround for the quota.
 GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.5-flash-lite")
 
+# True: Kali may answer ONLY from the Knowledge Hub articles, and says
+# so plainly when they don't cover something rather than falling back on
+# general training data (see chat/knowledge.py). That's deliberate --
+# every answer is then traceable to a source the team controls and can
+# cite, and the library is expected to grow as admins add articles.
+#
+# The tradeoff is real and worth knowing before flipping this: with a
+# small library Kali genuinely refuses common questions, including milk
+# bank donation, which the articles don't currently cover at all. Set
+# to False to have her prefer the articles but still help from WHO/AAP/
+# IBCLC guidance where they fall short.
+CHAT_STRICT_KNOWLEDGE_ONLY = env.bool("CHAT_STRICT_KNOWLEDGE_ONLY", default=True)
+
 # --- Outgoing email (account verification codes -- see accounts/emails.py) ---
 # BREVO_API_KEY is the one that actually works in production, and it's
 # checked first below. Everything after it speaks SMTP, which the live
