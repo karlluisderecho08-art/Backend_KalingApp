@@ -89,6 +89,13 @@ GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.5-flash-lite")
 # IBCLC guidance where they fall short.
 CHAT_STRICT_KNOWLEDGE_ONLY = env.bool("CHAT_STRICT_KNOWLEDGE_ONLY", default=True)
 
+# /auth/demo-login/ hands out real tokens to anyone who POSTs to it, no
+# credentials at all (it backs the app's "Bypass / Quick-Access Demo
+# Mode" button). Off unless explicitly enabled: fine pointed at a
+# laptop for a demo, not something to leave reachable on the public
+# internet. dev.py turns it back on.
+DEMO_LOGIN_ENABLED = env.bool("DEMO_LOGIN_ENABLED", default=False)
+
 # --- Outgoing email (account verification codes -- see accounts/emails.py) ---
 # BREVO_API_KEY is the one that actually works in production, and it's
 # checked first below. Everything after it speaks SMTP, which the live
@@ -326,6 +333,33 @@ REST_FRAMEWORK = {
     # build the endpoint list from them, instead of us hand-writing docs
     # that inevitably drift out of sync with the actual code.
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Nothing was throttled at all before this, which left the
+    # unauthenticated endpoints open to being hammered: passwords could
+    # be guessed against /auth/login/ without limit, and the 5-attempt
+    # cap on a verification code could simply be reset by registering
+    # the same address again.
+    #
+    # The scoped rates below are what the auth views actually opt into;
+    # "anon"/"user" are the catch-alls for everything else. They're set
+    # generously enough that no real mother meets them -- these are
+    # blunt abuse limits, not usage quotas.
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "60/min",
+        "user": "240/min",
+        # Password guessing.
+        "login": "10/min",
+        # Code guessing, on top of the per-signup attempt cap.
+        "verify": "10/min",
+        # Each of these sends a real email. Unthrottled they were also a
+        # way to burn the provider's daily send quota, which would take
+        # signup down for genuine users as collateral.
+        "register": "5/min",
+        "resend": "3/min",
+    },
 }
 
 SPECTACULAR_SETTINGS = {

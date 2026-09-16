@@ -1,5 +1,5 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
     CheckInView,
@@ -12,6 +12,7 @@ from .views import (
     ResetPasswordView,
     StaffUserListView,
     StaffUserSetActiveView,
+    ThrottledTokenObtainPairView,
     VerifyEmailView,
 )
 
@@ -27,7 +28,7 @@ urlpatterns = [
     # {access, refresh}. We don't need to write login logic ourselves.
     # Also doubles as the is_active gate: ModelBackend refuses to
     # authenticate an unverified (is_active=False) account here.
-    path("login/", TokenObtainPairView.as_view(), name="login"),
+    path("login/", ThrottledTokenObtainPairView.as_view(), name="login"),
     path("refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("demo-login/", DemoLoginView.as_view(), name="demo_login"),
     path("me/", MeView.as_view(), name="me"),

@@ -2,6 +2,11 @@ from .base import *  # noqa: F401,F403
 
 DEBUG = True
 
+# Safe here, unlike in production: this is a credential-free login (see
+# accounts.views.DemoLoginView), so it stays on only where the server
+# isn't reachable from the internet.
+DEMO_LOGIN_ENABLED = True
+
 # 10.0.2.2 is the Android emulator's fixed alias for "the host machine" --
 # a physical phone on the same WiFi needs the machine's real LAN IP
 # instead, which changes if your router reassigns it later. Update it

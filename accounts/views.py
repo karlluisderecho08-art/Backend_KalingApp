@@ -3,12 +3,15 @@ import threading
 from datetime import timedelta
 
 from django.conf import settings
+from django.http import Http404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.audit import log_action
 
@@ -120,6 +123,20 @@ def _tokens_for(user):
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
 
+class ThrottledTokenObtainPairView(TokenObtainPairView):
+    """
+    simplejwt's login view, with a rate limit attached.
+
+    Subclassed purely for the throttle: used bare, /auth/login/ would
+    accept unlimited password guesses against any known email address,
+    and every other guessable secret in this app (verification codes,
+    reset codes) is capped while the password itself was not.
+    """
+
+    throttle_scope = "login"
+    throttle_classes = [ScopedRateThrottle]
+
+
 class RegisterView(generics.CreateAPIView):
     """
     POST /auth/register/  {email, password, mom_name, baby_name}
@@ -137,6 +154,8 @@ class RegisterView(generics.CreateAPIView):
 
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "register"
+    throttle_classes = [ScopedRateThrottle]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -167,6 +186,8 @@ class VerifyEmailView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "verify"
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request):
         email = (request.data.get("email") or "").strip().lower()
@@ -240,6 +261,8 @@ class ResendVerificationView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "resend"
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request):
         email = (request.data.get("email") or "").strip().lower()
@@ -274,6 +297,8 @@ class ForgotPasswordView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "resend"
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request):
         email = (request.data.get("email") or "").strip().lower()
@@ -306,6 +331,8 @@ class ResetPasswordView(APIView):
     """
 
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "verify"
+    throttle_classes = [ScopedRateThrottle]
 
     def post(self, request):
         email = (request.data.get("email") or "").strip().lower()
@@ -358,6 +385,14 @@ class DemoLoginView(APIView):
     button: no credentials, straight into the seeded "Rachel" account, for
     panel demos. The account itself is created by the seed_demo_user
     management command, not here -- this view only ever logs in.
+
+    Now gated behind DEMO_LOGIN_ENABLED, off by default. This hands out
+    real tokens to anyone who can reach the URL, with no credential of
+    any kind -- fine pointed at a laptop, not something to leave
+    reachable on the public internet. It was only ever harmless in
+    production by accident (the demo account isn't seeded there, so it
+    errored), which is not the same as being safe: seeding it once would
+    have quietly turned it into an open door.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -367,6 +402,9 @@ class DemoLoginView(APIView):
     # drf-spectacular needs a concrete serializer to document at all.
     @extend_schema(request=None, responses=UserSerializer)
     def post(self, request):
+        if not settings.DEMO_LOGIN_ENABLED:
+            raise Http404
+
         try:
             user = User.objects.get(email="rachel@kalingapp.demo")
         except User.DoesNotExist:

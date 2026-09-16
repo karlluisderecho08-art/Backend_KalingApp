@@ -3,6 +3,8 @@ from unittest.mock import patch
 
 from django.contrib.auth.hashers import check_password
 from django.core import mail
+from django.core.cache import cache
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -42,7 +44,25 @@ class _SynchronousThread:
         self._target(*self._args, **self._kwargs)
 
 
-class RegistrationAndVerificationTests(APITestCase):
+class ThrottleIsolatedTestCase(APITestCase):
+    """
+    Base class for anything that hits a rate-limited endpoint.
+
+    Throttle counters live in the cache, not the database, so unlike
+    database rows they are NOT rolled back between tests -- they
+    accumulate across every test in the process. Without clearing them,
+    a test's result depends on how many requests the tests before it
+    happened to make, which fails in whatever order the suite happens
+    to run in.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+
+class RegistrationAndVerificationTests(ThrottleIsolatedTestCase):
     """
     Covers the account lifecycle a real mother goes through: register ->
     (inactive, code emailed) -> verify -> (active, logged in). This is
@@ -53,6 +73,7 @@ class RegistrationAndVerificationTests(APITestCase):
     """
 
     def setUp(self):
+        super().setUp()
         patcher = patch("accounts.views.threading.Thread", new=_SynchronousThread)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -334,7 +355,72 @@ class RegistrationAndVerificationTests(APITestCase):
         mock_send.assert_called_once()
 
 
-class ForgotPasswordTests(APITestCase):
+class AuthThrottlingTests(ThrottleIsolatedTestCase):
+    """
+    Nothing was rate limited before this: /auth/login/ accepted
+    unlimited password guesses, and the 5-attempt cap on a verification
+    code could be reset just by registering the same address again.
+
+    Throttle state lives in the cache and persists between tests in the
+    same process, so each test clears it first -- otherwise these pass
+    or fail depending on what ran before them.
+    """
+
+    def test_login_stops_accepting_unlimited_password_guesses(self):
+        User.objects.create_user(email="mother@example.com", password="the-real-password", is_active=True)
+
+        statuses = [
+            self.client.post(
+                "/auth/login/", {"email": "mother@example.com", "password": f"guess-{i}"}
+            ).status_code
+            for i in range(12)
+        ]
+
+        self.assertIn(429, statuses)
+        # And it's the throttle stopping it, not the wrong password --
+        # the correct one is refused too once the limit is hit.
+        blocked = self.client.post("/auth/login/", {"email": "mother@example.com", "password": "the-real-password"})
+        self.assertEqual(blocked.status_code, 429)
+
+    def test_registration_is_rate_limited(self):
+        statuses = [
+            self.client.post("/auth/register/", {
+                "email": f"mother{i}@example.com",
+                "password": "correct-horse-battery-staple",
+                "mom_name": "Rachel",
+                "baby_name": "James",
+            }).status_code
+            for i in range(8)
+        ]
+
+        # Each one of these would otherwise send a real email, so an
+        # unthrottled endpoint was also a way to burn the provider's
+        # daily quota and take signup down for genuine users.
+        self.assertIn(429, statuses)
+
+
+class DemoLoginTests(APITestCase):
+    """
+    /auth/demo-login/ hands out real tokens with no credentials at all.
+    It must not be reachable unless deliberately switched on.
+    """
+
+    @override_settings(DEMO_LOGIN_ENABLED=False)
+    def test_disabled_by_default_in_production_configuration(self):
+        response = self.client.post("/auth/demo-login/")
+        self.assertEqual(response.status_code, 404)
+
+    @override_settings(DEMO_LOGIN_ENABLED=True)
+    def test_enabled_explicitly_still_works_for_local_demos(self):
+        User.objects.create_user(email="rachel@kalingapp.demo", password="x", is_active=True)
+
+        response = self.client.post("/auth/demo-login/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.data)
+
+
+class ForgotPasswordTests(ThrottleIsolatedTestCase):
     """
     Covers the "Forgot Password?" flow: request a code -> confirm code +
     new password -> logged in with the new password. Was a pure UI stub
@@ -344,6 +430,7 @@ class ForgotPasswordTests(APITestCase):
     """
 
     def setUp(self):
+        super().setUp()
         patcher = patch("accounts.views.threading.Thread", new=_SynchronousThread)
         patcher.start()
         self.addCleanup(patcher.stop)
