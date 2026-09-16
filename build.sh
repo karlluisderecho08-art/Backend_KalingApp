@@ -10,6 +10,11 @@ python manage.py collectstatic --no-input
 # haven't run yet, so this is a no-op once the schema is already current.
 python manage.py migrate
 
+# Creates the table backing CACHES (see config/settings/base.py) if it
+# doesn't exist yet. Idempotent, and required before any request is
+# throttled -- the rate limits are stored there.
+python manage.py createcachetable
+
 # All four of these are idempotent (get_or_create / "skip if exists"),
 # so running them on every deploy is safe -- this is the free-tier
 # workaround for not having Shell access to run one-off commands by

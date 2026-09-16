@@ -13,6 +13,29 @@ ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS")
 # this app -- without telling Django that, SECURE_SSL_REDIRECT would
 # see every request as "already HTTP" and redirect-loop forever. This
 # header is how Render (like Heroku) signals the original protocol.
+# Throttle counters (REST_FRAMEWORK's DEFAULT_THROTTLE_RATES) live in
+# the cache, so the cache must be shared across processes or the limits
+# don't actually hold. Django's default is LocMemCache -- per-process
+# memory -- and gunicorn runs several workers here, each keeping its own
+# private counter. Requests spread across them, so the effective limit
+# became roughly rate x workers.
+#
+# Not a theoretical concern: rate limiting passed its tests (one
+# process) and then did nothing whatsoever in production. Confirmed by
+# sending 14 login attempts against the deployed service and getting 14
+# rejections for the wrong password, zero for being throttled.
+#
+# Database-backed rather than Redis purely to avoid adding a paid
+# service -- it reuses the Postgres instance already running. The
+# write-per-throttled-request costs nothing at this scale, and build.sh
+# runs `createcachetable` (idempotent) to make the table.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache_table",
+    }
+}
+
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True

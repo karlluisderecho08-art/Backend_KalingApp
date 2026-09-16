@@ -319,6 +319,11 @@ MEDIA_URL = "/media/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# No CACHES here on purpose: Django's default LocMemCache is correct
+# for dev and tests, which run in a single process. Production is the
+# case that needs a shared cache -- see prod.py, and the note there on
+# why throttling silently did nothing without it.
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
