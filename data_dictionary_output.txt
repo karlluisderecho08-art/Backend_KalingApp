@@ -1,0 +1,605 @@
+KalingApp Backend — Data Dictionary
+Generated 2026-09-05 from Backend_KalingApp @ master (7376848), against local SQLite dev DB.
+
+NOTE ON db_col TYPES: these were generated against SQLite (the local dev
+database), since that's what's available on this machine without
+Postgres credentials. Types are mostly the same on Postgres (the live
+Render database), with a few name differences worth knowing:
+  - BigAutoField (id): SQLite shows "integer", Postgres emits "bigint"
+  - BooleanField:      SQLite shows "bool",    Postgres emits "boolean"
+  - FloatField:        SQLite shows "real",     Postgres emits "double precision"
+  - JSONField:         SQLite shows "text",     Postgres has a real "jsonb" column
+Everything else (varchar lengths, text, date, datetime, choices, FKs,
+nullability, defaults) is identical regardless of which DB is running --
+those come straight from the Django field definitions, not the DB engine.
+
+======================================================================
+MODEL: User   (table: accounts_user)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  password
+      type=CharField  db_col=varchar(128)  max_length=128
+      null=False  blank=False  default=(none)
+  last_login
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=True  blank=True  default=(none)
+  is_superuser
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+  first_name
+      type=CharField  db_col=varchar(150)  max_length=150
+      null=False  blank=True  default=(none)
+  last_name
+      type=CharField  db_col=varchar(150)  max_length=150
+      null=False  blank=True  default=(none)
+  is_staff
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+  is_active
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=True
+  date_joined
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=False  blank=False  default=now()
+  email
+      type=EmailField  db_col=varchar(254)  max_length=254
+      null=False  blank=False  default=(none)
+  role
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=False  default=mother
+      choices: mother | facility_staff
+  facility
+      [ADDED 2026-09-07] type=ForeignKey  db_col=bigint  max_length=None
+      null=True  blank=True  default=(none)
+      relation: -> Facility (ForeignKey, on_delete=SET_NULL)
+      Only meaningful for a facility_staff account -- which hospital
+      it works at. Always null for a mother account. Added so a
+      facility_staff login only sees/acts on ITS OWN facility's
+      bookings and donor questionnaires, not every facility's --
+      previously any facility_staff account could see everything,
+      system-wide (see milkbank/permissions.py, milkbank/views.py).
+      An account with role=facility_staff but facility=null fails
+      closed (sees nothing) rather than open (sees everything).
+  mom_name
+      type=CharField  db_col=varchar(150)  max_length=150
+      null=False  blank=True  default=(none)
+  baby_name
+      type=CharField  db_col=varchar(150)  max_length=150
+      null=False  blank=True  default=(none)
+  baby_age_weeks
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=True  blank=True  default=(none)
+  breastfeeding_status
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=True  default=(none)
+  baby_birth_date
+      type=DateField  db_col=date  max_length=None
+      null=True  blank=True  default=(none)
+  pediatric_clinic
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=True  default=(none)
+  tracking_streaks
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=0
+  last_active_date
+      type=DateField  db_col=date  max_length=None
+      null=True  blank=True  default=(none)
+  total_drawn_oz
+      type=FloatField  db_col=real  max_length=None
+      null=False  blank=False  default=0.0
+  latitude
+      type=FloatField  db_col=real  max_length=None
+      null=True  blank=True  default=(none)
+  longitude
+      type=FloatField  db_col=real  max_length=None
+      null=True  blank=True  default=(none)
+  location_consent_given
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+  location_consent_at
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=True  blank=True  default=(none)
+  has_seen_walkthrough
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+  email_verified
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+  email_verification_code
+      type=CharField  db_col=varchar(6)  max_length=6
+      null=False  blank=True  default=(none)
+  email_verification_sent_at
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=True  blank=True  default=(none)
+  email_verification_attempts
+      type=PositiveSmallIntegerField  db_col=smallint unsigned  max_length=None
+      null=False  blank=False  default=0
+  groups
+      type=ManyToManyField  db_col=-  max_length=None
+      null=False  blank=True  default=(none)
+      relation: -> Group (ManyToManyField, on_delete=None)
+  user_permissions
+      type=ManyToManyField  db_col=-  max_length=None
+      null=False  blank=True  default=(none)
+      relation: -> Permission (ManyToManyField, on_delete=None)
+
+======================================================================
+MODEL: Article   (table: articles_article)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  title
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=False  default=(none)
+  category
+      type=CharField  db_col=varchar(50)  max_length=50
+      null=False  blank=False  default=(none)
+      choices: Latching Techniques | Milk Storage & Safety | Maternal Nutrition | Newborn Health
+  read_time
+      type=CharField  db_col=varchar(50)  max_length=50
+      null=False  blank=False  default=(none)
+  teaser
+      type=CharField  db_col=varchar(500)  max_length=500
+      null=False  blank=False  default=(none)
+  content
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=False  default=(none)
+  author
+      type=CharField  db_col=varchar(150)  max_length=150
+      null=False  blank=False  default=(none)
+  rating
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=False  default=4.9 ★
+  evidence_label
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=False  default=Organization-Verified & Peer-Reviewed
+  date
+      type=CharField  db_col=varchar(50)  max_length=50
+      null=False  blank=False  default=(none)
+
+======================================================================
+MODEL: ArticleComment   (table: articles_articlecomment)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  article
+      type=ForeignKey  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> Article (ForeignKey, on_delete=CASCADE)
+  author
+      type=ForeignKey  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> User (ForeignKey, on_delete=CASCADE)
+  text
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=False  default=(none)
+  created_at
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=False  blank=True  default=(none)
+  is_reported
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+  report_reason
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=True  default=(none)
+      choices: Spam | Inappropriate | Misinformation | Other
+
+======================================================================
+MODEL: ResourceLink   (table: articles_resourcelink)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  title
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=False  default=(none)
+  description
+      type=CharField  db_col=varchar(500)  max_length=500
+      null=False  blank=False  default=(none)
+  url
+      type=URLField  db_col=varchar(200)  max_length=200
+      null=False  blank=False  default=(none)
+  type
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=False  default=(none)
+      choices: Video | Infographic
+
+======================================================================
+MODEL: Facility   (table: milkbank_facility)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  name
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=False  default=(none)
+  type
+      type=CharField  db_col=varchar(100)  max_length=100
+      null=False  blank=False  default=(none)
+      choices: Accredited Human Milk Bank | Hospital Depot
+  contact
+      type=CharField  db_col=varchar(50)  max_length=50
+      null=False  blank=False  default=(none)
+  address
+      type=CharField  db_col=varchar(500)  max_length=500
+      null=False  blank=False  default=(none)
+  operating_hours
+      type=CharField  db_col=varchar(100)  max_length=100
+      null=False  blank=False  default=8:00 AM - 5:00 PM (Mon-Fri)
+  donor_requirements
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=True  default=(none)
+  recipient_requirements
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=True  default=(none)
+  unavailable_donor_dates
+      type=JSONField  db_col=text (jsonb on Postgres)  max_length=None
+      null=False  blank=True  default=list()
+  unavailable_recipient_dates
+      type=JSONField  db_col=text (jsonb on Postgres)  max_length=None
+      null=False  blank=True  default=list()
+  is_operational
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=True
+  capacity
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=(none)
+  booked_count
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=0
+  stock_level_ml
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=0
+  latitude
+      type=FloatField  db_col=real  max_length=None
+      null=False  blank=False  default=(none)
+  longitude
+      type=FloatField  db_col=real  max_length=None
+      null=False  blank=False  default=(none)
+
+======================================================================
+MODEL: MilkBankRequest   (table: milkbank_milkbankrequest)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  owner
+      type=ForeignKey  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> User (ForeignKey, on_delete=CASCADE)
+  request_type
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=False  default=(none)
+      choices: DONOR | RECIPIENT
+  allocated_facility
+      type=ForeignKey  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> Facility (ForeignKey, on_delete=PROTECT)
+  current_stage_index
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=0
+  current_sub_status
+      type=CharField  db_col=varchar(30)  max_length=30
+      null=False  blank=False  default=pending
+      choices: pending | awaiting_attendance | scheduled | declined | expired | counter_offered | completed
+  staff_message
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=True  default=(none)
+  submitted_at
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=False  blank=True  default=(none)
+  preferred_date
+      type=DateField  db_col=date  max_length=None
+      null=False  blank=False  default=(none)
+  preferred_time
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=False  default=(none)
+  attendance_confirmed
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+  counter_offer_date
+      type=DateField  db_col=date  max_length=None
+      null=True  blank=True  default=(none)
+  counter_offer_time
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=True  default=(none)
+
+======================================================================
+MODEL: TransactionRecord   (table: milkbank_transactionrecord)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  owner
+      type=ForeignKey  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> User (ForeignKey, on_delete=CASCADE)
+  type
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=False  default=(none)
+      choices: Donation | Received
+  facility_name
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=False  default=(none)
+  date
+      type=DateField  db_col=date  max_length=None
+      null=False  blank=False  default=(none)
+  status
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=False  default=Completed
+      choices: Completed | Cancelled
+
+======================================================================
+MODEL: DonorQuestionnaire   (table: milkbank_donorquestionnaire)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  request
+      type=OneToOneField  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> MilkBankRequest (OneToOneField, on_delete=CASCADE)
+  currently_lactating_excess
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  infant_age_months
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=(none)
+  consents_to_screening
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  good_general_health
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  being_treated_for_illness
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  recent_fever_or_infection
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  tested_positive_infectious_disease
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  partner_tested_positive_or_at_risk
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  recent_blood_transfusion
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  recent_tattoo_piercing_needle_exposure
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  travel_to_risk_area
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  smokes_or_tobacco
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  drinks_alcohol
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  alcohol_frequency_details
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=True  default=(none)
+  uses_illicit_drugs
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  on_prescription_medications
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  medication_list
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=True  default=(none)
+  uses_herbal_supplements
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  uses_radioactive_or_radiologic
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  vegan_without_b12
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  recent_live_virus_vaccine
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  serology_photo
+      type=FileField  db_col=varchar(100)  max_length=100
+      null=True  blank=True  default=(none)
+  submitted_at
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=False  blank=True  default=(none)
+
+======================================================================
+MODEL: SupportContact   (table: directory_supportcontact)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  name
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=False  default=(none)
+  description
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=False  default=(none)
+  phone
+      type=CharField  db_col=varchar(50)  max_length=50
+      null=False  blank=True  default=(none)
+  address
+      type=CharField  db_col=varchar(500)  max_length=500
+      null=False  blank=True  default=(none)
+  email
+      type=EmailField  db_col=varchar(254)  max_length=254
+      null=False  blank=True  default=(none)
+
+======================================================================
+MODEL: AuditLogEntry   (table: core_auditlogentry)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  actor
+      type=ForeignKey  db_col=bigint  max_length=None
+      null=True  blank=True  default=(none)
+      relation: -> User (ForeignKey, on_delete=SET_NULL)
+  action
+      type=CharField  db_col=varchar(100)  max_length=100
+      null=False  blank=False  default=(none)
+  target
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=True  default=(none)
+  created_at
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=False  blank=True  default=(none)
+
+======================================================================
+MODEL: NotificationItem   (table: notifications_notificationitem)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  owner
+      type=ForeignKey  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> User (ForeignKey, on_delete=CASCADE)
+  title
+      type=CharField  db_col=varchar(255)  max_length=255
+      null=False  blank=False  default=(none)
+  description
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=False  default=(none)
+  category
+      type=CharField  db_col=varchar(20)  max_length=20
+      null=False  blank=False  default=(none)
+      choices: Reminders | Articles | Bookings
+  created_at
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=False  blank=True  default=(none)
+  is_read
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+
+======================================================================
+MODEL: ChatSession   (table: chat_chatsession)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  owner
+      type=OneToOneField  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> User (OneToOneField, on_delete=CASCADE)
+  prompt_count
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=0
+  token_count
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=0
+
+  [UPDATED 2026-09-07] current_model and model_switched (CharField/
+  BooleanField, gpt-4o|gpt-4o-mini choices) were REMOVED from this
+  table when chat moved from OpenAI to AWS Bedrock/DeepSeek-R1 -- see
+  Backend_KalingApp commit a55e9bb. There's one real model now, so
+  there was nothing left for a "which model / did it switch" pair of
+  fields to track. No replacement fields were added; prompt_count and
+  token_count above are the only ones left on this table.
+
+======================================================================
+MODEL: ChatMessage   (table: chat_chatmessage)
+======================================================================
+  id
+      type=BigAutoField  db_col=integer  max_length=None
+      null=False  blank=True  default=(none)
+  session
+      type=ForeignKey  db_col=bigint  max_length=None
+      null=False  blank=False  default=(none)
+      relation: -> ChatSession (ForeignKey, on_delete=CASCADE)
+  text
+      type=TextField  db_col=text  max_length=None
+      null=False  blank=False  default=(none)
+  is_user
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=(none)
+  is_system_notice
+      type=BooleanField  db_col=bool  max_length=None
+      null=False  blank=False  default=False
+  created_at
+      type=DateTimeField  db_col=datetime  max_length=None
+      null=False  blank=True  default=(none)
+
+######################################################################
+# BOOKING STATE MACHINE
+######################################################################
+The script looked for a STAGES/STAGE_NAMES/STAGE_LABELS/STAGE_MAP
+constant and didn't find one -- that's a naming mismatch, not missing
+data. There are actually TWO separate, real mappings, covering two
+different concepts that the script's search conflated into one:
+
+1) current_stage_index -> stage label (a UI progress-bar position,
+   e.g. "step 3 of 5" -- purely a display label, does not drive any
+   business logic). Defined as DONOR_STAGES / RECIPIENT_STAGES class
+   attributes on MilkBankRequest (milkbank/models.py), selected via
+   request_type through the `stages` property:
+
+   DONOR_STAGES = [
+       0: "Status",
+       1: "Booking Confirmation",
+       2: "Counseling and Testing",  # renamed 2026-09-07, was "Counseling & Serology Screening" --
+                                      # the Fabella interview established this stage covers serology,
+                                      # physical, AND blood tests, not serology alone
+       3: "Breastmilk Analysis",
+       4: "Results",
+   ]
+   RECIPIENT_STAGES = [
+       0: "Requirements",
+       1: "Status",
+       2: "Booking Confirmation",
+       3: "Results",
+   ]
+
+   current_stage_index is incremented in milkbank/views.py at specific
+   real actions (not automatically on every status change):
+     - ConfirmAttendanceView: +1 when the mother confirms attendance
+     - AcceptCounterOfferView: +1 when she accepts a facility's
+       counter-offered date
+     - StaffConfirmCompletionView: jumps straight to the last stage
+       (len(stages) - 1) when staff mark the booking completed
+
+2) current_sub_status -> the REAL state machine that actually gates
+   what can happen next. Defined as MilkBankRequest.Status (choices)
+   plus ALLOWED_TRANSITIONS in milkbank/transitions.py -- the single
+   place status is ever allowed to change (apply_transition()), which
+   also fires the matching notification and writes an audit log entry.
+
+   Allowed transitions (current -> allowed next):
+     pending            -> awaiting_attendance, declined, expired
+     awaiting_attendance -> scheduled, counter_offered, expired
+     counter_offered    -> scheduled, pending
+     scheduled          -> completed
+     declined           -> (terminal, no further moves)
+     expired            -> (terminal, no further moves)
+     completed          -> (terminal, no further moves)
+
+   Notification sent to the mother on each transition
+   (STATUS_NOTIFICATIONS in transitions.py):
+     awaiting_attendance -> "The facility accepted your request. Please confirm your attendance."
+     scheduled           -> "Your appointment is scheduled."
+     declined            -> "The facility declined your request."
+     expired             -> "Your request has expired."
+     counter_offered     -> "The facility proposed a new date for your appointment."
+     completed           -> "Your booking is complete. Thank you!"
+
+   Side effects wired into apply_transition() itself:
+     - declined/expired/completed (TERMINAL_STATUSES) atomically
+       decrement Facility.booked_count via F() (race-safe under
+       concurrent completions)
+     - completed also creates a TransactionRecord (Donation or
+       Received, based on request_type)
+
+   current_stage_index and current_sub_status are independent axes --
+   e.g. a request can sit at stage_index=1 ("Booking Confirmation")
+   while current_sub_status cycles through awaiting_attendance ->
+   counter_offered -> scheduled without the stage index moving at all.
