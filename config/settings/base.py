@@ -96,6 +96,15 @@ CHAT_STRICT_KNOWLEDGE_ONLY = env.bool("CHAT_STRICT_KNOWLEDGE_ONLY", default=True
 # internet. dev.py turns it back on.
 DEMO_LOGIN_ENABLED = env.bool("DEMO_LOGIN_ENABLED", default=False)
 
+# Shared secret for POST /milkbank/sweep-expired/ (see milkbank/views.py's
+# StaffSweepExpiredView) -- lets an external scheduler (this host has no
+# Celery/cron worker of its own; a free pinger like cron-job.org works)
+# expire overdue bookings on a timer instead of only when a mother or
+# facility happens to load their requests. Empty means the endpoint refuses
+# every request (fails closed), not that the check is skipped -- an unset
+# token must never mean "anyone can trigger this."
+MILKBANK_SWEEP_TOKEN = env("MILKBANK_SWEEP_TOKEN", default="")
+
 # --- Outgoing email (account verification codes -- see accounts/emails.py) ---
 # BREVO_API_KEY is the one that actually works in production, and it's
 # checked first below. Everything after it speaks SMTP, which the live

@@ -52,11 +52,12 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "stages", "current_stage_index", "current_sub_status", "staff_message",
             "submitted_at", "preferred_date", "preferred_time", "attendance_confirmed",
             "counter_offer_date", "counter_offer_time", "owner_email", "owner_name",
+            "response_deadline",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
             "staff_message", "submitted_at", "attendance_confirmed",
-            "counter_offer_date", "counter_offer_time",
+            "counter_offer_date", "counter_offer_time", "response_deadline",
         ]
 
 

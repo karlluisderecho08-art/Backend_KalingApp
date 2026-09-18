@@ -116,6 +116,26 @@ services:
       #   http://localhost:3000,http://localhost:3001,https://kalingapp-admin.vercel.app,https://kalingapp-facility.vercel.app
       - key: CORS_ALLOWED_ORIGINS
         value: "http://localhost:3000,http://localhost:3001"
+      # Enforces the 8-business-hour milk bank SLA (facility response,
+      # mother's attendance confirmation) -- see milkbank/business_hours.py
+      # and milkbank/transitions.py's sweep_expired_requests(). This host
+      # has no Celery/cron worker, so the actual timeout ALSO happens
+      # lazily whenever a mother or facility staff member loads their
+      # requests -- this token only makes it happen sooner than that, via
+      # an external pinger.
+      #
+      # Generate any long random string yourself (e.g. `openssl rand -hex
+      # 32`) and paste it into Render's dashboard, same as every other
+      # secret here. Then, on a free service like cron-job.org, schedule a
+      # POST every 15-30 minutes to:
+      #   https://kalingapp-backend.onrender.com/milkbank/sweep-expired/
+      # with header:
+      #   X-Sweep-Token: <the same string>
+      # Leaving this unset does NOT disable the check -- it fails CLOSED
+      # (see StaffSweepExpiredView), it just means expiry only ever
+      # happens lazily, on someone's next page load, not on a timer.
+      - key: MILKBANK_SWEEP_TOKEN
+        sync: false
 
 databases:
   - name: kalingapp-db

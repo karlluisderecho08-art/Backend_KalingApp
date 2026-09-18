@@ -108,6 +108,16 @@ class MilkBankRequest(models.Model):
     counter_offer_date = models.DateField(null=True, blank=True)
     counter_offer_time = models.CharField(max_length=20, blank=True)
 
+    # The 8-business-hour SLA clock (see milkbank/business_hours.py). Null
+    # whenever nothing is actively pending on someone -- set the moment a
+    # request starts waiting on the facility (pending) or on the mother
+    # (awaiting_attendance), cleared the moment it stops waiting on anyone
+    # (declined/scheduled/completed/expired/counter_offered). Read by
+    # transitions.sweep_expired_requests(), never written to directly
+    # outside apply_transition/the create view -- see those for why each
+    # status either sets or clears it.
+    response_deadline = models.DateTimeField(null=True, blank=True)
+
     @property
     def stages(self):
         return self.DONOR_STAGES if self.request_type == self.RequestType.DONOR else self.RECIPIENT_STAGES

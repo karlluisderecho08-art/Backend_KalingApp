@@ -19,6 +19,7 @@ from .views import (
     StaffDeclineView,
     StaffExpireView,
     StaffProposeCounterOfferView,
+    StaffSweepExpiredView,
 )
 
 urlpatterns = [
@@ -40,6 +41,7 @@ urlpatterns = [
     path("requests/<int:pk>/expire/", StaffExpireView.as_view(), name="request-staff-expire"),
     path("requests/<int:pk>/propose-counter-offer/", StaffProposeCounterOfferView.as_view(), name="request-staff-propose-counter-offer"),
     path("requests/<int:pk>/confirm-completion/", StaffConfirmCompletionView.as_view(), name="request-staff-confirm-completion"),
+    path("sweep-expired/", StaffSweepExpiredView.as_view(), name="sweep-expired-requests"),
 
     path("requests/<int:pk>/donor-questionnaire/", DonorQuestionnaireView.as_view(), name="donor-questionnaire"),
     path("requests/<int:pk>/serology-photo/", SerologyPhotoView.as_view(), name="serology-photo"),

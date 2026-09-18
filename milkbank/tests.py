@@ -1,11 +1,16 @@
+from datetime import date, datetime, timedelta
+
+from django.test import SimpleTestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from accounts.models import User
 from notifications.models import NotificationItem
 
 from .allocation import LocationRequired, NoOperationalFacility, get_ranked_facilities, rank_facilities
+from .business_hours import BUSINESS_TZ, add_business_hours, is_business_day, philippine_holidays
 from .models import Facility, MilkBankRequest, TransactionRecord
-from .transitions import ALLOWED_TRANSITIONS, InvalidTransition, apply_transition
+from .transitions import ALLOWED_TRANSITIONS, InvalidTransition, apply_transition, sweep_expired_requests
 from .views import _can_view_questionnaire
 
 Status = MilkBankRequest.Status
@@ -127,6 +132,174 @@ class TransitionsTests(APITestCase):
         # accept-to-scheduled are legal -- test the reject branch here
         # since the accept branch is already covered by the completion tests.
         apply_transition(self.req, Status.PENDING, self.mother, "counter_offer_rejected")
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.current_sub_status, Status.PENDING)
+
+    # --- SLA clock: which transitions set/clear response_deadline ---
+
+    def test_accepting_gives_the_mother_a_fresh_confirmation_deadline(self):
+        # make_request() doesn't set one, so this also proves accept sets
+        # it rather than merely leaving whatever was already there.
+        self.assertIsNone(self.req.response_deadline)
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        self.req.refresh_from_db()
+        self.assertIsNotNone(self.req.response_deadline)
+        self.assertGreater(self.req.response_deadline, timezone.now())
+
+    def test_rejecting_a_counter_offer_gives_the_facility_a_fresh_deadline(self):
+        # Back to pending means the facility is effectively looking at a
+        # new proposed slot -- it should get a full new response window,
+        # not inherit whatever was left (or cleared) from before.
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(self.req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
+        self.req.refresh_from_db()
+        self.assertIsNone(self.req.response_deadline)  # counter_offered has no clock of its own
+
+        apply_transition(self.req, Status.PENDING, self.mother, "counter_offer_rejected")
+        self.req.refresh_from_db()
+        self.assertIsNotNone(self.req.response_deadline)
+
+    def test_declining_clears_the_deadline(self):
+        apply_transition(self.req, Status.DECLINED, self.staff, "declined")
+        self.req.refresh_from_db()
+        self.assertIsNone(self.req.response_deadline)
+
+    def test_scheduling_clears_the_deadline(self):
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        self.req.refresh_from_db()
+        self.assertIsNone(self.req.response_deadline)
+
+
+class SweepExpiredRequestsTests(APITestCase):
+    """
+    sweep_expired_requests() -- the automatic enforcement side of the
+    8-business-hour SLA. Without this, response_deadline is just a number
+    nobody ever checks: these tests are what makes "expired" a real,
+    self-enforcing status rather than only something a staff member can
+    trigger by hand via StaffExpireView.
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
+        self.staff = User.objects.create_user(
+            email="staff@example.com", password="x", is_active=True, role=User.Role.FACILITY_STAFF,
+        )
+        self.facility = make_facility(booked_count=1)
+
+    def test_overdue_pending_request_expires(self):
+        req = make_request(self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1))
+        expired = sweep_expired_requests()
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.EXPIRED)
+        self.assertIn(req, expired)
+
+    def test_overdue_awaiting_attendance_request_expires(self):
+        req = make_request(self.mother, self.facility)
+        apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        req.response_deadline = timezone.now() - timedelta(hours=1)
+        req.save(update_fields=["response_deadline"])
+
+        sweep_expired_requests()
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.EXPIRED)
+
+    def test_request_not_yet_due_is_left_alone(self):
+        req = make_request(self.mother, self.facility, response_deadline=timezone.now() + timedelta(hours=1))
+        sweep_expired_requests()
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.PENDING)
+
+    def test_request_with_no_deadline_is_never_swept(self):
+        # A scheduled/completed/declined/counter_offered request has no
+        # clock (response_deadline is None) -- confirms the sweep query's
+        # response_deadline__isnull=False actually excludes those rather
+        # than a None deadline comparing as "less than now" some other way.
+        req = make_request(self.mother, self.facility)
+        apply_transition(req, Status.DECLINED, self.staff, "declined")
+        sweep_expired_requests()  # must not raise, and must not touch this
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.DECLINED)
+
+    def test_sweep_notifies_the_owner_with_the_pending_specific_message(self):
+        make_request(self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1))
+        sweep_expired_requests()
+        notification = NotificationItem.objects.get(owner=self.mother)
+        self.assertIn("facility didn't respond", notification.description)
+
+    def test_sweep_notifies_the_owner_with_the_awaiting_attendance_specific_message(self):
+        req = make_request(self.mother, self.facility)
+        apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        req.response_deadline = timezone.now() - timedelta(hours=1)
+        req.save(update_fields=["response_deadline"])
+
+        sweep_expired_requests()
+        notification = NotificationItem.objects.filter(owner=self.mother).latest("id")
+        self.assertIn("attendance wasn't confirmed", notification.description)
+
+    def test_sweep_releases_the_facility_slot(self):
+        # apply_transition's TERMINAL_STATUSES bookkeeping should fire for
+        # an SLA expiry exactly like it does for every other path to expired.
+        make_request(self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1))
+        sweep_expired_requests()
+        self.facility.refresh_from_db()
+        self.assertEqual(self.facility.booked_count, 0)
+
+    def test_sweep_is_actor_less_in_the_audit_log(self):
+        # No human did this -- confirms apply_transition's actor=None path
+        # (AuditLogEntry.actor is nullable specifically for "the system
+        # did it") is what an SLA expiry actually records.
+        from core.models import AuditLogEntry
+
+        make_request(self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1))
+        sweep_expired_requests()
+        entry = AuditLogEntry.objects.get(action="booking.expired_sla_timeout")
+        self.assertIsNone(entry.actor)
+
+
+class SweepExpiredEndpointTests(APITestCase):
+    """POST /milkbank/sweep-expired/ -- the cron-facing trigger."""
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
+        self.facility = make_facility(booked_count=1)
+        self.req = make_request(
+            self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1)
+        )
+
+    @override_settings(MILKBANK_SWEEP_TOKEN="correct-token")
+    def test_correct_token_sweeps_and_reports_what_expired(self):
+        response = self.client.post(
+            "/milkbank/sweep-expired/", HTTP_X_SWEEP_TOKEN="correct-token",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["expired_count"], 1)
+        self.assertEqual(response.data["expired_ids"], [self.req.id])
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.current_sub_status, Status.EXPIRED)
+
+    @override_settings(MILKBANK_SWEEP_TOKEN="correct-token")
+    def test_wrong_token_is_rejected_and_sweeps_nothing(self):
+        response = self.client.post(
+            "/milkbank/sweep-expired/", HTTP_X_SWEEP_TOKEN="wrong-token",
+        )
+        self.assertEqual(response.status_code, 404)
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.current_sub_status, Status.PENDING)
+
+    @override_settings(MILKBANK_SWEEP_TOKEN="correct-token")
+    def test_missing_token_is_rejected(self):
+        response = self.client.post("/milkbank/sweep-expired/")
+        self.assertEqual(response.status_code, 404)
+
+    @override_settings(MILKBANK_SWEEP_TOKEN="")
+    def test_unconfigured_token_fails_closed_even_with_a_header(self):
+        # An empty MILKBANK_SWEEP_TOKEN must never mean "no check" -- this
+        # is the "forgotten env var" scenario the docstring calls out.
+        response = self.client.post(
+            "/milkbank/sweep-expired/", HTTP_X_SWEEP_TOKEN="anything",
+        )
+        self.assertEqual(response.status_code, 404)
         self.req.refresh_from_db()
         self.assertEqual(self.req.current_sub_status, Status.PENDING)
 
@@ -358,3 +531,67 @@ class CanViewQuestionnaireTests(APITestCase):
 
     def test_staff_at_a_different_facility_cannot_view_it(self):
         self.assertFalse(_can_view_questionnaire(self.other_facility_staff, self.req))
+
+
+class BusinessHoursClockTests(SimpleTestCase):
+    """
+    The SLA clock. These cases are the whole reason the deadline isn't
+    just submitted_at + 8 hours: each one would land on a wrong, earlier
+    deadline under plain elapsed time, cancelling a booking the facility
+    never had a working hour to answer.
+    """
+
+    def manila(self, year, month, day, hour, minute=0):
+        return datetime(year, month, day, hour, minute, tzinfo=BUSINESS_TZ)
+
+    def assert_deadline(self, start, expected):
+        actual = add_business_hours(start).astimezone(BUSINESS_TZ)
+        self.assertEqual(actual, expected, f"{start} + 8 business hours -> {actual}, expected {expected}")
+
+    def test_mid_morning_start_finishes_next_morning(self):
+        # Wed 9 AM: 8 hours left today is 9->17 = 8h exactly, so it lands
+        # at closing rather than spilling into Thursday.
+        self.assert_deadline(self.manila(2026, 9, 9, 9), self.manila(2026, 9, 9, 17))
+
+    def test_afternoon_start_spills_into_the_next_working_day(self):
+        # Wed 3 PM: 2h today, remaining 6h resume Thursday 8 AM -> 2 PM.
+        self.assert_deadline(self.manila(2026, 9, 9, 15), self.manila(2026, 9, 10, 14))
+
+    def test_friday_afternoon_skips_the_weekend(self):
+        # Fri 3 PM: 2h Friday, 6h on Monday -> Monday 2 PM, not Saturday.
+        self.assert_deadline(self.manila(2026, 9, 11, 15), self.manila(2026, 9, 14, 14))
+
+    def test_before_opening_does_not_burn_the_night(self):
+        # 6 AM Wednesday counts from 8 AM, not from 6 AM.
+        self.assert_deadline(self.manila(2026, 9, 9, 6), self.manila(2026, 9, 9, 16))
+
+    def test_after_closing_starts_the_next_morning(self):
+        self.assert_deadline(self.manila(2026, 9, 9, 21), self.manila(2026, 9, 10, 16))
+
+    def test_weekend_submission_starts_monday(self):
+        # Saturday -> the clock only begins Monday 8 AM, ending 4 PM.
+        self.assert_deadline(self.manila(2026, 9, 12, 10), self.manila(2026, 9, 14, 16))
+
+    def test_holiday_is_skipped(self):
+        # Dec 24/25 are both holidays, and Dec 26 2026 is a Saturday, so a
+        # Dec 23 afternoon request is not due until Monday Dec 28.
+        self.assert_deadline(self.manila(2026, 12, 23, 15), self.manila(2026, 12, 28, 14))
+
+    def test_holiday_detection(self):
+        self.assertFalse(is_business_day(date(2026, 12, 25)))  # Christmas
+        self.assertFalse(is_business_day(date(2026, 6, 12)))   # Independence Day
+        self.assertFalse(is_business_day(date(2026, 9, 12)))   # a Saturday
+        self.assertTrue(is_business_day(date(2026, 9, 9)))     # ordinary Wednesday
+
+    def test_national_heroes_day_is_the_last_monday_of_august(self):
+        self.assertIn(date(2026, 8, 31), philippine_holidays(2026))
+        self.assertEqual(date(2026, 8, 31).weekday(), 0)
+
+    def test_easter_derived_holidays_move_with_the_year(self):
+        # Good Friday 2026 falls on 3 April.
+        self.assertIn(date(2026, 4, 3), philippine_holidays(2026))
+        self.assertFalse(is_business_day(date(2026, 4, 3)))
+
+    def test_result_is_utc_aware(self):
+        deadline = add_business_hours(self.manila(2026, 9, 9, 9))
+        self.assertEqual(deadline.utcoffset(), timedelta(0))

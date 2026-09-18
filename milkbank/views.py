@@ -1,5 +1,9 @@
+import secrets
+
+from django.conf import settings
 from django.db.models import F
 from django.http import FileResponse, Http404
+from django.utils import timezone
 from drf_spectacular.utils import OpenApiTypes, extend_schema
 from rest_framework import generics, permissions, status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -11,6 +15,7 @@ from notifications.models import NotificationItem
 from notifications.services import notify
 
 from .allocation import AllocationError, LocationRequired, NoOperationalFacility, get_ranked_facilities
+from .business_hours import add_business_hours
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
 from .serializers import (
@@ -26,7 +31,7 @@ from .serializers import (
     StaffMessageSerializer,
     TransactionRecordSerializer,
 )
-from .transitions import InvalidTransition, apply_transition
+from .transitions import InvalidTransition, apply_transition, sweep_expired_requests
 
 Status = MilkBankRequest.Status
 
@@ -137,6 +142,11 @@ class MilkBankRequestCreateView(APIView):
             allocated_facility=ranked[0],
             preferred_date=data["preferred_date"],
             preferred_time=data["preferred_time"],
+            # Starts the facility's 8-business-hour response clock right
+            # away -- this is a plain .create(), not apply_transition (there's
+            # no "from" status on a brand-new request), so it doesn't get this
+            # for free the way every later transition does.
+            response_deadline=add_business_hours(timezone.now()),
         )
         # Occupies a slot the moment it's created (status=pending already
         # counts as "open") -- see transitions.py for where it's released.
@@ -159,6 +169,11 @@ class MyMilkBankRequestsView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        # Global, not scoped to this user -- see sweep_expired_requests()'s
+        # docstring. Cheap at this app's scale, and means she never sees a
+        # pending/awaiting_attendance status that's actually already overdue
+        # just because nothing else happened to sweep it first.
+        sweep_expired_requests()
         return MilkBankRequest.objects.filter(owner=self.request.user).order_by("-submitted_at")
 
 
@@ -180,6 +195,7 @@ class AllMilkBankRequestsView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
 
     def get_queryset(self):
+        sweep_expired_requests()  # see MyMilkBankRequestsView.get_queryset()
         qs = (
             MilkBankRequest.objects
             .filter(allocated_facility=self.request.user.facility_id)
@@ -205,6 +221,7 @@ class MilkBankRequestDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
+        sweep_expired_requests()  # see MyMilkBankRequestsView.get_queryset()
         obj = super().get_object()
         user = self.request.user
         is_owner = obj.owner_id == user.id
@@ -347,6 +364,39 @@ class StaffExpireView(generics.GenericAPIView):
         except InvalidTransition as exc:
             return Response({"detail": str(exc)}, status=400)
         return Response(MilkBankRequestSerializer(req).data)
+
+
+class StaffSweepExpiredView(APIView):
+    """
+    POST /milkbank/sweep-expired/ -- expires every PENDING/AWAITING_ATTENDANCE
+    request whose 8-business-hour deadline has passed.
+
+    Not user-authenticated -- there's no logged-in person on the other end,
+    this is meant to be hit by an external scheduler (this host has no
+    cron/Celery worker of its own; point a free service like cron-job.org
+    at it, e.g. every 15-30 minutes) since the read paths already sweep
+    lazily on their own (see MyMilkBankRequestsView.get_queryset()) and this
+    just makes the notification arrive sooner than her next page load.
+
+    Authenticated instead by a shared secret in a header, not a query
+    string or the URL path, so it doesn't end up logged in plaintext by
+    Render's or the scheduler's own request logs. Refuses every request
+    (not a permissive 200) if MILKBANK_SWEEP_TOKEN isn't configured, so a
+    forgotten env var fails closed rather than quietly leaving this open
+    to anyone who finds the URL.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    @extend_schema(request=None)
+    def post(self, request):
+        configured_token = settings.MILKBANK_SWEEP_TOKEN
+        provided_token = request.headers.get("X-Sweep-Token", "")
+        if not configured_token or not secrets.compare_digest(configured_token, provided_token):
+            return Response({"detail": "Not found."}, status=404)
+
+        expired = sweep_expired_requests()
+        return Response({"expired_count": len(expired), "expired_ids": [req.id for req in expired]})
 
 
 class StaffProposeCounterOfferView(generics.GenericAPIView):
