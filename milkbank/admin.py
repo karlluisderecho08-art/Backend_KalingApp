@@ -24,4 +24,4 @@ class TransactionRecordAdmin(admin.ModelAdmin):
 
 @admin.register(DonorQuestionnaire)
 class DonorQuestionnaireAdmin(admin.ModelAdmin):
-    list_display = ("request", "good_general_health", "consents_to_screening", "submitted_at")
+    list_display = ("request", "good_general_health", "has_recent_serology_test", "submitted_at")

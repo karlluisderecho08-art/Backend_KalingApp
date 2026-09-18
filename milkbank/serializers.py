@@ -108,14 +108,9 @@ class DonorQuestionnaireSerializer(serializers.ModelSerializer):
         model = DonorQuestionnaire
         fields = [
             "id",
-            "currently_lactating_excess", "infant_age_months", "consents_to_screening",
-            "good_general_health", "being_treated_for_illness", "recent_fever_or_infection",
-            "tested_positive_infectious_disease", "partner_tested_positive_or_at_risk",
-            "recent_blood_transfusion", "recent_tattoo_piercing_needle_exposure", "travel_to_risk_area",
-            "smokes_or_tobacco", "drinks_alcohol", "alcohol_frequency_details", "uses_illicit_drugs",
-            "on_prescription_medications", "medication_list", "uses_herbal_supplements",
-            "uses_radioactive_or_radiologic",
-            "vegan_without_b12", "recent_live_virus_vaccine",
+            "good_general_health", "lactating_with_excess_supply", "free_of_infectious_disease",
+            "recent_transfusion_or_transplant", "uses_tobacco_alcohol_or_drugs",
+            "on_medication_or_supplements", "medication_details", "has_recent_serology_test",
             "photo_attached", "submitted_at",
         ]
 

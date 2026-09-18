@@ -501,6 +501,88 @@ class BookingEndpointPermissionTests(APITestCase):
         self.assertIn("already have an open request", response.data["detail"])
 
 
+class BookingStageIndexTests(APITestCase):
+    """
+    current_stage_index is what the mobile app's Booking Status tracker
+    actually reads to decide what's "current" -- including whether to show
+    the "Confirm My Attendance" button at all (it's gated on
+    stages[current_stage_index] == "Booking Confirmation", not on
+    current_sub_status). Regression coverage for the bug where accepting a
+    request flipped current_sub_status but left current_stage_index at 0,
+    so nothing about the mother's screen ever visibly changed and she had
+    no way to confirm attendance.
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="stage-mother@example.com", password="x", is_active=True)
+        self.facility = make_facility(name="St. Luke's")
+        self.staff = User.objects.create_user(
+            email="stage-staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+
+    def test_staff_accept_advances_stage_for_donor_request(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(f"/milkbank/requests/{req.id}/accept/")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
+
+    def test_staff_accept_advances_stage_for_recipient_request(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(f"/milkbank/requests/{req.id}/accept/")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
+
+    def test_confirm_attendance_lands_on_the_stage_after_booking_confirmation(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        req.current_stage_index = req.stages.index("Booking Confirmation")
+        req.save(update_fields=["current_stage_index"])
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-attendance/")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.stages[req.current_stage_index], "Counseling and Testing")
+
+    def test_reject_counter_offer_reverts_stage_to_status(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        req.current_stage_index = req.stages.index("Booking Confirmation")
+        req.save(update_fields=["current_stage_index"])
+        apply_transition(req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
+        req.counter_offer_date, req.counter_offer_time = "2026-12-20", "2:00 PM"
+        req.save(update_fields=["counter_offer_date", "counter_offer_time"])
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.post(f"/milkbank/requests/{req.id}/reject-counter-offer/", {
+            "preferred_date": "2026-12-22", "preferred_time": "10:00 AM",
+        })
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, "pending")
+        self.assertEqual(req.stages[req.current_stage_index], "Status")
+
+    def test_accept_counter_offer_lands_on_the_stage_after_booking_confirmation(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        req.current_stage_index = req.stages.index("Booking Confirmation")
+        req.save(update_fields=["current_stage_index"])
+        apply_transition(req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
+        req.counter_offer_date, req.counter_offer_time = "2026-12-20", "2:00 PM"
+        req.save(update_fields=["counter_offer_date", "counter_offer_time"])
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.stages[req.current_stage_index], "Counseling and Testing")
+
+
 class CanViewQuestionnaireTests(APITestCase):
     """
     _can_view_questionnaire() gates the donor screening form and
@@ -531,6 +613,72 @@ class CanViewQuestionnaireTests(APITestCase):
 
     def test_staff_at_a_different_facility_cannot_view_it(self):
         self.assertFalse(_can_view_questionnaire(self.other_facility_staff, self.req))
+
+
+class DonorQuestionnaireSubmissionTests(APITestCase):
+    """
+    Full round trip through DonorQuestionnaireView: the mobile app POSTs
+    multipart/form-data with booleans as "true"/"false" strings (what
+    Kotlin's Boolean.toString() produces), and the facility dashboard
+    then GETs it back. Regression coverage for the bug where the app
+    never called this endpoint at all, so facility staff always saw "no
+    questionnaire submitted" regardless of what she'd answered.
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="donor@example.com", password="x", is_active=True)
+        self.facility = make_facility(name="St. Luke's")
+        self.staff = User.objects.create_user(
+            email="staff2@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+        self.req = make_request(self.mother, self.facility)
+        self.answers = {
+            "good_general_health": "true",
+            "lactating_with_excess_supply": "true",
+            "free_of_infectious_disease": "true",
+            "recent_transfusion_or_transplant": "false",
+            "uses_tobacco_alcohol_or_drugs": "false",
+            "on_medication_or_supplements": "true",
+            "medication_details": "Prenatal vitamins",
+            "has_recent_serology_test": "true",
+        }
+
+    def test_submission_is_recorded_and_visible_to_facility_staff(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        self.client.force_authenticate(user=self.mother)
+        photo = SimpleUploadedFile("serology.jpg", b"\xff\xd8\xff\xe0fake", content_type="image/jpeg")
+        post_response = self.client.post(
+            f"/milkbank/requests/{self.req.id}/donor-questionnaire/",
+            data={**self.answers, "serology_photo": photo},
+            format="multipart",
+        )
+        self.assertEqual(post_response.status_code, 201, post_response.data)
+
+        self.client.force_authenticate(user=self.staff)
+        get_response = self.client.get(f"/milkbank/requests/{self.req.id}/donor-questionnaire/")
+        self.assertEqual(get_response.status_code, 200)
+        data = get_response.data
+        self.assertTrue(data["good_general_health"])
+        self.assertFalse(data["recent_transfusion_or_transplant"])
+        self.assertEqual(data["medication_details"], "Prenatal vitamins")
+        self.assertTrue(data["photo_attached"])
+
+    def test_a_second_submission_for_the_same_request_is_rejected(self):
+        self.client.force_authenticate(user=self.mother)
+        self.client.post(
+            f"/milkbank/requests/{self.req.id}/donor-questionnaire/", data=self.answers, format="multipart",
+        )
+        second = self.client.post(
+            f"/milkbank/requests/{self.req.id}/donor-questionnaire/", data=self.answers, format="multipart",
+        )
+        self.assertEqual(second.status_code, 400)
+
+    def test_staff_before_any_submission_gets_404_not_found(self):
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get(f"/milkbank/requests/{self.req.id}/donor-questionnaire/")
+        self.assertEqual(response.status_code, 404)
 
 
 class BusinessHoursClockTests(SimpleTestCase):

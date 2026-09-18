@@ -163,13 +163,11 @@ class DonorQuestionnaire(models.Model):
     a DONOR-type MilkBankRequest -- kept off that model itself since it
     only applies to donors, not recipients.
 
-    Replaces an earlier 7-question approximation with the real official
-    form the user supplied on 2026-08-22, closing the standing TODO
-    carried over from the Kotlin app (KalingAppViewModel.kt:230 /
-    AllScreens.kt:2601: "verify against the official Fabella/PHMBA donor
-    screening form"). Field names below map directly to that form's
-    sections A-F. `infant_age_months` assumes months as the unit since
-    the form didn't specify one -- flag it if that's wrong.
+    Field-for-field match of the Kotlin app's Donor Eligibility
+    Questionnaire (KalingAppViewModel.kt / AllScreens.kt's DonorScreeningScreen) --
+    this is the actual set of questions a donor answers on-device, so the
+    model asks nothing the app doesn't, and stores nothing the app didn't
+    actually ask her.
 
     serology_photo is saved to local disk (MEDIA_ROOT), but is
     deliberately NOT served through Django's normal "serve this folder
@@ -184,48 +182,27 @@ class DonorQuestionnaire(models.Model):
         MilkBankRequest, on_delete=models.CASCADE, related_name="donor_questionnaire",
     )
 
-    # --- Section A: Identification & Consent ---
-    currently_lactating_excess = models.BooleanField(
-        help_text="Currently lactating and producing milk beyond own infant's needs")
-    infant_age_months = models.PositiveIntegerField(help_text="Age of donor's own infant, in months")
-    consents_to_screening = models.BooleanField(
-        help_text="Consents to blood screening and to donating voluntarily, without payment")
-
-    # --- Section B: General Health ---
-    good_general_health = models.BooleanField()
-    being_treated_for_illness = models.BooleanField(help_text="Being treated for any acute or chronic illness")
-    recent_fever_or_infection = models.BooleanField(help_text="Fever or active infection in the past week")
-
-    # --- Section C: Infectious Disease Risk ---
-    tested_positive_infectious_disease = models.BooleanField(
-        help_text="Ever tested positive for HIV 1/2, HTLV 1/2, Hepatitis B, Hepatitis C, or syphilis")
-    partner_tested_positive_or_at_risk = models.BooleanField(
-        help_text="Sexual partner ever tested positive for, or at risk of, HIV or hepatitis")
-    recent_blood_transfusion = models.BooleanField(
-        help_text="Blood transfusion or blood products in the past 12 months")
-    recent_tattoo_piercing_needle_exposure = models.BooleanField(
-        help_text="Tattoo, piercing, or accidental needle-stick exposure in the past 12 months")
-    travel_to_risk_area = models.BooleanField(
-        help_text="Traveled to/lived in an area with risk of relevant transmissible disease (per DOH advisories)")
-
-    # --- Section D: Lifestyle ---
-    smokes_or_tobacco = models.BooleanField()
-    drinks_alcohol = models.BooleanField()
-    alcohol_frequency_details = models.CharField(max_length=255, blank=True, help_text="How often and how much")
-    uses_illicit_drugs = models.BooleanField()
-
-    # --- Section E: Medications & Supplements ---
-    on_prescription_medications = models.BooleanField()
-    medication_list = models.TextField(blank=True)
-    uses_herbal_supplements = models.BooleanField(
-        help_text="Herbal supplements, megadose vitamins, or botanical products")
-    uses_radioactive_or_radiologic = models.BooleanField(
-        help_text="Radioactive substances or undergoing radiologic treatment")
-
-    # --- Section F: Diet & Other ---
-    vegan_without_b12 = models.BooleanField(
-        help_text="Diet excludes all animal products without B12 supplementation")
-    recent_live_virus_vaccine = models.BooleanField(help_text="Recently received any live-virus vaccines")
+    # Q1
+    good_general_health = models.BooleanField(help_text="Currently in good general health")
+    # Q2
+    lactating_with_excess_supply = models.BooleanField(
+        help_text="Baby is under 6 months old and producing more milk than baby needs")
+    # Q3
+    free_of_infectious_disease = models.BooleanField(
+        help_text="Free from HIV, Hepatitis B & C, and Syphilis")
+    # Q4
+    recent_transfusion_or_transplant = models.BooleanField(
+        help_text="Received a blood transfusion or organ transplant in the last 12 months")
+    # Q5
+    uses_tobacco_alcohol_or_drugs = models.BooleanField(
+        help_text="Smokes, drinks alcohol regularly, or uses recreational drugs")
+    # Q6
+    on_medication_or_supplements = models.BooleanField(
+        help_text="Taking regular medications or herbal supplements")
+    medication_details = models.CharField(max_length=255, blank=True, help_text="Medications / supplements")
+    # Q7
+    has_recent_serology_test = models.BooleanField(
+        help_text="Has a serological (blood) test taken within the last 6 months")
 
     serology_photo = models.FileField(upload_to="serology_photos/%Y/%m/", blank=True, null=True)
     submitted_at = models.DateTimeField(auto_now_add=True)

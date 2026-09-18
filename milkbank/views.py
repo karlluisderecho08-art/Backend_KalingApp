@@ -301,7 +301,13 @@ class RejectCounterOfferView(generics.GenericAPIView):
         req.preferred_time = serializer.validated_data["preferred_time"]
         req.counter_offer_date = None
         req.counter_offer_time = ""
-        req.save(update_fields=["preferred_date", "preferred_time", "counter_offer_date", "counter_offer_time"])
+        # Back to square one for the facility to review, not still parked on
+        # "Booking Confirmation" -- see StaffAcceptView's comment for why the
+        # stage tracker (not just current_sub_status) has to move here too.
+        req.current_stage_index = req.stages.index("Status")
+        req.save(update_fields=[
+            "preferred_date", "preferred_time", "counter_offer_date", "counter_offer_time", "current_stage_index",
+        ])
         return Response(MilkBankRequestSerializer(req).data)
 
 
@@ -322,9 +328,19 @@ class StaffAcceptView(generics.GenericAPIView):
             apply_transition(req, Status.AWAITING_ATTENDANCE, request.user, "accepted")
         except InvalidTransition as exc:
             return Response({"detail": str(exc)}, status=400)
+        # apply_transition only moves current_sub_status. The mobile app's
+        # Booking Status tracker (and its "Confirm My Attendance" button,
+        # gated on stages[current_stage_index] == "Booking Confirmation")
+        # reads current_stage_index instead, so without this she'd see her
+        # status flip to "Awaiting Attendance" with no way to act on it --
+        # every later stage-advancing view (ConfirmAttendanceView,
+        # AcceptCounterOfferView) already assumes accepting landed her here.
+        req.current_stage_index = req.stages.index("Booking Confirmation")
+        update_fields = ["current_stage_index"]
         if serializer.validated_data["staff_message"]:
             req.staff_message = serializer.validated_data["staff_message"]
-            req.save(update_fields=["staff_message"])
+            update_fields.append("staff_message")
+        req.save(update_fields=update_fields)
         return Response(MilkBankRequestSerializer(req).data)
 
 
