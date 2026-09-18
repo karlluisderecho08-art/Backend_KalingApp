@@ -34,7 +34,7 @@ class BrevoApiEmailBackendTests(TestCase):
         return EmailMessage(
             subject="Your KalingApp verification code",
             body="Your code is 123456.",
-            from_email="karlluisderecho08@gmail.com",
+            from_email="kalingapp.admin@gmail.com",
             to=["mother@example.com"],
         )
 
@@ -49,7 +49,7 @@ class BrevoApiEmailBackendTests(TestCase):
         self.assertEqual(request.get_header("Api-key"), "xkeysib-test-key")
 
         payload = json.loads(request.data.decode())
-        self.assertEqual(payload["sender"]["email"], "karlluisderecho08@gmail.com")
+        self.assertEqual(payload["sender"]["email"], "kalingapp.admin@gmail.com")
         self.assertEqual(payload["to"], [{"email": "mother@example.com"}])
         self.assertEqual(payload["subject"], "Your KalingApp verification code")
         self.assertIn("123456", payload["textContent"])
