@@ -147,6 +147,14 @@ class MilkBankRequestCreateView(APIView):
             # no "from" status on a brand-new request), so it doesn't get this
             # for free the way every later transition does.
             response_deadline=add_business_hours(timezone.now()),
+            # Only ever meaningful for a RECIPIENT request, but harmless to
+            # store as-is for a DONOR one -- the mobile form simply never
+            # collects these outside the Recipient Pathway, so they arrive
+            # as the serializer's defaults (False / "").
+            needs_representative=data["needs_representative"],
+            representative_name=data["representative_name"],
+            representative_birthday=data["representative_birthday"],
+            representative_contact_number=data["representative_contact_number"],
         )
         # Occupies a slot the moment it's created (status=pending already
         # counts as "open") -- see transitions.py for where it's released.
@@ -433,6 +441,44 @@ class StaffProposeCounterOfferView(generics.GenericAPIView):
         req.counter_offer_date = serializer.validated_data["counter_offer_date"]
         req.counter_offer_time = serializer.validated_data["counter_offer_time"]
         req.save(update_fields=["counter_offer_date", "counter_offer_time"])
+        return Response(MilkBankRequestSerializer(req).data)
+
+
+class StaffAdvanceStageView(generics.GenericAPIView):
+    """
+    POST /milkbank/requests/<id>/advance-stage/
+
+    Moves current_stage_index one step forward WITHOUT touching
+    current_sub_status -- for the offline-only phases between "Scheduled"
+    and the final stage (DONOR: Counseling and Testing -> Breastmilk
+    Analysis -> Results; RECIPIENT has no such gap, see RECIPIENT_STAGES).
+    Nothing about these phases happens in this app -- staff just ticks
+    each one off here once it's actually done in person, so the mother's
+    tracker reflects reality. The last stage itself is a no-op through
+    this endpoint on purpose: reaching it doesn't close the booking out,
+    only StaffConfirmCompletionView does that (creates the TransactionRecord).
+    """
+
+    queryset = MilkBankRequest.objects.all()
+    serializer_class = MilkBankRequestSerializer
+    permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
+
+    @extend_schema(request=None)
+    def post(self, request, pk):
+        req = self.get_object()
+        if req.current_sub_status != Status.SCHEDULED:
+            return Response({"detail": "Only a scheduled request can move between phases."}, status=400)
+        if req.current_stage_index >= len(req.stages) - 1:
+            return Response({"detail": "Already at the final phase."}, status=400)
+        req.current_stage_index += 1
+        req.save(update_fields=["current_stage_index"])
+        log_action(request.user, "booking.stage_advanced", f"MilkBankRequest:{req.id}")
+        notify(
+            req.owner,
+            "Milk Bank Request Update",
+            f"Your request has moved to the \"{req.stages[req.current_stage_index]}\" phase.",
+            NotificationItem.Category.BOOKINGS,
+        )
         return Response(MilkBankRequestSerializer(req).data)
 
 

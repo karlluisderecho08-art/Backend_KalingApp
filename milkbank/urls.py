@@ -15,6 +15,7 @@ from .views import (
     SerologyPhotoView,
     SmartAllocationView,
     StaffAcceptView,
+    StaffAdvanceStageView,
     StaffConfirmCompletionView,
     StaffDeclineView,
     StaffExpireView,
@@ -40,6 +41,7 @@ urlpatterns = [
     path("requests/<int:pk>/decline/", StaffDeclineView.as_view(), name="request-staff-decline"),
     path("requests/<int:pk>/expire/", StaffExpireView.as_view(), name="request-staff-expire"),
     path("requests/<int:pk>/propose-counter-offer/", StaffProposeCounterOfferView.as_view(), name="request-staff-propose-counter-offer"),
+    path("requests/<int:pk>/advance-stage/", StaffAdvanceStageView.as_view(), name="request-staff-advance-stage"),
     path("requests/<int:pk>/confirm-completion/", StaffConfirmCompletionView.as_view(), name="request-staff-confirm-completion"),
     path("sweep-expired/", StaffSweepExpiredView.as_view(), name="sweep-expired-requests"),
 

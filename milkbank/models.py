@@ -108,6 +108,16 @@ class MilkBankRequest(models.Model):
     counter_offer_date = models.DateField(null=True, blank=True)
     counter_offer_time = models.CharField(max_length=20, blank=True)
 
+    # Optional pickup representative -- RECIPIENT-only (the Kotlin app's
+    # recipientNeedsProxy toggle on the Recipient Pathway screen), for a
+    # mother who can't collect the pasteurized milk herself. Kept on this
+    # model rather than a separate one: it's a handful of fields with no
+    # lifecycle of its own, always read/written alongside the request.
+    needs_representative = models.BooleanField(default=False)
+    representative_name = models.CharField(max_length=255, blank=True)
+    representative_birthday = models.DateField(null=True, blank=True)
+    representative_contact_number = models.CharField(max_length=50, blank=True)
+
     # The 8-business-hour SLA clock (see milkbank/business_hours.py). Null
     # whenever nothing is actively pending on someone -- set the moment a
     # request starts waiting on the facility (pending) or on the mother

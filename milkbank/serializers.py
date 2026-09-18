@@ -52,12 +52,15 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "stages", "current_stage_index", "current_sub_status", "staff_message",
             "submitted_at", "preferred_date", "preferred_time", "attendance_confirmed",
             "counter_offer_date", "counter_offer_time", "owner_email", "owner_name",
-            "response_deadline",
+            "response_deadline", "needs_representative", "representative_name",
+            "representative_birthday", "representative_contact_number",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
             "staff_message", "submitted_at", "attendance_confirmed",
             "counter_offer_date", "counter_offer_time", "response_deadline",
+            "needs_representative", "representative_name",
+            "representative_birthday", "representative_contact_number",
         ]
 
 
@@ -72,6 +75,16 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
     request_type = serializers.ChoiceField(choices=MilkBankRequest.RequestType.choices)
     preferred_date = serializers.DateField()
     preferred_time = serializers.CharField(max_length=20)
+
+    # Optional pickup representative -- only meaningful when request_type is
+    # RECIPIENT, but accepted unconditionally here and just ignored by the
+    # view for a DONOR request rather than erroring on an unexpected field.
+    needs_representative = serializers.BooleanField(required=False, default=False)
+    representative_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    representative_birthday = serializers.DateField(required=False, allow_null=True, default=None)
+    representative_contact_number = serializers.CharField(
+        max_length=50, required=False, allow_blank=True, default=""
+    )
 
 
 class ProposeCounterOfferSerializer(serializers.Serializer):
