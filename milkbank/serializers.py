@@ -101,6 +101,18 @@ class StaffMessageSerializer(serializers.Serializer):
     staff_message = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class ConfirmCompletionSerializer(serializers.Serializer):
+    """
+    What staff records when closing out a Scheduled booking -- how many
+    ounces were actually drawn (DONOR) or dispensed (RECIPIENT). See
+    milkbank.transitions.apply_transition for what this drives:
+    Facility.stock_level_ml (added for a donor, subtracted for a
+    recipient) and the donor's own total_drawn_oz.
+    """
+
+    amount_oz = serializers.FloatField(min_value=0.01)
+
+
 class TransactionRecordSerializer(serializers.ModelSerializer):
     class Meta:
         model = TransactionRecord

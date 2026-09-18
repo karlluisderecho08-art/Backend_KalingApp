@@ -52,6 +52,15 @@ class Facility(models.Model):
         return self.name
 
 
+# What staff records at StaffConfirmCompletionView is a US fluid ounce
+# figure (matches how the Kotlin app and Fabella/PGH/St. Luke's staff
+# actually talk about volume) -- Facility.stock_level_ml and
+# accounts.User.total_drawn_oz's underlying unit are what they are for
+# unrelated historical reasons, so this is the one conversion point
+# between the two, not something to duplicate at each call site.
+ML_PER_FLUID_OUNCE = 29.5735
+
+
 class MilkBankRequest(models.Model):
     """
     The single active donor/recipient booking for a mother -- ported

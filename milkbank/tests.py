@@ -124,6 +124,41 @@ class TransitionsTests(APITestCase):
         record = TransactionRecord.objects.latest("id")
         self.assertEqual(record.type, TransactionRecord.TransactionType.RECEIVED)
 
+    def test_completing_a_donor_request_with_an_amount_credits_stock_and_the_mothers_total(self):
+        starting_stock = self.facility.stock_level_ml
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        apply_transition(self.req, Status.COMPLETED, self.staff, "completed", amount_oz=4.0)
+
+        self.facility.refresh_from_db()
+        self.mother.refresh_from_db()
+        self.assertEqual(self.facility.stock_level_ml, starting_stock + round(4.0 * 29.5735))
+        self.assertEqual(self.mother.total_drawn_oz, 4.0)
+
+    def test_completing_a_recipient_request_with_an_amount_debits_stock(self):
+        recipient_req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        starting_stock = self.facility.stock_level_ml
+        apply_transition(recipient_req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(recipient_req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        apply_transition(recipient_req, Status.COMPLETED, self.staff, "completed", amount_oz=3.0)
+
+        self.facility.refresh_from_db()
+        self.assertEqual(self.facility.stock_level_ml, starting_stock - round(3.0 * 29.5735))
+
+    def test_completing_without_an_amount_leaves_stock_and_total_drawn_untouched(self):
+        # Every non-StaffConfirmCompletionView caller (there are none right
+        # now, but nothing stops a future one) must be safe leaving
+        # amount_oz at its None default -- this is what that relies on.
+        starting_stock = self.facility.stock_level_ml
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        apply_transition(self.req, Status.COMPLETED, self.staff, "completed")
+
+        self.facility.refresh_from_db()
+        self.mother.refresh_from_db()
+        self.assertEqual(self.facility.stock_level_ml, starting_stock)
+        self.assertEqual(self.mother.total_drawn_oz, 0.0)
+
     def test_counter_offer_can_return_to_pending_or_go_to_scheduled(self):
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
         apply_transition(self.req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
@@ -499,6 +534,70 @@ class BookingEndpointPermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("already have an open request", response.data["detail"])
+
+
+class ConfirmCompletionEndpointTests(APITestCase):
+    """
+    POST .../confirm-completion/ is the only place amount_oz ever reaches
+    apply_transition for real -- covers the serializer requiring it, and
+    the recipient-side stock-sufficiency check that has to run before the
+    transition commits (see StaffConfirmCompletionView's docstring).
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
+        # booked_count=1: apply_transition decrements it on every COMPLETED
+        # transition (a terminal status freeing the slot) -- 0 here would
+        # trip the "never negative" CHECK constraint the moment a test
+        # actually completes a request, same as TransitionsTests.setUp.
+        self.facility = make_facility(stock_level_ml=100, booked_count=1)
+        self.staff = User.objects.create_user(
+            email="staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+
+    def _schedule(self, req):
+        apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+
+    def test_amount_oz_is_required(self):
+        req = make_request(self.mother, self.facility)
+        self._schedule(req)
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {})
+        self.assertEqual(response.status_code, 400)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
+
+    def test_donor_completion_adds_to_facility_stock(self):
+        req = make_request(self.mother, self.facility)
+        self._schedule(req)
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_oz": 5.0})
+        self.assertEqual(response.status_code, 200)
+        self.facility.refresh_from_db()
+        self.assertEqual(self.facility.stock_level_ml, 100 + round(5.0 * 29.5735))
+
+    def test_recipient_completion_is_rejected_when_stock_is_insufficient(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        self._schedule(req)
+        self.client.force_authenticate(user=self.staff)
+        # 100 mL in stock is well under the ~591 mL that 20 oz converts to.
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_oz": 20.0})
+        self.assertEqual(response.status_code, 400)
+        self.facility.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(self.facility.stock_level_ml, 100)
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
+
+    def test_recipient_completion_subtracts_from_facility_stock_when_enough_is_on_hand(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        self._schedule(req)
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_oz": 2.0})
+        self.assertEqual(response.status_code, 200)
+        self.facility.refresh_from_db()
+        self.assertEqual(self.facility.stock_level_ml, 100 - round(2.0 * 29.5735))
 
 
 class BookingStageIndexTests(APITestCase):
