@@ -120,13 +120,17 @@ def get_ai_response(prompt, model=None, history=None):
             model=settings.GEMINI_MODEL,
             contents=contents,
             config=types.GenerateContentConfig(
-                # Rebuilt per call, not cached at import: it embeds the
-                # Knowledge Hub articles, and admins add those through
-                # the admin panel while the server is running. Caching
-                # would mean a new article silently not existing to Kali
-                # until the next deploy.
+                # Rebuilt per call, and necessarily so: it now carries
+                # the passages retrieved for *this* question (see
+                # chat/retrieval.py), so there is nothing here that could
+                # be cached across messages even in principle. It also
+                # keeps the property the old whole-library prompt had --
+                # admins add articles through the admin panel on a
+                # running server, and the next message sees them.
                 system_instruction=build_system_prompt(
-                    SYSTEM_PROMPT, strict=settings.CHAT_STRICT_KNOWLEDGE_ONLY
+                    SYSTEM_PROMPT,
+                    question=prompt,
+                    strict=settings.CHAT_STRICT_KNOWLEDGE_ONLY,
                 ),
                 max_output_tokens=MAX_TOKENS,
                 temperature=0.4,

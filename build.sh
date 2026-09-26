@@ -25,3 +25,16 @@ python manage.py seed_support_contacts
 python manage.py seed_facilities
 python manage.py seed_facility_staff
 python manage.py ensure_admin
+
+# Builds Kali's retrieval index over the knowledge base and embeds every
+# passage (see chat/retrieval.py). Must come after seed_articles, since
+# it indexes what that just created.
+#
+# Not strictly required -- retrieval reconciles passages on every query
+# and embeds lazily, a few per message -- but doing it here means the
+# cost lands on the deploy instead of on whichever mother sends the first
+# message after it. Idempotent: unchanged documents are skipped and
+# already-embedded passages are not re-embedded. Exits cleanly (with a
+# warning) when GEMINI_API_KEY is unset, which is why errexit above does
+# not make this a deploy-blocking step.
+python manage.py reindex_knowledge

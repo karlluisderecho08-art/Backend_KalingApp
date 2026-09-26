@@ -89,6 +89,45 @@ GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.5-flash-lite")
 # IBCLC guidance where they fall short.
 CHAT_STRICT_KNOWLEDGE_ONLY = env.bool("CHAT_STRICT_KNOWLEDGE_ONLY", default=True)
 
+# --- Retrieval (chat/retrieval.py) ---
+# Kali answers from passages retrieved for the question asked, not from
+# the whole library sent every time. These tune that retrieval.
+#
+# Embedding model for semantic search. Separate from GEMINI_MODEL: it is
+# a different model with its own quota, and changing it invalidates every
+# stored vector (similarities are only comparable inside one model's
+# space) -- chat/retrieval.py handles that by treating a vector from
+# another model as absent and re-embedding it, so a change here is safe,
+# just not free.
+GEMINI_EMBEDDING_MODEL = env("GEMINI_EMBEDDING_MODEL", default="gemini-embedding-001")
+
+# False disables semantic search and leaves retrieval purely lexical
+# (BM25). Retrieval still works -- this is the state it runs in with no
+# GEMINI_API_KEY set -- so this is the switch for running fully offline,
+# or for isolating a ranking problem to one of the two rankers.
+CHAT_RETRIEVAL_USE_EMBEDDINGS = env.bool("CHAT_RETRIEVAL_USE_EMBEDDINGS", default=True)
+
+# How many passages reach the prompt. Six ~900-character passages is
+# roughly 5k characters, against ~20k for the whole library before this,
+# and leaves MAX_TOKENS headroom for the answer. Raising it costs latency
+# and dilutes the context; lowering it risks cutting the passage that
+# actually answered the question.
+CHAT_RETRIEVAL_TOP_K = env.int("CHAT_RETRIEVAL_TOP_K", default=6)
+
+# How far below the best-matching passage a passage may score and still
+# count as a semantic match. A margin, not an absolute cosine floor:
+# measured against this corpus, every passage scores above 0.47 even for
+# a question about car engines, and the relevant/irrelevant ranges
+# overlap, so an absolute threshold cannot separate them -- see the
+# measurements in chat/retrieval.py's _vector_scores(). 0.05 was picked
+# from those: it keeps the 5-10 passages that actually answer a real
+# question and drops the rest of the corpus.
+#
+# Raise it to let more marginal passages through, lower it to tighten to
+# only the closest matches. It does not control topicality -- the
+# keyword guardrail and the grounding rules do.
+CHAT_RETRIEVAL_SIMILARITY_MARGIN = env.float("CHAT_RETRIEVAL_SIMILARITY_MARGIN", default=0.05)
+
 # /auth/demo-login/ hands out real tokens to anyone who POSTs to it, no
 # credentials at all (it backs the app's "Bypass / Quick-Access Demo
 # Mode" button). Off unless explicitly enabled: fine pointed at a
