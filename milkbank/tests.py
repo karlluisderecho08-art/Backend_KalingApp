@@ -128,27 +128,29 @@ class TransitionsTests(APITestCase):
         starting_stock = self.facility.stock_level_ml
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
         apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
-        apply_transition(self.req, Status.COMPLETED, self.staff, "completed", amount_oz=4.0)
+        apply_transition(self.req, Status.COMPLETED, self.staff, "completed", amount_ml=120)
 
         self.facility.refresh_from_db()
         self.mother.refresh_from_db()
-        self.assertEqual(self.facility.stock_level_ml, starting_stock + round(4.0 * 29.5735))
-        self.assertEqual(self.mother.total_drawn_oz, 4.0)
+        # Applied as given: stock and the mother's lifetime total are both
+        # millilitres, so there is no conversion and nothing to round.
+        self.assertEqual(self.facility.stock_level_ml, starting_stock + 120)
+        self.assertEqual(self.mother.total_drawn_ml, 120)
 
     def test_completing_a_recipient_request_with_an_amount_debits_stock(self):
         recipient_req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
         starting_stock = self.facility.stock_level_ml
         apply_transition(recipient_req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
         apply_transition(recipient_req, Status.SCHEDULED, self.mother, "attendance_confirmed")
-        apply_transition(recipient_req, Status.COMPLETED, self.staff, "completed", amount_oz=3.0)
+        apply_transition(recipient_req, Status.COMPLETED, self.staff, "completed", amount_ml=90)
 
         self.facility.refresh_from_db()
-        self.assertEqual(self.facility.stock_level_ml, starting_stock - round(3.0 * 29.5735))
+        self.assertEqual(self.facility.stock_level_ml, starting_stock - 90)
 
     def test_completing_without_an_amount_leaves_stock_and_total_drawn_untouched(self):
         # Every non-StaffConfirmCompletionView caller (there are none right
         # now, but nothing stops a future one) must be safe leaving
-        # amount_oz at its None default -- this is what that relies on.
+        # amount_ml at its None default -- this is what that relies on.
         starting_stock = self.facility.stock_level_ml
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
         apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
@@ -157,7 +159,7 @@ class TransitionsTests(APITestCase):
         self.facility.refresh_from_db()
         self.mother.refresh_from_db()
         self.assertEqual(self.facility.stock_level_ml, starting_stock)
-        self.assertEqual(self.mother.total_drawn_oz, 0.0)
+        self.assertEqual(self.mother.total_drawn_ml, 0)
 
     def test_counter_offer_can_return_to_pending_or_go_to_scheduled(self):
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
@@ -538,7 +540,7 @@ class BookingEndpointPermissionTests(APITestCase):
 
 class ConfirmCompletionEndpointTests(APITestCase):
     """
-    POST .../confirm-completion/ is the only place amount_oz ever reaches
+    POST .../confirm-completion/ is the only place amount_ml ever reaches
     apply_transition for real -- covers the serializer requiring it, and
     the recipient-side stock-sufficiency check that has to run before the
     transition commits (see StaffConfirmCompletionView's docstring).
@@ -560,7 +562,7 @@ class ConfirmCompletionEndpointTests(APITestCase):
         apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
         apply_transition(req, Status.SCHEDULED, self.mother, "attendance_confirmed")
 
-    def test_amount_oz_is_required(self):
+    def test_amount_ml_is_required(self):
         req = make_request(self.mother, self.facility)
         self._schedule(req)
         self.client.force_authenticate(user=self.staff)
@@ -569,21 +571,52 @@ class ConfirmCompletionEndpointTests(APITestCase):
         req.refresh_from_db()
         self.assertEqual(req.current_sub_status, Status.SCHEDULED)
 
+    def test_a_fractional_amount_is_rejected(self):
+        """
+        Volumes are whole millilitres throughout, so there is nothing for
+        a fraction to mean here -- and accepting one would reintroduce the
+        rounding that splitting the unit caused in the first place.
+        """
+        req = make_request(self.mother, self.facility)
+        self._schedule(req)
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.post(
+            f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_ml": 4.5}
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.facility.refresh_from_db()
+        self.assertEqual(self.facility.stock_level_ml, 100)
+
+    def test_a_zero_amount_is_rejected(self):
+        req = make_request(self.mother, self.facility)
+        self._schedule(req)
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.post(
+            f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_ml": 0}
+        )
+
+        self.assertEqual(response.status_code, 400)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
+
     def test_donor_completion_adds_to_facility_stock(self):
         req = make_request(self.mother, self.facility)
         self._schedule(req)
         self.client.force_authenticate(user=self.staff)
-        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_oz": 5.0})
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_ml": 150})
         self.assertEqual(response.status_code, 200)
         self.facility.refresh_from_db()
-        self.assertEqual(self.facility.stock_level_ml, 100 + round(5.0 * 29.5735))
+        self.assertEqual(self.facility.stock_level_ml, 100 + 150)
 
     def test_recipient_completion_is_rejected_when_stock_is_insufficient(self):
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
         self._schedule(req)
         self.client.force_authenticate(user=self.staff)
-        # 100 mL in stock is well under the ~591 mL that 20 oz converts to.
-        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_oz": 20.0})
+        # Asking for 600 mL against 100 mL on hand.
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_ml": 600})
         self.assertEqual(response.status_code, 400)
         self.facility.refresh_from_db()
         req.refresh_from_db()
@@ -594,10 +627,10 @@ class ConfirmCompletionEndpointTests(APITestCase):
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
         self._schedule(req)
         self.client.force_authenticate(user=self.staff)
-        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_oz": 2.0})
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_ml": 60})
         self.assertEqual(response.status_code, 200)
         self.facility.refresh_from_db()
-        self.assertEqual(self.facility.stock_level_ml, 100 - round(2.0 * 29.5735))
+        self.assertEqual(self.facility.stock_level_ml, 100 - 60)
 
 
 class BookingStageIndexTests(APITestCase):

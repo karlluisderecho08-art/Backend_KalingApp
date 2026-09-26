@@ -104,7 +104,13 @@ class User(AbstractUser):
     # original Kotlin trackingStreaks was a static seed value with no
     # real increment logic anywhere, client or server.
     last_active_date = models.DateField(null=True, blank=True)
-    total_drawn_oz = models.FloatField(default=0.0)
+    # Millilitres, and an integer: mL is the unit the rest of the system
+    # stores milk in (Facility.stock_level_ml), and whole mL is exact.
+    # This was a float count of US fluid ounces, converted to mL at the
+    # two places it met facility stock -- so every completed booking
+    # rounded, and a mother's lifetime total and the facility stock it
+    # fed could drift apart permanently. One unit, no conversion, no drift.
+    total_drawn_ml = models.PositiveIntegerField(default=0)
 
     # --- New: location, for Phase 3's Smart Allocation distance term ---
     # Captured via device GPS, so RA 10173 requires an explicit, logged

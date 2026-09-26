@@ -16,7 +16,7 @@ from notifications.services import notify
 
 from .allocation import AllocationError, LocationRequired, NoOperationalFacility, get_ranked_facilities
 from .business_hours import add_business_hours
-from .models import ML_PER_FLUID_OUNCE, DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
+from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
 from .serializers import (
     AllocationRequestSerializer,
@@ -485,14 +485,14 @@ class StaffAdvanceStageView(generics.GenericAPIView):
 
 class StaffConfirmCompletionView(generics.GenericAPIView):
     """
-    POST /milkbank/requests/<id>/confirm-completion/  {amount_oz}
+    POST /milkbank/requests/<id>/confirm-completion/  {amount_ml}
 
     Closes out a Scheduled booking: creates the TransactionRecord, and
-    moves Facility.stock_level_ml by the ounces staff recorded -- up for
-    a DONOR (milk actually drawn), down for a RECIPIENT (milk actually
-    dispensed). See milkbank.transitions.apply_transition for exactly
-    what that update does; the stock-sufficiency check below has to
-    happen here, before the transition commits, since apply_transition
+    moves Facility.stock_level_ml by the millilitres staff recorded -- up
+    for a DONOR (milk actually drawn), down for a RECIPIENT (milk
+    actually dispensed). See milkbank.transitions.apply_transition for
+    exactly what that update does; the stock-sufficiency check below has
+    to happen here, before the transition commits, since apply_transition
     itself has no way to reject the request once it's already moved.
     """
 
@@ -504,20 +504,19 @@ class StaffConfirmCompletionView(generics.GenericAPIView):
         req = self.get_object()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        amount_oz = serializer.validated_data["amount_oz"]
+        amount_ml = serializer.validated_data["amount_ml"]
 
         if req.request_type == MilkBankRequest.RequestType.RECIPIENT:
-            ml_amount = round(amount_oz * ML_PER_FLUID_OUNCE)
-            if req.allocated_facility.stock_level_ml < ml_amount:
+            if req.allocated_facility.stock_level_ml < amount_ml:
                 return Response(
                     {"detail": f"{req.allocated_facility.name} only has "
                                f"{req.allocated_facility.stock_level_ml} mL in stock -- not enough to dispense "
-                               f"{amount_oz} oz."},
+                               f"{amount_ml} mL."},
                     status=400,
                 )
 
         try:
-            apply_transition(req, Status.COMPLETED, request.user, "completed", amount_oz=amount_oz)
+            apply_transition(req, Status.COMPLETED, request.user, "completed", amount_ml=amount_ml)
         except InvalidTransition as exc:
             return Response({"detail": str(exc)}, status=400)
         req.current_stage_index = len(req.stages) - 1

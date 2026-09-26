@@ -18,7 +18,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             "id", "email", "role", "is_staff", "facility", "facility_name",
             "mom_name", "baby_name", "baby_age_weeks", "breastfeeding_status",
-            "baby_birth_date", "pediatric_clinic", "tracking_streaks", "total_drawn_oz",
+            "baby_birth_date", "pediatric_clinic", "tracking_streaks", "total_drawn_ml",
             "latitude", "longitude", "location_consent_given", "has_seen_walkthrough",
         ]
         # Nothing writes through this serializer today (only ever used in
@@ -39,7 +39,7 @@ class UpdateProfileSerializer(serializers.ModelSerializer):
     tour -- a partial PATCH here only touches whichever fields it's
     given, not the rest). Deliberately narrower than UserSerializer's
     full read shape otherwise: email/role/is_staff aren't
-    account-editable here, and tracking_streaks/total_drawn_oz/
+    account-editable here, and tracking_streaks/total_drawn_ml/
     latitude/longitude/location_consent_given are system-computed or
     consent-gated, not something a plain profile edit should overwrite.
     """
@@ -119,7 +119,7 @@ class StaffUserListSerializer(serializers.ModelSerializer):
         fields = [
             "id", "email", "mom_name", "baby_name", "baby_age_weeks",
             "breastfeeding_status", "baby_birth_date", "pediatric_clinic",
-            "tracking_streaks", "total_drawn_oz", "location_consent_given",
+            "tracking_streaks", "total_drawn_ml", "location_consent_given",
             "is_active", "date_joined",
         ]
 

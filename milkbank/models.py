@@ -52,13 +52,23 @@ class Facility(models.Model):
         return self.name
 
 
-# What staff records at StaffConfirmCompletionView is a US fluid ounce
-# figure (matches how the Kotlin app and Fabella/PGH/St. Luke's staff
-# actually talk about volume) -- Facility.stock_level_ml and
-# accounts.User.total_drawn_oz's underlying unit are what they are for
-# unrelated historical reasons, so this is the one conversion point
-# between the two, not something to duplicate at each call site.
-ML_PER_FLUID_OUNCE = 29.5735
+# Milk volume is millilitres everywhere in this system -- what staff
+# record at StaffConfirmCompletionView, Facility.stock_level_ml, and
+# accounts.User.total_drawn_ml. There is deliberately no conversion
+# constant here any more.
+#
+# mL over US fluid ounces because: the manuscript itself quotes milk
+# volumes in mL ("2-10 mL/feeding" for colostrum); the Philippines is
+# metric, as are the DOH/WHO human-milk-banking protocols these
+# facilities work to; neonatal feed volumes are prescribed in mL; and
+# whole mL is exact, where a float ounce figure converted at the
+# boundary rounded on every completed booking and let a mother's
+# lifetime total drift away from the facility stock it fed.
+#
+# Staff do talk in ounces (per the Fabella/PGH/St. Luke's interviews),
+# which is a labelling problem, not a storage one -- if entry in ounces
+# is ever wanted, it belongs in the facility UI as an input helper that
+# converts before sending, not as a second unit in the database.
 
 
 class MilkBankRequest(models.Model):

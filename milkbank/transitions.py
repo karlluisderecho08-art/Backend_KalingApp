@@ -7,7 +7,7 @@ from notifications.models import NotificationItem
 from notifications.services import notify
 
 from .business_hours import add_business_hours
-from .models import ML_PER_FLUID_OUNCE, Facility, MilkBankRequest, TransactionRecord
+from .models import Facility, MilkBankRequest, TransactionRecord
 
 Status = MilkBankRequest.Status
 
@@ -55,7 +55,7 @@ class InvalidTransition(Exception):
     pass
 
 
-def apply_transition(req, new_status, actor, action_name, message_override=None, amount_oz=None):
+def apply_transition(req, new_status, actor, action_name, message_override=None, amount_ml=None):
     """
     The one place a MilkBankRequest's status is ever allowed to change.
     Rejects illegal jumps (e.g. declined -> completed), and writes an
@@ -68,14 +68,16 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
     different things to tell her, and STATUS_NOTIFICATIONS only has room
     for one message per status.
 
-    `amount_oz` is COMPLETED-only (StaffConfirmCompletionView is its only
-    real caller with a non-None value) -- how many ounces staff recorded
-    for this booking. Moves Facility.stock_level_ml the opposite direction
-    for a DONOR vs. a RECIPIENT (see the block below), and credits the
-    donor's own accounts.User.total_drawn_oz. The view already validated a
-    RECIPIENT amount against available stock before calling this, so
-    stock_level_ml going negative here would mean that check was bypassed,
-    not that this function needs to re-guard it.
+    `amount_ml` is COMPLETED-only (StaffConfirmCompletionView is its only
+    real caller with a non-None value) -- how many millilitres staff
+    recorded for this booking. Moves Facility.stock_level_ml the opposite
+    direction for a DONOR vs. a RECIPIENT (see the block below), and
+    credits the donor's own accounts.User.total_drawn_ml. Both of those
+    are millilitres too, so the figure is applied as given rather than
+    converted. The view already validated a RECIPIENT amount against
+    available stock before calling this, so stock_level_ml going negative
+    here would mean that check was bypassed, not that this function needs
+    to re-guard it.
     """
     if new_status not in ALLOWED_TRANSITIONS.get(req.current_sub_status, set()):
         raise InvalidTransition(f"Cannot move from {req.current_sub_status} to {new_status}")
@@ -106,16 +108,15 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
             date=req.preferred_date,
             status=TransactionRecord.TransactionStatus.COMPLETED,
         )
-        if amount_oz:
-            ml_amount = round(amount_oz * ML_PER_FLUID_OUNCE)
+        if amount_ml:
             if req.request_type == MilkBankRequest.RequestType.DONOR:
                 Facility.objects.filter(pk=req.allocated_facility_id).update(
-                    stock_level_ml=F("stock_level_ml") + ml_amount
+                    stock_level_ml=F("stock_level_ml") + amount_ml
                 )
-                User.objects.filter(pk=req.owner_id).update(total_drawn_oz=F("total_drawn_oz") + amount_oz)
+                User.objects.filter(pk=req.owner_id).update(total_drawn_ml=F("total_drawn_ml") + amount_ml)
             else:
                 Facility.objects.filter(pk=req.allocated_facility_id).update(
-                    stock_level_ml=F("stock_level_ml") - ml_amount
+                    stock_level_ml=F("stock_level_ml") - amount_ml
                 )
 
 

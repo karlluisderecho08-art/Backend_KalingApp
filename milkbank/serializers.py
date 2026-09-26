@@ -104,13 +104,17 @@ class StaffMessageSerializer(serializers.Serializer):
 class ConfirmCompletionSerializer(serializers.Serializer):
     """
     What staff records when closing out a Scheduled booking -- how many
-    ounces were actually drawn (DONOR) or dispensed (RECIPIENT). See
+    millilitres were actually drawn (DONOR) or dispensed (RECIPIENT). See
     milkbank.transitions.apply_transition for what this drives:
     Facility.stock_level_ml (added for a donor, subtracted for a
-    recipient) and the donor's own total_drawn_oz.
+    recipient) and the donor's own total_drawn_ml.
+
+    An integer field, not a float: this is the same unit the stock it
+    moves is stored in, so there is no conversion to round and no reason
+    to accept a fraction of a millilitre.
     """
 
-    amount_oz = serializers.FloatField(min_value=0.01)
+    amount_ml = serializers.IntegerField(min_value=1)
 
 
 class TransactionRecordSerializer(serializers.ModelSerializer):
