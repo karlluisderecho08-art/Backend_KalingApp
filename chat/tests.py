@@ -698,3 +698,43 @@ class ConversationContinuityTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         mock_get_ai_response.assert_not_called()
         self.assertEqual(response.data["reply"]["text"], OFF_TOPIC_RESPONSE)
+
+    def test_a_refusal_does_not_open_a_window_for_more_off_topic_questions(self):
+        """
+        Found live, not by reading: the guardrail was disabling itself.
+
+        The off-topic refusal is stored like any other message from Kali,
+        so it became "the last thing Kali said" and satisfied the
+        follow-up exception -- which meant the FIRST off-topic question was
+        refused and every one after it, for the next 30 minutes, skipped
+        the guardrail and reached the model. Reproduced against the live
+        deployment: "how do I fix a car engine" was refused, then a
+        stock-market question immediately after it got a real generated
+        reply that cited a Knowledge Hub article.
+
+        The manuscript claims out-of-scope messages "never reach Gemini",
+        which was true exactly once per session and false afterwards.
+        """
+        with patch("chat.views.get_ai_response") as mock_get_ai_response:
+            first = self.client.post("/chat/message/", {"text": "how do I fix a car engine"})
+            second = self.client.post(
+                "/chat/message/", {"text": "what should I invest in the stock market"}
+            )
+
+        self.assertEqual(first.data["reply"]["text"], OFF_TOPIC_RESPONSE)
+        # The one that regressed: this used to reach the model.
+        self.assertEqual(second.data["reply"]["text"], OFF_TOPIC_RESPONSE)
+        mock_get_ai_response.assert_not_called()
+
+    @patch("chat.views.get_ai_response", return_value=("Here's more detail.", 20, False))
+    def test_a_real_reply_still_opens_the_follow_up_window(self, mock_get_ai_response):
+        """
+        The fix must not close the window it was built for: a genuine reply
+        from Kali still lets a bare "yes" through.
+        """
+        self._kali_just_asked()
+
+        response = self.client.post("/chat/message/", {"text": "yes"})
+
+        mock_get_ai_response.assert_called_once()
+        self.assertNotEqual(response.data["reply"]["text"], OFF_TOPIC_RESPONSE)

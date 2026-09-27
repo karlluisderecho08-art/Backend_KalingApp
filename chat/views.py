@@ -100,12 +100,31 @@ def _continues_conversation(prior):
     Knowledge Hub by its system prompt. A genuinely off-topic question
     asked mid-conversation gets refused there instead -- in context, and
     in Kali's own words, rather than by a canned line.
+
+    A canned refusal is NOT an open exchange, and excluding it is what
+    stops this from disabling the guardrail entirely. The off-topic reply
+    above is stored like any other message from Kali, so without this
+    check the first off-topic question gets refused, that refusal becomes
+    the "last thing Kali said", and every off-topic question for the next
+    FOLLOW_UP_WINDOW skips the guardrail and reaches the model. Verified
+    live before the fix: a first "how do I fix a car engine" was refused,
+    and a stock-market question straight after it got a real generated
+    answer. The refusal was opening the door it had just closed.
     """
     if not prior:
         return False
 
     last = prior[-1]
     if last.is_user:
+        return False
+    # Compared against the constant rather than a flag on the row: the
+    # obvious alternative -- storing the refusal with is_system_notice=True,
+    # which build-up of `prior` already filters out -- would also change how
+    # the Android app renders it. is_system_notice drives
+    # ModelSwitchNoticeCard (ui/screens/AllScreens.kt), which navigates the
+    # mother to the Knowledge Hub when tapped, so the refusal would become a
+    # model-switch card with a surprise navigation on it.
+    if last.text == OFF_TOPIC_RESPONSE:
         return False
     return timezone.now() - last.created_at < FOLLOW_UP_WINDOW
 
