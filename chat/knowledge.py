@@ -35,9 +35,13 @@ from .retrieval import retrieve
 STRICT_GROUNDING_RULES = (
     "Answer ONLY using the knowledge base passages provided below. They are your "
     "single source of truth.\n"
-    "- If the passages cover the question, answer from them, and cite the source "
-    "named in the passage header so she can read it in full (for example: see "
-    "\"Nutrition During Pregnancy and Breastfeeding\" in the Knowledge Hub).\n"
+    "- If the passages cover the question, answer from them, then cite the source "
+    "ONCE, in a single short line at the very END of the reply (for example: "
+    "Source: \"Nutrition During Pregnancy and Breastfeeding\" in the Knowledge "
+    "Hub). One citation per reply, never per sentence, and never repeat the same "
+    "source twice -- replies were arriving with the same article named four times "
+    "in a row, which reads as broken. If two sources genuinely contributed, name "
+    "both on that one line.\n"
     "- If the passages do NOT cover the question, say plainly that it is not in the "
     "knowledge base yet, briefly name what the passages DO cover, and suggest she "
     "ask a healthcare professional or an IBCLC lactation consultant. Do not answer "
@@ -56,7 +60,8 @@ STRICT_GROUNDING_RULES = (
 # bank donation among them.
 PREFERRED_GROUNDING_RULES = (
     "Answer from the knowledge base passages below wherever they cover the question, "
-    "and cite the source named in the passage header so she can read it in full. "
+    "then cite the source ONCE, in a single short line at the very end of the reply "
+    "-- one citation per reply, never per sentence. "
     "Where they do not cover it, say the knowledge base does not have anything on it "
     "yet, then still help using established WHO, AAP and IBCLC guidance. Never "
     "contradict the passages, and never invent a source title or a figure that is "
