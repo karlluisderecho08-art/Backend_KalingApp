@@ -382,8 +382,8 @@ class DemoLoginView(APIView):
     POST /auth/demo-login/
 
     Preserves the Kotlin WelcomeScreen's "Bypass / Quick-Access Demo Mode"
-    button: no credentials, straight into the seeded "Rachel" account, for
-    panel demos. The account itself is created by the seed_demo_user
+    button: no credentials, straight into the seeded demo account
+    (settings.DEMO_ACCOUNT_EMAIL), for panel demos. The account itself is created by the seed_demo_user
     management command, not here -- this view only ever logs in.
 
     Now gated behind DEMO_LOGIN_ENABLED, off by default. This hands out
@@ -406,7 +406,7 @@ class DemoLoginView(APIView):
             raise Http404
 
         try:
-            user = User.objects.get(email="rachel@kalingapp.demo")
+            user = User.objects.get(email=settings.DEMO_ACCOUNT_EMAIL)
         except User.DoesNotExist:
             return Response(
                 {"detail": "Demo account not seeded. Run: manage.py seed_demo_user"},

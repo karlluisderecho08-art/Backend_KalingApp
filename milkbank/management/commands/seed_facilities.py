@@ -22,12 +22,20 @@ class Command(BaseCommand):
     approximate geocode of its confirmed street address, not a surveyed
     pin.
 
-    capacity / booked_count / stock_level_ml are demo numbers, not real
-    operational data from the partner facilities -- nobody has given us
-    real figures yet (same open item as the roadmap's "minimum stock
-    threshold" gap -- see MINIMUM_STOCK_THRESHOLD_ML in allocation.py).
-    Good enough to prove the sort works; not something to show a panel
-    as real facility status.
+    capacity / booked_count / stock_level_ml are STILL not real
+    operational data -- nobody has supplied real figures (same open item
+    as the roadmap's "minimum stock threshold" gap, see
+    MINIMUM_STOCK_THRESHOLD_ML in allocation.py). They have been made
+    plausible rather than left as round demo values: the old set had two
+    facilities sitting at exactly 50% booked (20/10, 40/20) and stock in
+    flat hundreds, which reads as invented the moment anyone looks at it
+    on screen. The figures now vary the way real readings do, scale
+    roughly with each facility's size, and keep booked_count under
+    capacity.
+
+    They are still unverified, and that has NOT changed -- do not present
+    them to a panel as real facility status. Plausible test data is easier
+    to demo with; it is not the same as true data.
     """
 
     help = "Seed the demo milk bank facilities"
@@ -39,9 +47,9 @@ class Command(BaseCommand):
                 "type": Facility.FacilityType.HUMAN_MILK_BANK,
                 "contact": "(02) 8723-0101",
                 "address": "279 E. Rodriguez Sr. Ave, Quezon City",
-                "capacity": 20,
-                "booked_count": 10,
-                "stock_level_ml": 800,
+                "capacity": 18,
+                "booked_count": 11,
+                "stock_level_ml": 740,
                 "latitude": 14.6091,
                 "longitude": 121.0223,
             },
@@ -50,9 +58,9 @@ class Command(BaseCommand):
                 "type": Facility.FacilityType.HOSPITAL_DEPOT,
                 "contact": "(02) 8554-8400",
                 "address": "Taft Ave, Ermita, Manila",
-                "capacity": 40,
-                "booked_count": 20,
-                "stock_level_ml": 1500,
+                "capacity": 36,
+                "booked_count": 23,
+                "stock_level_ml": 1620,
                 "latitude": 14.5764,
                 "longitude": 120.9850,
             },
@@ -60,10 +68,16 @@ class Command(BaseCommand):
                 "name": "St. Martin de Porres",
                 "type": Facility.FacilityType.HOSPITAL_DEPOT,
                 "contact": "",
-                "address": "",  # unconfirmed -- fill in via admin once verified
-                "capacity": 15,
-                "booked_count": 12,
-                "stock_level_ml": 200,
+                # Left EMPTY on purpose. St. Martin de Porres is a real
+                # institution and nobody has confirmed its address or
+                # contact number for this project. Inventing a
+                # plausible-looking one for a real hospital is worse
+                # than a blank field: a mother could act on it. Fill in
+                # via the admin panel once verified.
+                "address": "",
+                "capacity": 12,
+                "booked_count": 9,
+                "stock_level_ml": 185,
                 "latitude": 14.5794,
                 "longitude": 121.0359,
             },
@@ -72,9 +86,9 @@ class Command(BaseCommand):
                 "type": Facility.FacilityType.HUMAN_MILK_BANK,
                 "contact": "8866-7960",
                 "address": "1003 Lope de Vega St, Santa Cruz, Manila, 1003 Metro Manila",
-                "capacity": 25,
-                "booked_count": 0,
-                "stock_level_ml": 600,
+                "capacity": 24,
+                "booked_count": 7,
+                "stock_level_ml": 910,
                 "latitude": 14.6169,
                 "longitude": 120.9833,
             },

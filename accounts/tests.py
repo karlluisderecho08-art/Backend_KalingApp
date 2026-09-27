@@ -4,6 +4,7 @@ from unittest.mock import patch
 from django.contrib.auth.hashers import check_password
 from django.core import mail
 from django.core.cache import cache
+from django.conf import settings
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
@@ -443,7 +444,7 @@ class DemoLoginTests(APITestCase):
 
     @override_settings(DEMO_LOGIN_ENABLED=True)
     def test_enabled_explicitly_still_works_for_local_demos(self):
-        User.objects.create_user(email="rachel@kalingapp.demo", password="x", is_active=True)
+        User.objects.create_user(email=settings.DEMO_ACCOUNT_EMAIL, password="x", is_active=True)
 
         response = self.client.post("/auth/demo-login/")
 

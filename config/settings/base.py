@@ -135,6 +135,12 @@ CHAT_RETRIEVAL_SIMILARITY_MARGIN = env.float("CHAT_RETRIEVAL_SIMILARITY_MARGIN",
 # internet. dev.py turns it back on.
 DEMO_LOGIN_ENABLED = env.bool("DEMO_LOGIN_ENABLED", default=False)
 
+# Which account /auth/demo-login/ logs into, and the one seed_demo_user
+# creates. A single constant because it was previously hardcoded in BOTH --
+# the view and the management command -- so renaming the seeded account in
+# one place silently broke demo login in the other.
+DEMO_ACCOUNT_EMAIL = env("DEMO_ACCOUNT_EMAIL", default="maria.santos@kalingapp.demo")
+
 # Shared secret for POST /milkbank/sweep-expired/ (see milkbank/views.py's
 # StaffSweepExpiredView) -- lets an external scheduler (this host has no
 # Celery/cron worker of its own; a free pinger like cron-job.org works)
