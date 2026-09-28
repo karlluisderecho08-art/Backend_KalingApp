@@ -88,9 +88,29 @@ class TransitionsTests(APITestCase):
         self.req.refresh_from_db()
         self.assertEqual(self.req.current_sub_status, Status.DECLINED)
 
-    def test_pending_cannot_jump_straight_to_scheduled(self):
-        # Must go through awaiting_attendance first -- skipping straight
-        # to scheduled would bypass the mother's attendance confirmation.
+    def test_pending_may_move_straight_to_scheduled_for_the_recipient_review(self):
+        # This edge used to be forbidden, on the reasoning that reaching
+        # SCHEDULED without passing through AWAITING_ATTENDANCE would skip
+        # the mother's attendance confirmation.
+        #
+        # It is allowed now because the RECIPIENT pathway needs it: accepting
+        # her lands on the "Status" stage, where staff read the serology test
+        # and questionnaire she already submitted. Nothing is being asked of
+        # her there, so putting her in AWAITING_ATTENDANCE would start an
+        # 8-business-hour clock against a mother with nothing left to do.
+        #
+        # Her attendance confirmation is not skipped -- it moves later in the
+        # sequence. StaffAdvanceStageView sends her to AWAITING_ATTENDANCE the
+        # moment that review passes; see
+        # test_advancing_a_recipient_into_booking_confirmation_awaits_attendance.
+        apply_transition(self.req, Status.SCHEDULED, self.staff, "accepted")
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.current_sub_status, Status.SCHEDULED)
+
+    def test_declined_still_cannot_jump_to_scheduled(self):
+        # The edge added above is PENDING -> SCHEDULED specifically. A
+        # terminal status must stay terminal.
+        apply_transition(self.req, Status.DECLINED, self.staff, "declined")
         with self.assertRaises(InvalidTransition):
             apply_transition(self.req, Status.SCHEDULED, self.staff, "accepted")
 
@@ -661,13 +681,57 @@ class BookingStageIndexTests(APITestCase):
         req.refresh_from_db()
         self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
 
-    def test_staff_accept_advances_stage_for_recipient_request(self):
+    def test_staff_accept_lands_a_recipient_on_the_status_review(self):
+        # Her serology test and questionnaire are already in; a human has to
+        # read them before she is asked for anything else. So she lands on
+        # "Status" as SCHEDULED (facility work in progress) rather than on
+        # "Booking Confirmation" as AWAITING_ATTENDANCE (waiting on her).
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
         self.client.force_authenticate(user=self.staff)
         response = self.client.post(f"/milkbank/requests/{req.id}/accept/")
         self.assertEqual(response.status_code, 200)
         req.refresh_from_db()
+        self.assertEqual(req.stages[req.current_stage_index], "Status")
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
+
+    def test_staff_accept_lands_a_donor_on_booking_confirmation(self):
+        # The donor pathway is unchanged: nothing is asked of the facility
+        # until she turns up, so the next move is hers.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(f"/milkbank/requests/{req.id}/accept/")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
         self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
+        self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
+
+    def test_advancing_a_recipient_into_booking_confirmation_awaits_attendance(self):
+        # Passing the Status review is what finally puts the ball in her
+        # court -- so arriving at that stage must also flip the status, or
+        # she sits on a screen whose whole purpose is confirming attendance
+        # without ever being asked to.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        self.client.force_authenticate(user=self.staff)
+        self.client.post(f"/milkbank/requests/{req.id}/accept/")
+        response = self.client.post(f"/milkbank/requests/{req.id}/advance-stage/")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
+        self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
+
+    def test_a_recipient_confirming_attendance_reaches_results(self):
+        # End of the recipient pathway: Status -> Booking Confirmation ->
+        # Results, which is where staff record the millilitres dispensed.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        self.client.force_authenticate(user=self.staff)
+        self.client.post(f"/milkbank/requests/{req.id}/accept/")
+        self.client.post(f"/milkbank/requests/{req.id}/advance-stage/")
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-attendance/")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.stages[req.current_stage_index], "Results")
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
 
     def test_confirm_attendance_lands_on_the_stage_after_booking_confirmation(self):
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)

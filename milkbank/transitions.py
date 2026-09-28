@@ -40,11 +40,30 @@ STATUS_NOTIFICATIONS = {
 # The roadmap mentions django-fsm as an option for this; a plain dict is
 # enough for seven statuses and keeps this readable without adding a new
 # dependency -- worth revisiting only if the rules get much more complex.
+#
+# Two of these edges exist for the RECIPIENT pathway only, and are worth
+# spelling out because they look odd next to the DONOR one:
+#
+#   PENDING -> SCHEDULED
+#     Accepting a RECIPIENT lands her on the "Status" stage, where staff
+#     review the serology test and questionnaire she submitted. That is
+#     facility work, not a wait on the mother, so it cannot be
+#     AWAITING_ATTENDANCE -- which would start the 8-business-hour clock
+#     against her for something she has already done. SCHEDULED is the
+#     same status the DONOR screening stages use for exactly this shape
+#     of "active, staff is working on it, nobody is being waited on."
+#
+#   SCHEDULED -> AWAITING_ATTENDANCE
+#     Once that review passes, she moves to "Booking Confirmation", which
+#     IS a wait on the mother. This is the only backwards-looking edge in
+#     the graph, and it is deliberate: for a RECIPIENT the staff review
+#     happens BEFORE attendance is confirmed, so the two statuses occur
+#     in the opposite order to the DONOR pathway.
 ALLOWED_TRANSITIONS = {
-    Status.PENDING: {Status.AWAITING_ATTENDANCE, Status.DECLINED, Status.EXPIRED},
+    Status.PENDING: {Status.AWAITING_ATTENDANCE, Status.SCHEDULED, Status.DECLINED, Status.EXPIRED},
     Status.AWAITING_ATTENDANCE: {Status.SCHEDULED, Status.COUNTER_OFFERED, Status.EXPIRED},
     Status.COUNTER_OFFERED: {Status.SCHEDULED, Status.PENDING},
-    Status.SCHEDULED: {Status.COMPLETED},
+    Status.SCHEDULED: {Status.COMPLETED, Status.AWAITING_ATTENDANCE},
     Status.DECLINED: set(),
     Status.EXPIRED: set(),
     Status.COMPLETED: set(),

@@ -333,18 +333,38 @@ class StaffAcceptView(generics.GenericAPIView):
         req = self.get_object()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        # Where accepting lands depends on the pathway, because the two
+        # pathways order their steps differently.
+        #
+        # DONOR      -> "Booking Confirmation", AWAITING_ATTENDANCE.
+        #   Nothing is asked of the facility until she turns up, so the
+        #   next move is hers. Confirming attendance advances her again,
+        #   into "Counseling and Testing" (see ConfirmAttendanceView),
+        #   which is where the Donor Process queue picks her up.
+        #
+        # RECIPIENT  -> "Status", SCHEDULED.
+        #   Her serology test and questionnaire are already submitted and
+        #   need a human to read them before anything else happens. That
+        #   is facility work, so she must NOT sit in AWAITING_ATTENDANCE
+        #   here -- that status starts an 8-business-hour clock against
+        #   the mother, and she has nothing left to do. She moves on to
+        #   "Booking Confirmation" only once staff pass that review, via
+        #   StaffAdvanceStageView.
+        #
+        # The mobile app's "Confirm My Attendance" button is gated on
+        # stages[current_stage_index] == "Booking Confirmation", so this
+        # is also what decides whether she is shown that button yet.
+        if req.request_type == MilkBankRequest.RequestType.DONOR:
+            target_status = Status.AWAITING_ATTENDANCE
+            target_stage = "Booking Confirmation"
+        else:
+            target_status = Status.SCHEDULED
+            target_stage = "Status"
         try:
-            apply_transition(req, Status.AWAITING_ATTENDANCE, request.user, "accepted")
+            apply_transition(req, target_status, request.user, "accepted")
         except InvalidTransition as exc:
             return Response({"detail": str(exc)}, status=400)
-        # apply_transition only moves current_sub_status. The mobile app's
-        # Booking Status tracker (and its "Confirm My Attendance" button,
-        # gated on stages[current_stage_index] == "Booking Confirmation")
-        # reads current_stage_index instead, so without this she'd see her
-        # status flip to "Awaiting Attendance" with no way to act on it --
-        # every later stage-advancing view (ConfirmAttendanceView,
-        # AcceptCounterOfferView) already assumes accepting landed her here.
-        req.current_stage_index = req.stages.index("Booking Confirmation")
+        req.current_stage_index = req.stages.index(target_stage)
         update_fields = ["current_stage_index"]
         if serializer.validated_data["staff_message"]:
             req.staff_message = serializer.validated_data["staff_message"]
@@ -449,15 +469,23 @@ class StaffAdvanceStageView(generics.GenericAPIView):
     """
     POST /milkbank/requests/<id>/advance-stage/
 
-    Moves current_stage_index one step forward WITHOUT touching
-    current_sub_status -- for the offline-only phases between "Scheduled"
-    and the final stage (DONOR: Counseling and Testing -> Breastmilk
-    Analysis -> Results; RECIPIENT has no such gap, see RECIPIENT_STAGES).
-    Nothing about these phases happens in this app -- staff just ticks
-    each one off here once it's actually done in person, so the mother's
-    tracker reflects reality. The last stage itself is a no-op through
-    this endpoint on purpose: reaching it doesn't close the booking out,
-    only StaffConfirmCompletionView does that (creates the TransactionRecord).
+    Moves current_stage_index one step forward for the offline-only
+    phases staff tick off as they finish them in person:
+
+        DONOR      Counseling and Testing -> Breastmilk Analysis -> Results
+        RECIPIENT  Status -> Booking Confirmation
+
+    Nothing about these phases happens in this app -- staff just record
+    that each one is done, so the mother's tracker reflects reality.
+
+    It usually leaves current_sub_status alone. The one exception is
+    arriving at "Booking Confirmation" on the RECIPIENT pathway, which
+    also moves her to AWAITING_ATTENDANCE -- see the comment at that
+    branch below for why that cannot be skipped.
+
+    The last stage itself is a no-op through this endpoint on purpose:
+    reaching it doesn't close the booking out, only
+    StaffConfirmCompletionView does that (creates the TransactionRecord).
     """
 
     queryset = MilkBankRequest.objects.all()
@@ -473,6 +501,30 @@ class StaffAdvanceStageView(generics.GenericAPIView):
             return Response({"detail": "Already at the final phase."}, status=400)
         req.current_stage_index += 1
         req.save(update_fields=["current_stage_index"])
+
+        # "Booking Confirmation" is by definition the stage where the ball
+        # is in the mother's court. Landing on it while still SCHEDULED
+        # would park her on a stage whose entire purpose is her confirming
+        # attendance, with no prompt, no notification telling her to act,
+        # and no SLA clock -- so she would wait forever on a screen that
+        # never asked her for anything.
+        #
+        # Only the RECIPIENT pathway reaches this branch. A DONOR is put on
+        # Booking Confirmation by StaffAcceptView and has already advanced
+        # past it (via ConfirmAttendanceView) before this endpoint applies
+        # to her at all.
+        #
+        # apply_transition does its own log_action and notify, with the
+        # wording for AWAITING_ATTENDANCE that actually tells her to
+        # confirm -- so this returns here rather than falling through to
+        # the generic "moved to the X phase" message below and sending two.
+        if req.stages[req.current_stage_index] == "Booking Confirmation":
+            try:
+                apply_transition(req, Status.AWAITING_ATTENDANCE, request.user, "stage_advanced")
+            except InvalidTransition as exc:
+                return Response({"detail": str(exc)}, status=400)
+            return Response(MilkBankRequestSerializer(req).data)
+
         log_action(request.user, "booking.stage_advanced", f"MilkBankRequest:{req.id}")
         notify(
             req.owner,
