@@ -146,6 +146,25 @@ class MilkBankRequest(models.Model):
     # status either sets or clears it.
     response_deadline = models.DateTimeField(null=True, blank=True)
 
+    # Both null until StaffConfirmCompletionView closes the booking out,
+    # then set together by apply_transition and never touched again.
+    #
+    # amount_ml is the same millilitres staff recorded there -- donated for
+    # a DONOR, dispensed for a RECIPIENT. It was applied to
+    # Facility.stock_level_ml and (for a DONOR) accounts.User.total_drawn_ml
+    # and then discarded; nothing kept a durable copy of the actual number
+    # for a given booking, which is exactly what the Facility dashboard's
+    # Finished Transactions list needs to show. TransactionRecord (created
+    # in the same block) deliberately does NOT carry it -- see that model's
+    # own docstring for why it stays a receipt, not a ledger line.
+    #
+    # completed_at is when that happened, not preferred_date (the
+    # appointment slot she booked, which TransactionRecord.date already
+    # uses) -- Finished Transactions sorts and displays by this because a
+    # booking scheduled for one date can be completed on another.
+    amount_ml = models.PositiveIntegerField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
     @property
     def stages(self):
         return self.DONOR_STAGES if self.request_type == self.RequestType.DONOR else self.RECIPIENT_STAGES

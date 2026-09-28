@@ -54,6 +54,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "counter_offer_date", "counter_offer_time", "owner_email", "owner_name",
             "response_deadline", "needs_representative", "representative_name",
             "representative_birthday", "representative_contact_number",
+            "amount_ml", "completed_at",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",

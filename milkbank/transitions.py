@@ -127,7 +127,17 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
             date=req.preferred_date,
             status=TransactionRecord.TransactionStatus.COMPLETED,
         )
+        # completed_at always gets set here, independent of amount_ml below
+        # -- a booking reaching COMPLETED is what "finished" means for the
+        # Finished Transactions list, and that must not depend on staff
+        # having entered an amount (amount_ml is effectively always given
+        # by the real endpoint, but apply_transition's signature allows
+        # None, and this field shouldn't silently stay empty if it ever is).
+        req.completed_at = timezone.now()
+        update_fields = ["completed_at"]
         if amount_ml:
+            req.amount_ml = amount_ml
+            update_fields.append("amount_ml")
             if req.request_type == MilkBankRequest.RequestType.DONOR:
                 Facility.objects.filter(pk=req.allocated_facility_id).update(
                     stock_level_ml=F("stock_level_ml") + amount_ml
@@ -137,6 +147,7 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
                 Facility.objects.filter(pk=req.allocated_facility_id).update(
                     stock_level_ml=F("stock_level_ml") - amount_ml
                 )
+        req.save(update_fields=update_fields)
 
 
 # Different wording depending on *whose* clock ran out, even though both

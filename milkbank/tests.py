@@ -652,6 +652,29 @@ class ConfirmCompletionEndpointTests(APITestCase):
         self.facility.refresh_from_db()
         self.assertEqual(self.facility.stock_level_ml, 100 - 60)
 
+    def test_completion_records_the_amount_and_when_it_happened(self):
+        # This is the only durable copy of the millilitres staff actually
+        # recorded -- TransactionRecord deliberately doesn't carry it (see
+        # that model's docstring), so the Facility dashboard's Finished
+        # Transactions list reads it from here.
+        req = make_request(self.mother, self.facility)
+        self._schedule(req)
+        self.client.force_authenticate(user=self.staff)
+        before = timezone.now()
+        response = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_ml": 150})
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.amount_ml, 150)
+        self.assertIsNotNone(req.completed_at)
+        self.assertGreaterEqual(req.completed_at, before)
+
+    def test_amount_ml_and_completed_at_stay_null_before_completion(self):
+        req = make_request(self.mother, self.facility)
+        self._schedule(req)
+        req.refresh_from_db()
+        self.assertIsNone(req.amount_ml)
+        self.assertIsNone(req.completed_at)
+
 
 class BookingStageIndexTests(APITestCase):
     """
