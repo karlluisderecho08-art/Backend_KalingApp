@@ -106,9 +106,9 @@ class User(AbstractUser):
     last_active_date = models.DateField(null=True, blank=True)
     # Millilitres, and an integer: mL is the unit the rest of the system
     # stores milk in (Facility.stock_level_ml), and whole mL is exact.
-    # This was a float count of US fluid ounces, converted to mL at the
-    # two places it met facility stock -- so every completed booking
-    # rounded, and a mother's lifetime total and the facility stock it
+    # Storing this as a fraction of any other unit would round at each
+    # point it met facility stock -- so every completed booking would
+    # round, and a mother's lifetime total and the facility stock it
     # fed could drift apart permanently. One unit, no conversion, no drift.
     total_drawn_ml = models.PositiveIntegerField(default=0)
 

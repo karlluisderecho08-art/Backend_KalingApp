@@ -35,7 +35,7 @@ class Migration(migrations.Migration):
                 ('baby_birth_date', models.DateField(blank=True, null=True)),
                 ('pediatric_clinic', models.CharField(blank=True, max_length=255)),
                 ('tracking_streaks', models.PositiveIntegerField(default=0)),
-                ('total_drawn_oz', models.FloatField(default=0.0)),
+                ('total_drawn_ml', models.PositiveIntegerField(default=0)),
                 ('latitude', models.FloatField(blank=True, null=True)),
                 ('longitude', models.FloatField(blank=True, null=True)),
                 ('location_consent_given', models.BooleanField(default=False)),

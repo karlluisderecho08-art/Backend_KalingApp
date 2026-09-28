@@ -86,9 +86,9 @@ MODEL: User   (table: accounts_user)
   last_active_date
       type=DateField  db_col=date  max_length=None
       null=True  blank=True  default=(none)
-  total_drawn_oz
-      type=FloatField  db_col=real  max_length=None
-      null=False  blank=False  default=0.0
+  total_drawn_ml
+      type=PositiveIntegerField  db_col=integer unsigned  max_length=None
+      null=False  blank=False  default=0
   latitude
       type=FloatField  db_col=real  max_length=None
       null=True  blank=True  default=(none)

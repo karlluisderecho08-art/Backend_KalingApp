@@ -55,20 +55,19 @@ class Facility(models.Model):
 # Milk volume is millilitres everywhere in this system -- what staff
 # record at StaffConfirmCompletionView, Facility.stock_level_ml, and
 # accounts.User.total_drawn_ml. There is deliberately no conversion
-# constant here any more.
+# constant anywhere in the system: one unit, stored as a whole number.
 #
-# mL over US fluid ounces because: the manuscript itself quotes milk
-# volumes in mL ("2-10 mL/feeding" for colostrum); the Philippines is
-# metric, as are the DOH/WHO human-milk-banking protocols these
-# facilities work to; neonatal feed volumes are prescribed in mL; and
-# whole mL is exact, where a float ounce figure converted at the
-# boundary rounded on every completed booking and let a mother's
-# lifetime total drift away from the facility stock it fed.
+# mL specifically because: the manuscript itself quotes milk volumes in
+# mL ("2-10 mL/feeding" for colostrum); the Philippines is metric, as
+# are the DOH/WHO human-milk-banking protocols these facilities work
+# to; and neonatal feed volumes are prescribed in mL. Whole mL is also
+# exact -- a volume held as a fraction of some larger unit would round
+# at every boundary crossing, on every completed booking, and let a
+# mother's lifetime total drift away from the facility stock it fed.
 #
-# Staff do talk in ounces (per the Fabella/PGH/St. Luke's interviews),
-# which is a labelling problem, not a storage one -- if entry in ounces
-# is ever wanted, it belongs in the facility UI as an input helper that
-# converts before sending, not as a second unit in the database.
+# The admin console renders stock in litres (see formatLitres in the
+# admin app), but that is a render-layer format applied to these same
+# millilitres -- never a second unit in the database.
 
 
 class MilkBankRequest(models.Model):
