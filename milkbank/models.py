@@ -155,8 +155,9 @@ class MilkBankRequest(models.Model):
     # and then discarded; nothing kept a durable copy of the actual number
     # for a given booking, which is exactly what the Facility dashboard's
     # Finished Transactions list needs to show. TransactionRecord (created
-    # in the same block) deliberately does NOT carry it -- see that model's
-    # own docstring for why it stays a receipt, not a ledger line.
+    # in the same block) carries its own snapshot of this same figure --
+    # see that model's amount_ml for why it's a second copy rather than a
+    # join back to this row.
     #
     # completed_at is when that happened, not preferred_date (the
     # appointment slot she booked, which TransactionRecord.date already
@@ -196,6 +197,15 @@ class TransactionRecord(models.Model):
     facility_name = models.CharField(max_length=255)
     date = models.DateField()
     status = models.CharField(max_length=20, choices=TransactionStatus.choices, default=TransactionStatus.COMPLETED)
+    # A snapshot, same reasoning as facility_name above: this is the
+    # millilitres actually donated/dispensed at the moment this receipt was
+    # cut, so it should read the same years later even if something about
+    # the originating MilkBankRequest could theoretically change. Nullable
+    # because apply_transition() creates this row unconditionally on
+    # COMPLETED, whether or not it was called with an amount -- the real
+    # endpoint (StaffConfirmCompletionView) always provides one, but
+    # nothing here should assume every caller will.
+    amount_ml = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         ordering = ["-date"]

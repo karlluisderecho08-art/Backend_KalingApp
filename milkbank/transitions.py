@@ -126,6 +126,7 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
             facility_name=req.allocated_facility.name,
             date=req.preferred_date,
             status=TransactionRecord.TransactionStatus.COMPLETED,
+            amount_ml=amount_ml,
         )
         # completed_at always gets set here, independent of amount_ml below
         # -- a booking reaching COMPLETED is what "finished" means for the

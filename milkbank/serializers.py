@@ -121,7 +121,7 @@ class ConfirmCompletionSerializer(serializers.Serializer):
 class TransactionRecordSerializer(serializers.ModelSerializer):
     class Meta:
         model = TransactionRecord
-        fields = ["id", "type", "facility_name", "date", "status"]
+        fields = ["id", "type", "facility_name", "date", "status", "amount_ml"]
 
 
 class DonorQuestionnaireSerializer(serializers.ModelSerializer):

@@ -129,11 +129,38 @@ class TransitionsTests(APITestCase):
     def test_completing_a_donor_request_creates_a_donation_record(self):
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
         apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
-        apply_transition(self.req, Status.COMPLETED, self.staff, "completed")
+        apply_transition(self.req, Status.COMPLETED, self.staff, "completed", amount_ml=150)
 
         record = TransactionRecord.objects.get(owner=self.mother)
         self.assertEqual(record.type, TransactionRecord.TransactionType.DONATION)
         self.assertEqual(record.status, TransactionRecord.TransactionStatus.COMPLETED)
+        self.assertEqual(record.amount_ml, 150)
+
+    def test_completing_without_an_amount_still_creates_a_record_with_no_amount(self):
+        # apply_transition's amount_ml is optional in its own signature even
+        # though the real endpoint always supplies one (see
+        # ConfirmCompletionSerializer's min_value=1) -- this is what happens
+        # if some future caller doesn't.
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        apply_transition(self.req, Status.COMPLETED, self.staff, "completed")
+
+        record = TransactionRecord.objects.get(owner=self.mother)
+        self.assertIsNone(record.amount_ml)
+
+    def test_transactions_mine_endpoint_returns_the_completed_amount(self):
+        # The actual thing the mobile Transaction History screen reads --
+        # a model-level assertion on TransactionRecord.amount_ml wouldn't
+        # catch a serializer that forgot to list the field.
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        apply_transition(self.req, Status.COMPLETED, self.staff, "completed", amount_ml=150)
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.get("/milkbank/transactions/mine/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["amount_ml"], 150)
 
     def test_completing_a_recipient_request_creates_a_received_record(self):
         recipient_req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
