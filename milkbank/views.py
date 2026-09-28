@@ -10,9 +10,10 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import User
 from core.audit import log_action
 from notifications.models import NotificationItem
-from notifications.services import notify
+from notifications.services import notify, notify_many
 
 from .allocation import AllocationError, LocationRequired, NoOperationalFacility, get_ranked_facilities
 from .business_hours import add_business_hours
@@ -167,6 +168,17 @@ class MilkBankRequestCreateView(APIView):
             f"Your {data['request_type'].lower()} request was submitted to {ranked[0].name}.",
             NotificationItem.Category.BOOKINGS,
         )
+        # Staff previously only found out a request was waiting on them by
+        # opening the Booking Request tab and looking -- nothing told them
+        # one had arrived. Every active staff account assigned to the
+        # facility this landed at, not just whoever's logged in right now.
+        notify_many(
+            User.objects.filter(facility=ranked[0], role=User.Role.FACILITY_STAFF, is_active=True),
+            "New Booking Request",
+            f"{request.user.mom_name or request.user.email} submitted a "
+            f"{data['request_type'].lower()} request.",
+            NotificationItem.Category.BOOKINGS,
+        )
 
         return Response(MilkBankRequestSerializer(req).data, status=201)
 
@@ -261,6 +273,21 @@ class ConfirmAttendanceView(generics.GenericAPIView):
         req.attendance_confirmed = True
         req.current_stage_index += 1
         req.save(update_fields=["attendance_confirmed", "current_stage_index"])
+        # The one endpoint both pathways confirm attendance through --
+        # a DONOR reaches AWAITING_ATTENDANCE via StaffAcceptView, a
+        # RECIPIENT via StaffAdvanceStageView's "Booking Confirmation"
+        # branch, but either way THIS is where she actually says she's
+        # coming. Staff had no way to know that until she physically
+        # showed up -- this is what puts her on their Counseling and
+        # Testing / Results queue, not just an appointment they'd
+        # otherwise have to remember on their own.
+        notify_many(
+            User.objects.filter(facility=req.allocated_facility, role=User.Role.FACILITY_STAFF, is_active=True),
+            "Attendance Confirmed",
+            f"{req.owner.mom_name or req.owner.email} confirmed she's coming for her "
+            f"\"{req.stages[req.current_stage_index]}\" appointment.",
+            NotificationItem.Category.BOOKINGS,
+        )
         return Response(MilkBankRequestSerializer(req).data)
 
 

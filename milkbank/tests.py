@@ -545,6 +545,18 @@ class BookingEndpointPermissionTests(APITestCase):
         response = self.client.post(f"/milkbank/requests/{self.req.id}/confirm-attendance/")
         self.assertEqual(response.status_code, 200)
 
+    def test_confirming_attendance_notifies_this_facilitys_staff_only(self):
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.post(f"/milkbank/requests/{self.req.id}/confirm-attendance/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            NotificationItem.objects.filter(owner=self.staff, title="Attendance Confirmed").exists()
+        )
+        self.assertFalse(
+            NotificationItem.objects.filter(owner=self.other_facility_staff, title="Attendance Confirmed").exists()
+        )
+
     def test_cannot_have_two_open_requests_at_once(self):
         self.mother.latitude, self.mother.longitude = 14.6, 121.0
         self.mother.save()
@@ -556,6 +568,32 @@ class BookingEndpointPermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("already have an open request", response.data["detail"])
+
+    def test_submitting_a_request_notifies_only_the_winning_facilitys_staff(self):
+        # self.facility and self.other_facility sit at identical coordinates
+        # (make_facility's shared default) with identical stock and booked
+        # counts, so Smart Allocation could rank either one first -- this
+        # reads which one actually won from the response instead of
+        # assuming, so the test holds regardless of which way a tie breaks.
+        self.other_mother.latitude, self.other_mother.longitude = 14.6, 121.0
+        self.other_mother.save()
+        self.client.force_authenticate(user=self.other_mother)
+
+        response = self.client.post("/milkbank/requests/", {
+            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+        })
+
+        self.assertEqual(response.status_code, 201)
+        won_this_facility = response.data["allocated_facility"] == self.facility.id
+        winner_staff = self.staff if won_this_facility else self.other_facility_staff
+        loser_staff = self.other_facility_staff if won_this_facility else self.staff
+
+        self.assertTrue(
+            NotificationItem.objects.filter(owner=winner_staff, title="New Booking Request").exists()
+        )
+        self.assertFalse(
+            NotificationItem.objects.filter(owner=loser_staff, title="New Booking Request").exists()
+        )
 
 
 class ConfirmCompletionEndpointTests(APITestCase):

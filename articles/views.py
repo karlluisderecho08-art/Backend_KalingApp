@@ -3,7 +3,10 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.models import User
 from core.audit import log_action
+from notifications.models import NotificationItem
+from notifications.services import notify_many
 
 from .models import Article, ArticleComment, ResourceLink
 from .serializers import (
@@ -118,6 +121,17 @@ class ArticleCommentReportView(APIView):
         comment.is_reported = True
         comment.report_reason = serializer.validated_data["reason"]
         comment.save(update_fields=["is_reported", "report_reason"])
+        # Previously a reported comment just sat in the Moderation tab
+        # until an admin happened to open it -- nothing told them one had
+        # come in. Every active admin account, not just whoever's logged
+        # in right now.
+        notify_many(
+            User.objects.filter(is_staff=True, is_active=True),
+            "Comment Reported",
+            f"A comment on \"{comment.article.title}\" was reported for "
+            f"{comment.report_reason}.",
+            NotificationItem.Category.ARTICLES,
+        )
         return Response(ArticleCommentSerializer(comment).data)
 
 
