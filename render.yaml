@@ -9,6 +9,18 @@
 # Postgres expires after ~30 days (already flagged in the roadmap) and
 # the free web service "spins down" after 15 minutes of no traffic, so
 # the first request after a quiet period is slow to wake it up.
+#
+# DATABASE_URL now points at Supabase (kalingapp_db, ap-southeast-1),
+# not the kalingapp-db Postgres resource below -- migrated 2026-09-29
+# specifically to get off that 30-day expiry, which a Supabase project
+# doesn't have (it pauses after inactivity instead of deleting itself on
+# a fixed clock). See DATABASE_URL's own comment for why the wiring
+# changed from `fromDatabase` to a dashboard-set secret.
+#
+# The kalingapp-db block below is left in place, still running, not
+# deleted -- retiring it is a separate decision for whoever owns the
+# Render account to make once Supabase has proven itself in production,
+# not something to fold into this same change.
 
 services:
   - type: web
@@ -32,10 +44,18 @@ services:
         generateValue: true
       - key: DJANGO_ALLOWED_HOSTS
         value: kalingapp-backend.onrender.com
+      # Was `fromDatabase: kalingapp-db` -- switched to a dashboard-set
+      # secret (same treatment as OPENAI_API_KEY/MILKBANK_SWEEP_TOKEN
+      # below) so this file can no longer overwrite it. `fromDatabase`
+      # means Render regenerates this value from the databases: block's
+      # OWN connection string on every IaC sync -- fine while that block
+      # is the real database, actively wrong the moment it isn't: a sync
+      # would silently point production back at the old, expiring
+      # Render Postgres. Paste the real Supabase connection string into
+      # Render's dashboard yourself, the same way every other secret
+      # here already works.
       - key: DATABASE_URL
-        fromDatabase:
-          name: kalingapp-db
-          property: connectionString
+        sync: false
       # Not set here on purpose -- paste the real key into Render's
       # dashboard yourself after the first deploy, the same way you did
       # in the local .env. Leaving it unset keeps chat on local-fallback
@@ -143,6 +163,12 @@ services:
       - key: MILKBANK_SWEEP_TOKEN
         sync: false
 
+# Still running, still owned by this blueprint, but no longer what
+# DATABASE_URL points at (see the top-of-file comment) -- nothing here
+# reads or writes to this database any more. Left in place rather than
+# removed: deleting this block would tell Render's next IaC sync to
+# tear the resource down, which is a real, immediate, irreversible data
+# loss and not this file's call to make silently.
 databases:
   - name: kalingapp-db
     plan: free
