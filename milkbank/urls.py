@@ -9,6 +9,7 @@ from .views import (
     FacilityListView,
     MilkBankRequestCreateView,
     MilkBankRequestDetailView,
+    MyLatestDonorQuestionnaireView,
     MyMilkBankRequestsView,
     MyTransactionsView,
     RejectCounterOfferView,
@@ -47,6 +48,11 @@ urlpatterns = [
 
     path("requests/<int:pk>/donor-questionnaire/", DonorQuestionnaireView.as_view(), name="donor-questionnaire"),
     path("requests/<int:pk>/serology-photo/", SerologyPhotoView.as_view(), name="serology-photo"),
+    path(
+        "donor-questionnaire/mine/latest/",
+        MyLatestDonorQuestionnaireView.as_view(),
+        name="donor-questionnaire-mine-latest",
+    ),
 
     path("transactions/mine/", MyTransactionsView.as_view(), name="transactions-mine"),
 ]

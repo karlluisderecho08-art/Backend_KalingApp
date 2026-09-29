@@ -613,6 +613,41 @@ class MyTransactionsView(generics.ListAPIView):
         return TransactionRecord.objects.filter(owner=self.request.user)
 
 
+class MyLatestDonorQuestionnaireView(APIView):
+    """
+    GET /milkbank/donor-questionnaire/mine/latest/ -- the most recent
+    questionnaire this mother has ever submitted, from ANY of her past
+    DONOR requests, regardless of what that request's current status is.
+
+    Exists so the app can pre-fill a fresh questionnaire with her last
+    answers when she starts a new DONOR request. DonorQuestionnaire.request
+    is a strict OneToOneField (see that model's docstring) -- the old row
+    can never be reattached to a new request, so a decline followed by a
+    resubmit always meant a blank questionnaire, even though her answers
+    were sitting right there, genuinely saved, just never surfaced back
+    to her. This is a read-only lookup, not a mutation: it hands the
+    client her last answers to pre-fill with, nothing more.
+
+    204, not 404, when she's never submitted one -- the client calls this
+    unconditionally on every fresh questionnaire open ("is there anything
+    to pre-fill?"), not asking after one specific record, so a 404 would
+    just be something to special-case away at every call site.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(responses=DonorQuestionnaireSerializer)
+    def get(self, request):
+        questionnaire = (
+            DonorQuestionnaire.objects.filter(request__owner=request.user)
+            .order_by("-submitted_at")
+            .first()
+        )
+        if questionnaire is None:
+            return Response(status=204)
+        return Response(DonorQuestionnaireSerializer(questionnaire).data)
+
+
 def _can_view_questionnaire(user, req):
     # Same facility-scoping as MilkBankRequestDetailView: this is a
     # donor's health screening data (and possibly a serology photo) --

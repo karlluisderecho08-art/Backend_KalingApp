@@ -965,6 +965,86 @@ class DonorQuestionnaireSubmissionTests(APITestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class MyLatestDonorQuestionnaireEndpointTests(APITestCase):
+    """
+    GET /milkbank/donor-questionnaire/mine/latest/ -- what the app calls
+    to pre-fill a fresh questionnaire after a decline, since
+    DonorQuestionnaire.request is a strict OneToOneField and the old row
+    can never be reattached to the new request she's about to submit.
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="donor@example.com", password="x", is_active=True)
+        self.other_mother = User.objects.create_user(email="other@example.com", password="x", is_active=True)
+        # booked_count=1: apply_transition decrements it on every DECLINED
+        # transition (a terminal status freeing the slot) -- 0 here would
+        # trip the "never negative" CHECK constraint the moment a test
+        # actually declines a request, same as BookingStageIndexTests.setUp.
+        self.facility = make_facility(name="St. Luke's", booked_count=1)
+        self.answers = {
+            "good_general_health": "true",
+            "lactating_with_excess_supply": "true",
+            "free_of_infectious_disease": "true",
+            "recent_transfusion_or_transplant": "false",
+            "uses_tobacco_alcohol_or_drugs": "false",
+            "on_medication_or_supplements": "true",
+            "medication_details": "Prenatal vitamins",
+            "has_recent_serology_test": "true",
+        }
+
+    def _submit_questionnaire(self, owner, req, **overrides):
+        self.client.force_authenticate(user=owner)
+        self.client.post(
+            f"/milkbank/requests/{req.id}/donor-questionnaire/",
+            data={**self.answers, **overrides}, format="multipart",
+        )
+
+    def test_returns_204_when_she_has_never_submitted_one(self):
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.get("/milkbank/donor-questionnaire/mine/latest/")
+        self.assertEqual(response.status_code, 204)
+
+    def test_returns_her_answers_from_a_declined_requests_questionnaire(self):
+        # The exact scenario this endpoint exists for: a DECLINED request
+        # still has a real, saved questionnaire attached to it -- nothing
+        # about being declined deletes it -- this just makes it reachable
+        # from a request that doesn't exist yet.
+        declined_req = make_request(self.mother, self.facility)
+        self._submit_questionnaire(self.mother, declined_req)
+        apply_transition(declined_req, Status.DECLINED, self.mother, "declined")
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.get("/milkbank/donor-questionnaire/mine/latest/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["good_general_health"])
+        self.assertFalse(response.data["recent_transfusion_or_transplant"])
+        self.assertEqual(response.data["medication_details"], "Prenatal vitamins")
+
+    def test_returns_the_most_recently_submitted_one_when_she_has_several(self):
+        first_req = make_request(self.mother, self.facility)
+        self._submit_questionnaire(self.mother, first_req, medication_details="First submission")
+        apply_transition(first_req, Status.DECLINED, self.mother, "declined")
+
+        second_req = make_request(self.mother, self.facility)
+        self._submit_questionnaire(self.mother, second_req, medication_details="Second submission")
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.get("/milkbank/donor-questionnaire/mine/latest/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["medication_details"], "Second submission")
+
+    def test_never_returns_a_different_mothers_answers(self):
+        her_req = make_request(self.other_mother, self.facility)
+        self._submit_questionnaire(self.other_mother, her_req, medication_details="Not yours")
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.get("/milkbank/donor-questionnaire/mine/latest/")
+
+        self.assertEqual(response.status_code, 204)
+
+
 class BusinessHoursClockTests(SimpleTestCase):
     """
     The SLA clock. These cases are the whole reason the deadline isn't
