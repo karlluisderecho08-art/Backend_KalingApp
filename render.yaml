@@ -2,29 +2,43 @@
 # when you connect this GitHub repo, instead of clicking through its
 # dashboard by hand. See https://render.com/docs/deploy-django.
 #
-# `name: kalingapp-backend` -> confirmed live at kalingapp-backend.onrender.com
-# (verified 2026-08-30, matches DJANGO_ALLOWED_HOSTS below).
+# `name: backend-kalingapp` -> confirmed live at
+# backend-kalingapp.onrender.com (moved here 2026-09-29, from
+# kalingapp-backend.onrender.com -- see below). This service was
+# created by hand in Render's dashboard (a fresh "New Web Service"
+# pointed at this same repo, not a blueprint sync), specifically to run
+# in Singapore alongside the Supabase database it now uses -- the old
+# service sat in Oregon, adding a real cross-Pacific hop to every query.
+# `name:` here is kept in sync with that manually-created service's
+# actual name so that IF this blueprint is ever synced, Render adopts
+# the existing service instead of trying to stand up a duplicate.
 #
 # `plan: free` on both services -- fine for testing, but Render's free
 # Postgres expires after ~30 days (already flagged in the roadmap) and
 # the free web service "spins down" after 15 minutes of no traffic, so
 # the first request after a quiet period is slow to wake it up.
 #
-# DATABASE_URL now points at Supabase (kalingapp_db, ap-southeast-1),
-# not the kalingapp-db Postgres resource below -- migrated 2026-09-29
+# DATABASE_URL points at Supabase (kalingapp_db, ap-southeast-1), not
+# the kalingapp-db Postgres resource below -- migrated 2026-09-29
 # specifically to get off that 30-day expiry, which a Supabase project
 # doesn't have (it pauses after inactivity instead of deleting itself on
 # a fixed clock). See DATABASE_URL's own comment for why the wiring
 # changed from `fromDatabase` to a dashboard-set secret.
 #
-# The kalingapp-db block below is left in place, still running, not
-# deleted -- retiring it is a separate decision for whoever owns the
-# Render account to make once Supabase has proven itself in production,
-# not something to fold into this same change.
+# The kalingapp-db Postgres block below is left in place, still
+# running, not deleted -- retiring it is a separate decision for
+# whoever owns the Render account to make once Supabase has proven
+# itself in production, not something to fold into this same change.
+#
+# The OLD kalingapp-backend web service (Oregon) still exists in
+# Render's dashboard too, outside this file entirely -- it was never
+# removed, just superseded. Same reasoning as kalingapp-db: retiring it
+# is a manual, deliberate call for whoever owns the account, not
+# something this file should decide.
 
 services:
   - type: web
-    name: kalingapp-backend
+    name: backend-kalingapp
     runtime: python
     plan: free
     buildCommand: ./build.sh
@@ -42,8 +56,14 @@ services:
         value: config.settings.prod
       - key: DJANGO_SECRET_KEY
         generateValue: true
+      # This value is documentation, not what's actually enforcing the
+      # check on the live service right now -- the new service was
+      # created by hand, not by syncing this blueprint, so Render never
+      # read this file to populate its real environment. The value that
+      # matters is whatever is set in Render's dashboard directly; keep
+      # this one matching it so the two don't drift apart.
       - key: DJANGO_ALLOWED_HOSTS
-        value: kalingapp-backend.onrender.com
+        value: backend-kalingapp.onrender.com
       # Was `fromDatabase: kalingapp-db` -- switched to a dashboard-set
       # secret (same treatment as OPENAI_API_KEY/MILKBANK_SWEEP_TOKEN
       # below) so this file can no longer overwrite it. `fromDatabase`
@@ -154,7 +174,7 @@ services:
       # 32`) and paste it into Render's dashboard, same as every other
       # secret here. Then, on a free service like cron-job.org, schedule a
       # POST every 15-30 minutes to:
-      #   https://kalingapp-backend.onrender.com/milkbank/sweep-expired/
+      #   https://backend-kalingapp.onrender.com/milkbank/sweep-expired/
       # with header:
       #   X-Sweep-Token: <the same string>
       # Leaving this unset does NOT disable the check -- it fails CLOSED
