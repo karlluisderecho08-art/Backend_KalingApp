@@ -960,7 +960,14 @@ class BookingStageIndexTests(APITestCase):
         self.assertEqual(req.current_sub_status, "pending")
         self.assertEqual(req.stages[req.current_stage_index], "Status")
 
-    def test_accept_counter_offer_lands_on_the_stage_after_booking_confirmation(self):
+    def test_accept_counter_offer_leaves_her_still_able_to_confirm_attendance(self):
+        # Regression coverage for the bug where accepting a counter offer
+        # moved the request straight to SCHEDULED and advanced the stage
+        # index past "Booking Confirmation". The app gates its "Confirm My
+        # Attendance" button on that stage, so she was left unable to
+        # confirm at all -- either no button, or a 400 if one showed.
+        # Agreeing to the proposed date is still an acceptance, so it has
+        # to land her where an acceptance lands her.
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
         apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
         req.current_stage_index = req.stages.index("Booking Confirmation")
@@ -973,7 +980,11 @@ class BookingStageIndexTests(APITestCase):
         response = self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
         self.assertEqual(response.status_code, 200)
         req.refresh_from_db()
-        self.assertEqual(req.stages[req.current_stage_index], "Counseling and Testing")
+        # Still the stage the app shows the confirm button on, and still
+        # waiting on her rather than already settled.
+        self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
+        self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
+        self.assertFalse(req.attendance_confirmed)
 
 
 class ProposeCounterOfferFromPendingTests(APITestCase):
@@ -1091,6 +1102,85 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         # Still hers, still attached -- nothing was re-submitted.
         self.assertTrue(hasattr(req, "donor_questionnaire"))
         self.assertTrue(req.donor_questionnaire.good_general_health)
+
+    def test_a_donor_accepting_a_counter_offer_can_then_confirm_attendance(self):
+        # The full round trip from this desk: propose, accept, confirm.
+        # Accepting used to jump straight to SCHEDULED, so the confirm POST
+        # 400'd with "Cannot move from scheduled to scheduled" and she had
+        # no way to say she was coming for the date she had just agreed to.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        self._propose(req)
+
+        self.client.force_authenticate(user=self.mother)
+        accepted = self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
+        self.assertEqual(accepted.status_code, 200)
+        req.refresh_from_db()
+        # The facility's proposed slot becomes hers.
+        self.assertEqual(str(req.preferred_date), "2026-12-20")
+        self.assertEqual(req.preferred_time, "2:00 PM")
+
+        confirmed = self.client.post(f"/milkbank/requests/{req.id}/confirm-attendance/")
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        req.refresh_from_db()
+        self.assertTrue(req.attendance_confirmed)
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
+        self.assertEqual(req.stages[req.current_stage_index], "Counseling and Testing")
+
+    def test_accepting_a_counter_offer_starts_a_fresh_clock_against_her(self):
+        # COUNTER_OFFERED itself carries no clock (that delay is the
+        # facility's). Once she has agreed to the new date the wait is
+        # hers, so the 8-business-hour confirmation window opens then.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        self._propose(req)
+        req.refresh_from_db()
+        self.assertIsNone(req.response_deadline)
+
+        self.client.force_authenticate(user=self.mother)
+        self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
+
+        req.refresh_from_db()
+        self.assertIsNotNone(req.response_deadline)
+        self.assertGreater(req.response_deadline, timezone.now())
+
+    def test_a_recipient_accepting_a_counter_offer_is_not_held_at_booking_confirmation(self):
+        # The RECIPIENT pathway puts staff review before attendance, so
+        # accepting lands her on "Status" with no clock -- she has nothing
+        # left to do until staff have read her paperwork. Staff advancing
+        # that review is what puts her on "Booking Confirmation".
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        self._propose(req)
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
+
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
+        self.assertEqual(req.stages[req.current_stage_index], "Status")
+        self.assertIsNone(req.response_deadline)
+
+    def test_a_recipient_confirms_attendance_after_the_review_follows_the_new_date(self):
+        # Ends the RECIPIENT counter-offer round trip: accept -> staff pass
+        # the review -> she confirms. Same shape as the donor pathway, with
+        # the two steps in the opposite order.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        self._propose(req)
+
+        self.client.force_authenticate(user=self.mother)
+        self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
+
+        self.client.force_authenticate(user=self.staff)
+        self.client.post(f"/milkbank/requests/{req.id}/advance-stage/")
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
+        self.assertEqual(str(req.preferred_date), "2026-12-20")
+
+        self.client.force_authenticate(user=self.mother)
+        confirmed = self.client.post(f"/milkbank/requests/{req.id}/confirm-attendance/")
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        req.refresh_from_db()
+        self.assertTrue(req.attendance_confirmed)
+        self.assertEqual(req.stages[req.current_stage_index], "Results")
 
     def test_a_declined_request_cannot_be_counter_offered(self):
         # DECLINED is terminal. Offering a date on top of one would put a

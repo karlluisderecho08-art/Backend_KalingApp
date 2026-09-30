@@ -79,13 +79,22 @@ STATUS_NOTIFICATIONS = {
 #     date keeps her booking slot held at the facility while she decides,
 #     and does not start a countdown against her for a delay that was
 #     never hers.
+#
+#   COUNTER_OFFERED -> AWAITING_ATTENDANCE
+#     Accepting the proposed slot is the same decision as accepting the
+#     original request, so it has to land her where acceptance lands her
+#     -- which for a DONOR is AWAITING_ATTENDANCE, still waiting on her to
+#     confirm the new date. Sending her to SCHEDULED instead would skip
+#     the confirmation entirely: the mobile app gates its "Confirm My
+#     Attendance" button on the Booking Confirmation stage, so she would
+#     either never be shown it or get a 400 when she was.
 ALLOWED_TRANSITIONS = {
     Status.PENDING: {
         Status.AWAITING_ATTENDANCE, Status.SCHEDULED, Status.COUNTER_OFFERED,
         Status.DECLINED, Status.EXPIRED,
     },
     Status.AWAITING_ATTENDANCE: {Status.SCHEDULED, Status.COUNTER_OFFERED, Status.EXPIRED},
-    Status.COUNTER_OFFERED: {Status.SCHEDULED, Status.PENDING},
+    Status.COUNTER_OFFERED: {Status.SCHEDULED, Status.PENDING, Status.AWAITING_ATTENDANCE},
     Status.SCHEDULED: {Status.COMPLETED, Status.AWAITING_ATTENDANCE},
     Status.DECLINED: set(),
     Status.EXPIRED: set(),

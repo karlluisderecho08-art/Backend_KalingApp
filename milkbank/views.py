@@ -310,13 +310,40 @@ class AcceptCounterOfferView(generics.GenericAPIView):
     @extend_schema(request=None)
     def post(self, request, pk):
         req = self.get_object()
+        # Agreeing to the proposed date IS accepting the booking, so this
+        # has to land her in exactly the state StaffAcceptView would --
+        # not straight to SCHEDULED. SCHEDULED means "attendance already
+        # settled", which would skip the one thing she still owes the
+        # facility: saying she's coming for the new date. The mobile app
+        # gates "Confirm My Attendance" on the Booking Confirmation stage,
+        # so jumping past it left her unable to confirm at all.
+        #
+        # DONOR      -> AWAITING_ATTENDANCE, "Booking Confirmation". Her
+        #   confirmation of the *new* date is still outstanding, so the
+        #   8-business-hour clock starts against her now -- correctly,
+        #   because from here the wait really is hers.
+        # RECIPIENT  -> SCHEDULED, "Status". Same reasoning as
+        #   StaffAcceptView: staff review her serology test and
+        #   questionnaire first, and she must not sit in a status with a
+        #   running clock for something she has already done.
+        #
+        # Reached from AWAITING_ATTENDANCE (a booking that had to move),
+        # she keeps the Booking Confirmation stage she was already on and
+        # simply re-confirms against the new date, rather than having the
+        # stage index advanced a second time for the same stage.
+        if req.request_type == MilkBankRequest.RequestType.DONOR:
+            target_status = Status.AWAITING_ATTENDANCE
+            target_stage = "Booking Confirmation"
+        else:
+            target_status = Status.SCHEDULED
+            target_stage = "Status"
         try:
-            apply_transition(req, Status.SCHEDULED, request.user, "counter_offer_accepted")
+            apply_transition(req, target_status, request.user, "counter_offer_accepted")
         except InvalidTransition as exc:
             return Response({"detail": str(exc)}, status=400)
         req.preferred_date = req.counter_offer_date
         req.preferred_time = req.counter_offer_time
-        req.current_stage_index += 1
+        req.current_stage_index = req.stages.index(target_stage)
         req.save(update_fields=["preferred_date", "preferred_time", "current_stage_index"])
         return Response(MilkBankRequestSerializer(req).data)
 
