@@ -445,10 +445,10 @@ MEDIA_URL = "/media/"
 # addressing_style="path" and signature_version="s3v4" are Supabase's own
 # documented requirements for third-party S3 clients (Supabase isn't AWS,
 # so AWS's default virtual-hosted-style addressing doesn't resolve
-# against its endpoint) -- NOT verified end-to-end against a real bucket
-# by this change (no live Supabase Storage credentials were available to
-# test against); upload a real serology photo after wiring these in and
-# flag it if anything here needs adjusting.
+# against its endpoint). Confirmed working end-to-end in production
+# 2026-10-01: a real serology photo uploaded from the app and viewed back
+# through SerologyPhotoView on the facility dashboard, against a live
+# Supabase Storage bucket.
 SUPABASE_STORAGE_ENDPOINT_URL = env("SUPABASE_STORAGE_ENDPOINT_URL", default="")
 SUPABASE_STORAGE_REGION = env("SUPABASE_STORAGE_REGION", default="ap-southeast-1")
 SUPABASE_STORAGE_ACCESS_KEY_ID = env("SUPABASE_STORAGE_ACCESS_KEY_ID", default="")
