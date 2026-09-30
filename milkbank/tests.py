@@ -390,16 +390,48 @@ class SweepExpiredEndpointTests(APITestCase):
 
 class SmartAllocationRankingTests(APITestCase):
     """
-    rank_facilities()'s tie-break chain (ratio -> stock direction ->
-    distance) is pure and deterministic, so it's tested directly without
+    rank_facilities()'s tie-break chain (distance -> ratio -> stock
+    direction) is pure and deterministic, so it's tested directly without
     going through the HTTP layer at all.
+
+    Note how the ratio and stock cases below all place their facilities
+    at IDENTICAL coordinates. That isn't incidental tidiness -- distance
+    leads the chain now, so it is the only way to reach the later steps
+    at all. See rank_facilities' own note on what that costs.
     """
 
+    def test_nearest_facility_wins_even_when_another_is_far_less_busy(self):
+        """
+        The case that motivated putting distance first: a mother beside a
+        nearly-full facility that can still take her, versus a much
+        emptier one across the city.
+
+        Under the old ordering (ratio first) the far, quiet facility won
+        outright and distance was never consulted -- a mother walking
+        distance from an available facility was sent ~45 km away because
+        that facility's booked ratio looked better on paper.
+        """
+        near_busy = make_facility(
+            name="Near but busy", capacity=30, booked_count=25, stock_level_ml=500,
+            latitude=14.60, longitude=121.00,
+        )
+        far_quiet = make_facility(
+            name="Far but quiet", capacity=40, booked_count=10, stock_level_ml=500,
+            latitude=15.00, longitude=121.00,
+        )
+
+        ranked = rank_facilities([far_quiet, near_busy], "DONOR", mother_lat=14.60, mother_lon=121.00)
+
+        self.assertEqual(ranked[0], near_busy)
+        # And it is genuinely still able to take her -- 25 of 30 booked,
+        # which is exactly why the capacity gate (not the ratio) is what
+        # should be keeping anyone out.
+        self.assertLess(near_busy.booked_count, near_busy.capacity)
+
     def test_lower_booked_ratio_wins_regardless_of_raw_count(self):
-        # 50/100 slots (ratio 0.5) should lose to 8/10 slots (ratio 0.8)...
-        # wait -- lower ratio wins, so the 100-slot facility with the
-        # *lower* ratio should be ranked first even though it has more
-        # raw bookings.
+        # Same coordinates, so distance ties and the ratio decides.
+        # 50/100 (ratio 0.5) beats 8/10 (ratio 0.8): lower ratio wins, so
+        # the 100-slot facility ranks first despite more raw bookings.
         busy_small = make_facility(name="Busy Small", capacity=10, booked_count=8, latitude=14.6, longitude=121.0)
         quiet_large = make_facility(name="Quiet Large", capacity=100, booked_count=50, latitude=14.6, longitude=121.0)
 
@@ -407,7 +439,8 @@ class SmartAllocationRankingTests(APITestCase):
 
         self.assertEqual(ranked[0], quiet_large)  # 0.5 ratio beats 0.8 ratio
 
-    def test_donor_prefers_lower_stock_facility_on_ratio_tie(self):
+    def test_donor_prefers_lower_stock_facility_on_distance_and_ratio_tie(self):
+        # Same coordinates and same ratio, so stock direction decides.
         low_stock = make_facility(name="Low Stock", capacity=10, booked_count=5, stock_level_ml=100,
                                    latitude=14.6, longitude=121.0)
         high_stock = make_facility(name="High Stock", capacity=10, booked_count=5, stock_level_ml=900,
@@ -417,7 +450,8 @@ class SmartAllocationRankingTests(APITestCase):
 
         self.assertEqual(ranked[0], low_stock)
 
-    def test_recipient_prefers_higher_stock_facility_on_ratio_tie(self):
+    def test_recipient_prefers_higher_stock_facility_on_distance_and_ratio_tie(self):
+        # Same coordinates and same ratio, so stock direction decides.
         low_stock = make_facility(name="Low Stock", capacity=10, booked_count=5, stock_level_ml=100,
                                    latitude=14.6, longitude=121.0)
         high_stock = make_facility(name="High Stock", capacity=10, booked_count=5, stock_level_ml=900,
@@ -427,7 +461,7 @@ class SmartAllocationRankingTests(APITestCase):
 
         self.assertEqual(ranked[0], high_stock)
 
-    def test_distance_breaks_ties_when_ratio_and_stock_are_equal(self):
+    def test_nearest_wins_when_ratio_and_stock_are_equal(self):
         near = make_facility(name="Near", capacity=10, booked_count=5, stock_level_ml=500,
                               latitude=14.60, longitude=121.00)
         far = make_facility(name="Far", capacity=10, booked_count=5, stock_level_ml=500,
@@ -483,6 +517,67 @@ class GetRankedFacilitiesTests(APITestCase):
         ranked = get_ranked_facilities(self.user, "DONOR")
 
         self.assertIn(low, ranked)
+
+    def test_a_facility_with_no_room_left_is_excluded(self):
+        # The gate that was missing entirely: capacity__gt=0 only asked
+        # whether a capacity was configured, never whether any of it was
+        # left. This matters far more now that distance leads the sort --
+        # a full facility that happens to be nearest would rank FIRST.
+        self.user.latitude, self.user.longitude = 14.6, 121.0
+        self.user.save()
+        full = make_facility(name="Full", capacity=10, booked_count=10, latitude=14.6, longitude=121.0)
+        has_room = make_facility(name="Has room", capacity=10, booked_count=9, latitude=14.6, longitude=121.0)
+
+        ranked = get_ranked_facilities(self.user, "DONOR")
+
+        self.assertNotIn(full, ranked)
+        self.assertIn(has_room, ranked)
+
+    def test_a_full_facility_is_excluded_even_when_it_is_the_nearest(self):
+        # Distance-first ordering means "nearest" is no longer a safe
+        # proxy for "bookable" -- without the gate this full facility
+        # would be ranked first and booked into anyway.
+        self.user.latitude, self.user.longitude = 14.6, 121.0
+        self.user.save()
+        full_and_nearest = make_facility(
+            name="Full and nearest", capacity=10, booked_count=10, latitude=14.6, longitude=121.0,
+        )
+        farther_with_room = make_facility(
+            name="Farther with room", capacity=10, booked_count=2, latitude=15.6, longitude=121.0,
+        )
+
+        ranked = get_ranked_facilities(self.user, "DONOR")
+
+        self.assertNotIn(full_and_nearest, ranked)
+        self.assertEqual(ranked[0], farther_with_room)
+
+    def test_raises_no_operational_facility_when_every_facility_is_full(self):
+        self.user.latitude, self.user.longitude = 14.6, 121.0
+        self.user.save()
+        make_facility(name="Full A", capacity=5, booked_count=5, latitude=14.6, longitude=121.0)
+        make_facility(name="Full B", capacity=8, booked_count=8, latitude=14.6, longitude=121.0)
+
+        with self.assertRaises(NoOperationalFacility):
+            get_ranked_facilities(self.user, "DONOR")
+
+    def test_a_booking_is_never_created_against_a_full_facility(self):
+        # End to end through the real endpoint rather than the ranking
+        # function: MilkBankRequestCreateView assigns ranked[0]
+        # unconditionally and then increments booked_count, so if a full
+        # facility could ever reach ranked[0] the count would run past
+        # capacity with nothing to stop it.
+        self.user.latitude, self.user.longitude = 14.6, 121.0
+        self.user.save()
+        full = make_facility(name="Full", capacity=3, booked_count=3, latitude=14.6, longitude=121.0)
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post("/milkbank/requests/", {
+            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+        })
+
+        self.assertEqual(response.status_code, 404)
+        full.refresh_from_db()
+        self.assertEqual(full.booked_count, 3)  # never pushed past capacity
 
 
 class BookingEndpointPermissionTests(APITestCase):

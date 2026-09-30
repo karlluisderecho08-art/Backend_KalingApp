@@ -71,7 +71,16 @@ def _allocation_error_response(exc):
     if isinstance(exc, LocationRequired):
         return Response({"detail": "Location required. Call POST /auth/location/ first."}, status=400)
     if isinstance(exc, NoOperationalFacility):
-        return Response({"detail": "No operational facility is currently available."}, status=404)
+        # Deliberately one message for every cause (closed, no capacity
+        # configured, fully booked, or -- recipients only -- not enough
+        # stock on hand). "Fully booked" became reachable when the
+        # capacity gate landed in get_ranked_facilities; the wording
+        # covers it without naming which internal filter rejected her,
+        # which is not something a mother can act on anyway.
+        return Response(
+            {"detail": "No facility is available right now -- they're either closed or fully booked. Please try again later."},
+            status=404,
+        )
     raise exc  # pragma: no cover -- only the two subclasses above exist today
 
 
