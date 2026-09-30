@@ -318,20 +318,44 @@ class AcceptCounterOfferView(generics.GenericAPIView):
         # gates "Confirm My Attendance" on the Booking Confirmation stage,
         # so jumping past it left her unable to confirm at all.
         #
-        # DONOR      -> AWAITING_ATTENDANCE, "Booking Confirmation". Her
-        #   confirmation of the *new* date is still outstanding, so the
-        #   8-business-hour clock starts against her now -- correctly,
-        #   because from here the wait really is hers.
-        # RECIPIENT  -> SCHEDULED, "Status". Same reasoning as
-        #   StaffAcceptView: staff review her serology test and
-        #   questionnaire first, and she must not sit in a status with a
-        #   running clock for something she has already done.
+        # The target depends on where she is NOW as well as her pathway,
+        # because a counter-offer can be proposed from two points:
         #
-        # Reached from AWAITING_ATTENDANCE (a booking that had to move),
-        # she keeps the Booking Confirmation stage she was already on and
-        # simply re-confirms against the new date, rather than having the
-        # stage index advanced a second time for the same stage.
-        if req.request_type == MilkBankRequest.RequestType.DONOR:
+        #   Already AWAITING_ATTENDANCE (a booking that had to move).
+        #     She is already on "Booking Confirmation" and already waiting
+        #     on herself. A new date does not undo the review that got her
+        #     here, so she stays put and simply re-confirms against the
+        #     new date.
+        #
+        #     Keyed off her current STAGE, not her current_sub_status --
+        #     current_sub_status is already COUNTER_OFFERED by the time she
+        #     gets here (StaffProposeCounterOfferView set it the moment
+        #     staff proposed, and nothing between then and now changes it
+        #     back), so a check against Status.AWAITING_ATTENDANCE here can
+        #     never be true. current_stage_index survives that same
+        #     transition untouched -- propose-counter-offer never writes
+        #     it -- so "Booking Confirmation" is the only signal left that
+        #     actually still says where she was. This matters for a
+        #     RECIPIENT specifically: her stages run Requirements -> Status
+        #     -> Booking Confirmation -> Results, so sending her back to
+        #     "Status" here would hand already-reviewed paperwork to staff
+        #     a second time.
+        #
+        #   From PENDING (the "no doctor available" desk).
+        #     Nothing has been decided yet, so this is an ordinary first
+        #     acceptance and mirrors StaffAcceptView exactly:
+        #       DONOR      -> AWAITING_ATTENDANCE, "Booking Confirmation".
+        #         The new date still needs confirming, so the
+        #         8-business-hour clock starts against her now rather than
+        #         at propose -- from here the wait really is hers.
+        #       RECIPIENT  -> SCHEDULED, "Status". Staff review her
+        #         serology test and questionnaire first, and she must not
+        #         sit in a status with a running clock for something she
+        #         has already done.
+        if req.stages[req.current_stage_index] == "Booking Confirmation":
+            target_status = Status.AWAITING_ATTENDANCE
+            target_stage = "Booking Confirmation"
+        elif req.request_type == MilkBankRequest.RequestType.DONOR:
             target_status = Status.AWAITING_ATTENDANCE
             target_stage = "Booking Confirmation"
         else:

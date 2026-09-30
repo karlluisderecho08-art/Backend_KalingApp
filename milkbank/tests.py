@@ -1126,6 +1126,51 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         self.assertEqual(req.current_sub_status, Status.SCHEDULED)
         self.assertEqual(req.stages[req.current_stage_index], "Counseling and Testing")
 
+    def test_a_recipient_whose_booking_moved_is_not_sent_back_for_review(self):
+        # A recipient already on "Booking Confirmation" (the staff review
+        # passed and she is waiting to confirm) who has to move dates.
+        # Regression coverage: keying the landing state off request_type
+        # alone would put her back on "Status", handing already-reviewed
+        # paperwork to staff a second time and putting a live 8-hour clock
+        # on a wait that isn't hers. She stays put and re-confirms.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        self.client.force_authenticate(user=self.staff)
+        # Through the real endpoints, not a raw apply_transition() call --
+        # that would change current_sub_status without ever touching
+        # current_stage_index (apply_transition never does), leaving her
+        # stuck on "Requirements" and silently invalidating the rest of
+        # this test. /accept/ is what actually moves a RECIPIENT onto
+        # "Status" as part of accepting (see StaffAcceptView); only then
+        # does one /advance-stage/ call land her on "Booking Confirmation".
+        self.client.post(f"/milkbank/requests/{req.id}/accept/")
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
+        self.assertEqual(req.stages[req.current_stage_index], "Status")
+
+        self.client.post(f"/milkbank/requests/{req.id}/advance-stage/")
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
+        self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
+
+        apply_transition(req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
+        req.counter_offer_date, req.counter_offer_time = "2026-12-20", "2:00 PM"
+        req.save(update_fields=["counter_offer_date", "counter_offer_time"])
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
+        self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
+        self.assertEqual(str(req.preferred_date), "2026-12-20")
+
+        confirmed = self.client.post(f"/milkbank/requests/{req.id}/confirm-attendance/")
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        req.refresh_from_db()
+        self.assertTrue(req.attendance_confirmed)
+        self.assertEqual(req.stages[req.current_stage_index], "Results")
+
     def test_accepting_a_counter_offer_starts_a_fresh_clock_against_her(self):
         # COUNTER_OFFERED itself carries no clock (that delay is the
         # facility's). Once she has agreed to the new date the wait is
