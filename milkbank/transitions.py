@@ -91,9 +91,10 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
     real caller with a non-None value) -- how many millilitres staff
     recorded for this booking. Moves Facility.stock_level_ml the opposite
     direction for a DONOR vs. a RECIPIENT (see the block below), and
-    credits the donor's own accounts.User.total_drawn_ml. Both of those
-    are millilitres too, so the figure is applied as given rather than
-    converted. The view already validated a RECIPIENT amount against
+    credits the requester's own running lifetime total on accounts.User --
+    total_drawn_ml for a DONOR, total_received_ml for a RECIPIENT. All of
+    those are millilitres too, so the figure is applied as given rather
+    than converted. The view already validated a RECIPIENT amount against
     available stock before calling this, so stock_level_ml going negative
     here would mean that check was bypassed, not that this function needs
     to re-guard it.
@@ -148,6 +149,7 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
                 Facility.objects.filter(pk=req.allocated_facility_id).update(
                     stock_level_ml=F("stock_level_ml") - amount_ml
                 )
+                User.objects.filter(pk=req.owner_id).update(total_received_ml=F("total_received_ml") + amount_ml)
         req.save(update_fields=update_fields)
 
 

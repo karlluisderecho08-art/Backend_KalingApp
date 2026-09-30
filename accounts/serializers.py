@@ -19,6 +19,7 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "email", "role", "is_staff", "facility", "facility_name",
             "mom_name", "baby_name", "baby_age_weeks", "breastfeeding_status",
             "baby_birth_date", "pediatric_clinic", "tracking_streaks", "total_drawn_ml",
+            "total_received_ml",
             "latitude", "longitude", "location_consent_given", "has_seen_walkthrough",
         ]
         # Nothing writes through this serializer today (only ever used in
@@ -112,15 +113,27 @@ class RegisterSerializer(serializers.Serializer):
 class StaffUserListSerializer(serializers.ModelSerializer):
     """Read shape for the facility dashboard's User Management table --
     only the fields that actually exist on a mother's account (no phone,
-    no city -- the model never captured either; see UserSerializer)."""
+    no city -- the model never captured either; see UserSerializer).
+
+    total_drawn_ml / total_received_ml are each a mother's lifetime total
+    across EVERY facility, not just the one viewing this table -- they are
+    running counters on the User row itself (see accounts.models.User),
+    credited by milkbank.transitions.apply_transition regardless of which
+    facility completed the booking. StaffUserListView's queryset is not
+    scoped to "mothers who interacted with this facility" (see its own
+    docstring), so there is no facility to scope these totals to even if
+    a future change narrows that queryset -- both figures should stay
+    global on purpose, the same lifetime total a mother sees of herself
+    in the app.
+    """
 
     class Meta:
         model = User
         fields = [
             "id", "email", "mom_name", "baby_name", "baby_age_weeks",
             "breastfeeding_status", "baby_birth_date", "pediatric_clinic",
-            "tracking_streaks", "total_drawn_ml", "location_consent_given",
-            "is_active", "date_joined",
+            "tracking_streaks", "total_drawn_ml", "total_received_ml",
+            "location_consent_given", "is_active", "date_joined",
         ]
 
 

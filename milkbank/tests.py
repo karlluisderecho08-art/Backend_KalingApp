@@ -194,6 +194,19 @@ class TransitionsTests(APITestCase):
         self.facility.refresh_from_db()
         self.assertEqual(self.facility.stock_level_ml, starting_stock - 90)
 
+    def test_completing_a_recipient_request_with_an_amount_credits_the_mothers_total_received(self):
+        recipient_req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        apply_transition(recipient_req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(recipient_req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        apply_transition(recipient_req, Status.COMPLETED, self.staff, "completed", amount_ml=90)
+
+        self.mother.refresh_from_db()
+        # Same mother, two independent lifetime counters: completing a
+        # RECIPIENT booking must not touch total_drawn_ml, and completing
+        # a DONOR one (the test above) must not touch total_received_ml.
+        self.assertEqual(self.mother.total_received_ml, 90)
+        self.assertEqual(self.mother.total_drawn_ml, 0)
+
     def test_completing_without_an_amount_leaves_stock_and_total_drawn_untouched(self):
         # Every non-StaffConfirmCompletionView caller (there are none right
         # now, but nothing stops a future one) must be safe leaving
@@ -207,6 +220,7 @@ class TransitionsTests(APITestCase):
         self.mother.refresh_from_db()
         self.assertEqual(self.facility.stock_level_ml, starting_stock)
         self.assertEqual(self.mother.total_drawn_ml, 0)
+        self.assertEqual(self.mother.total_received_ml, 0)
 
     def test_counter_offer_can_return_to_pending_or_go_to_scheduled(self):
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")

@@ -22,7 +22,7 @@ class UserAdmin(DjangoUserAdmin):
             "fields": (
                 "role", "facility", "mom_name", "baby_name", "baby_age_weeks",
                 "breastfeeding_status", "baby_birth_date", "pediatric_clinic",
-                "tracking_streaks", "total_drawn_ml",
+                "tracking_streaks", "total_drawn_ml", "total_received_ml",
             ),
         }),
         ("Location", {

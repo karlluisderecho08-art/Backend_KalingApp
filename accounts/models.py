@@ -111,6 +111,15 @@ class User(AbstractUser):
     # round, and a mother's lifetime total and the facility stock it
     # fed could drift apart permanently. One unit, no conversion, no drift.
     total_drawn_ml = models.PositiveIntegerField(default=0)
+    # The RECIPIENT-side mirror of total_drawn_ml above, same reasoning:
+    # a mother's lifetime total across every completed RECIPIENT booking,
+    # at any facility -- not just the facility currently viewing her. Kept
+    # as its own running counter (credited in milkbank.transitions.apply_
+    # transition, same place/same way as total_drawn_ml) rather than
+    # summed from TransactionRecord on every read, because User Management
+    # needs this figure for a whole table of mothers at once and a live
+    # per-row aggregate query would be the wrong sum to do there.
+    total_received_ml = models.PositiveIntegerField(default=0)
 
     # --- New: location, for Phase 3's Smart Allocation distance term ---
     # Captured via device GPS, so RA 10173 requires an explicit, logged
