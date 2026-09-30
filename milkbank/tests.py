@@ -987,6 +987,81 @@ class BookingStageIndexTests(APITestCase):
         self.assertFalse(req.attendance_confirmed)
 
 
+class RecipientRequirementsTests(APITestCase):
+    """
+    neonate_name/clinic_info/has_prescription_proof/has_cooler/
+    has_medical_abstract -- the Request Milk form's checklist, which used
+    to be collected on-screen and then silently discarded: nothing ever
+    reached the backend, for any recipient request, ever. Added
+    2026-10-01. Covers both directions: the create endpoint actually
+    persists what is sent, and a DONOR request (which the form never
+    collects any of this for) is unaffected.
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(
+            email="rr-mother@example.com", password="x", is_active=True,
+            latitude=14.6, longitude=121.0,
+        )
+        self.facility = make_facility(name="St. Luke's")
+        self.client.force_authenticate(user=self.mother)
+
+    def test_a_recipient_requests_requirements_are_saved(self):
+        response = self.client.post("/milkbank/requests/", {
+            "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "neonate_name": "Baby Cruz", "clinic_info": "Under Dr. Santos, PGH Pediatrics",
+            "has_prescription_proof": True, "has_cooler": True, "has_medical_abstract": True,
+        })
+
+        self.assertEqual(response.status_code, 201)
+        req = MilkBankRequest.objects.get(pk=response.data["id"])
+        self.assertEqual(req.neonate_name, "Baby Cruz")
+        self.assertEqual(req.clinic_info, "Under Dr. Santos, PGH Pediatrics")
+        self.assertTrue(req.has_prescription_proof)
+        self.assertTrue(req.has_cooler)
+        self.assertTrue(req.has_medical_abstract)
+
+    def test_the_saved_requirements_are_returned_to_the_caller(self):
+        # Not just persisted -- actually readable back, since that's the
+        # whole point: the facility dashboard's View Details reads these
+        # same field names straight off the list/detail response.
+        response = self.client.post("/milkbank/requests/", {
+            "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "neonate_name": "Baby Cruz", "has_cooler": True,
+        })
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["neonate_name"], "Baby Cruz")
+        self.assertTrue(response.data["has_cooler"])
+        self.assertFalse(response.data["has_medical_abstract"])
+
+    def test_a_donor_request_ignores_requirements_fields_sent_alongside_it(self):
+        # The form never collects these for a DONOR, but the serializer
+        # accepts them unconditionally (same posture as the representative
+        # fields) -- confirms a DONOR request stays blank even if sent.
+        response = self.client.post("/milkbank/requests/", {
+            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "neonate_name": "Should not apply to a donor",
+        })
+
+        self.assertEqual(response.status_code, 201)
+        req = MilkBankRequest.objects.get(pk=response.data["id"])
+        self.assertEqual(req.neonate_name, "Should not apply to a donor")  # stored, but meaningless here
+        self.assertEqual(req.request_type, MilkBankRequest.RequestType.DONOR)
+
+    def test_omitting_requirements_fields_defaults_to_blank(self):
+        # The serializer must not make these required -- a caller that
+        # predates this field (or simply omits them) still gets a 201.
+        response = self.client.post("/milkbank/requests/", {
+            "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+        })
+
+        self.assertEqual(response.status_code, 201)
+        req = MilkBankRequest.objects.get(pk=response.data["id"])
+        self.assertEqual(req.neonate_name, "")
+        self.assertFalse(req.has_cooler)
+
+
 class ProposeCounterOfferFromPendingTests(APITestCase):
     """
     "No doctor available on her date" stopped being a decline and became

@@ -166,6 +166,13 @@ class MilkBankRequestCreateView(APIView):
             representative_name=data["representative_name"],
             representative_birthday=data["representative_birthday"],
             representative_contact_number=data["representative_contact_number"],
+            # Same "harmless as-is for a DONOR" treatment as the
+            # representative fields just above.
+            neonate_name=data["neonate_name"],
+            clinic_info=data["clinic_info"],
+            has_prescription_proof=data["has_prescription_proof"],
+            has_cooler=data["has_cooler"],
+            has_medical_abstract=data["has_medical_abstract"],
         )
         # Occupies a slot the moment it's created (status=pending already
         # counts as "open") -- see transitions.py for where it's released.

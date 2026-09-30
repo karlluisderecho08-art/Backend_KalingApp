@@ -136,6 +136,29 @@ class MilkBankRequest(models.Model):
     representative_birthday = models.DateField(null=True, blank=True)
     representative_contact_number = models.CharField(max_length=50, blank=True)
 
+    # Recipient requirements checklist -- RECIPIENT-only, same treatment as
+    # the representative fields just above (blank/False for a DONOR row,
+    # created together with the request rather than a separate delayed
+    # submission like DonorQuestionnaire). Ported from the Kotlin app's
+    # Request Milk form (recipientNeonateName/recipientClinicInfo/
+    # recipientPrescriptionProof/recipientHasCooler/recipientHasMedicalAbstract
+    # on KalingAppViewModel), which collected all five and then discarded
+    # them after a client-side-only checklist gate -- nothing was ever sent
+    # to the backend, so none of it was ever actually stored anywhere, for
+    # any recipient request, ever. Added 2026-10-01 once that gap was
+    # found; see CAPSTONE_DEFENSE_GUIDE.md for the full account.
+    #
+    # The three booleans are still only enforced client-side (the app
+    # already refuses to submit unless all three are ticked and
+    # neonate_name is filled in -- submitRecipientForm()) -- not
+    # re-validated here, matching the representative fields above, which
+    # have never been server-validated either.
+    neonate_name = models.CharField(max_length=255, blank=True)
+    clinic_info = models.CharField(max_length=500, blank=True)
+    has_prescription_proof = models.BooleanField(default=False)
+    has_cooler = models.BooleanField(default=False)
+    has_medical_abstract = models.BooleanField(default=False)
+
     # The 8-business-hour SLA clock (see milkbank/business_hours.py). Null
     # whenever nothing is actively pending on someone -- set the moment a
     # request starts waiting on the facility (pending) or on the mother

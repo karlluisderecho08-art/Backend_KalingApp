@@ -54,6 +54,8 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "counter_offer_date", "counter_offer_time", "owner_email", "owner_name",
             "response_deadline", "needs_representative", "representative_name",
             "representative_birthday", "representative_contact_number",
+            "neonate_name", "clinic_info", "has_prescription_proof",
+            "has_cooler", "has_medical_abstract",
             "amount_ml", "completed_at",
         ]
         read_only_fields = [
@@ -62,6 +64,8 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "counter_offer_date", "counter_offer_time", "response_deadline",
             "needs_representative", "representative_name",
             "representative_birthday", "representative_contact_number",
+            "neonate_name", "clinic_info", "has_prescription_proof",
+            "has_cooler", "has_medical_abstract",
         ]
 
 
@@ -86,6 +90,15 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
     representative_contact_number = serializers.CharField(
         max_length=50, required=False, allow_blank=True, default=""
     )
+
+    # Recipient requirements checklist -- same "accepted unconditionally,
+    # ignored for a DONOR request" treatment as the representative fields
+    # above. See MilkBankRequest.neonate_name for why these exist at all.
+    neonate_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    clinic_info = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+    has_prescription_proof = serializers.BooleanField(required=False, default=False)
+    has_cooler = serializers.BooleanField(required=False, default=False)
+    has_medical_abstract = serializers.BooleanField(required=False, default=False)
 
 
 class ProposeCounterOfferSerializer(serializers.Serializer):
