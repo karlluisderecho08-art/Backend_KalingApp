@@ -481,7 +481,27 @@ class StaffSweepExpiredView(APIView):
 
 
 class StaffProposeCounterOfferView(generics.GenericAPIView):
-    """POST /milkbank/requests/<id>/propose-counter-offer/  {counter_offer_date, counter_offer_time}"""
+    """
+    POST /milkbank/requests/<id>/propose-counter-offer/
+         {counter_offer_date, counter_offer_time, staff_message?}
+
+    Reachable from two points in the workflow, for the same underlying
+    reason -- the facility cannot host her on the day she asked for:
+
+      PENDING              the Booking Request desk's "Propose New Date"
+                           button, used instead of declining when no
+                           doctor is available on her date. This is the
+                           one that matters most: declining here used to
+                           force her to submit the entire request again
+                           (questionnaire, serology photo and all) just
+                           to move a date she never chose badly.
+      AWAITING_ATTENDANCE  an already-accepted booking that has to move.
+
+    Either way nothing is refused and nothing is re-submitted: she gets
+    Accept / Choose New Time in the app, and choosing a new time returns
+    the request to PENDING with her new slot, questionnaire intact (see
+    RejectCounterOfferView).
+    """
 
     queryset = MilkBankRequest.objects.all()
     serializer_class = ProposeCounterOfferSerializer
@@ -497,7 +517,14 @@ class StaffProposeCounterOfferView(generics.GenericAPIView):
             return Response({"detail": str(exc)}, status=400)
         req.counter_offer_date = serializer.validated_data["counter_offer_date"]
         req.counter_offer_time = serializer.validated_data["counter_offer_time"]
-        req.save(update_fields=["counter_offer_date", "counter_offer_time"])
+        update_fields = ["counter_offer_date", "counter_offer_time"]
+        # Only overwrite an existing message when a new one was actually
+        # given -- same treatment StaffAcceptView gives it, so a blank
+        # field can't silently wipe what staff said on an earlier action.
+        if serializer.validated_data["staff_message"]:
+            req.staff_message = serializer.validated_data["staff_message"]
+            update_fields.append("staff_message")
+        req.save(update_fields=update_fields)
         return Response(MilkBankRequestSerializer(req).data)
 
 

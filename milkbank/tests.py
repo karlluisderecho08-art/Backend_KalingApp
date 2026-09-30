@@ -9,7 +9,7 @@ from notifications.models import NotificationItem
 
 from .allocation import LocationRequired, NoOperationalFacility, get_ranked_facilities, rank_facilities
 from .business_hours import BUSINESS_TZ, add_business_hours, is_business_day, philippine_holidays
-from .models import Facility, MilkBankRequest, TransactionRecord
+from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .transitions import ALLOWED_TRANSITIONS, InvalidTransition, apply_transition, sweep_expired_requests
 from .views import _can_view_questionnaire
 
@@ -974,6 +974,152 @@ class BookingStageIndexTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         req.refresh_from_db()
         self.assertEqual(req.stages[req.current_stage_index], "Counseling and Testing")
+
+
+class ProposeCounterOfferFromPendingTests(APITestCase):
+    """
+    "No doctor available on her date" stopped being a decline and became
+    a proposed date instead -- which means the Booking Request desk has
+    to be able to counter-offer a request that has NOT been accepted yet.
+    PENDING -> COUNTER_OFFERED did not exist before that change; the only
+    way in was AWAITING_ATTENDANCE, i.e. after acceptance.
+
+    The point of the whole change is that nothing is re-submitted, so
+    these cover the round trip, not just the first hop: the questionnaire
+    she already filled in has to still be attached at the end of it.
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="co-mother@example.com", password="x", is_active=True)
+        # booked_count=1, not the helper's 0 default: reaching a terminal
+        # status decrements it (see apply_transition), and booked_count is
+        # a PositiveIntegerField -- so the declined-request test below would
+        # fail on the constraint rather than on the behaviour it is testing.
+        self.facility = make_facility(name="St. Luke's", booked_count=1)
+        self.staff = User.objects.create_user(
+            email="co-staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+
+    def _propose(self, req, **extra):
+        self.client.force_authenticate(user=self.staff)
+        payload = {"counter_offer_date": "2026-12-20", "counter_offer_time": "2:00 PM"}
+        payload.update(extra)
+        return self.client.post(f"/milkbank/requests/{req.id}/propose-counter-offer/", payload)
+
+    def test_a_pending_donor_request_can_be_counter_offered(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        self.assertEqual(req.current_sub_status, Status.PENDING)
+
+        response = self._propose(req)
+
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.COUNTER_OFFERED)
+        self.assertEqual(str(req.counter_offer_date), "2026-12-20")
+        self.assertEqual(req.counter_offer_time, "2:00 PM")
+
+    def test_a_pending_recipient_request_can_be_counter_offered(self):
+        # Both pathways need a doctor (Counseling and Testing for a donor,
+        # the dispensing appointment for a recipient), so neither should be
+        # turned away over facility scheduling.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+
+        response = self._propose(req)
+
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.COUNTER_OFFERED)
+
+    def test_the_reason_reaches_the_mother(self):
+        # She sees staff_message in the app's "Message from Facility Team"
+        # card, right above Accept / Choose New Time. Without it, the date
+        # simply moves with no explanation.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+
+        response = self._propose(req, staff_message="No Available Doctor — none rostered that day.")
+
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.staff_message, "No Available Doctor — none rostered that day.")
+
+    def test_a_blank_message_does_not_wipe_an_earlier_one(self):
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        req.staff_message = "Please bring your medical abstract."
+        req.save(update_fields=["staff_message"])
+
+        self._propose(req, staff_message="")
+
+        req.refresh_from_db()
+        self.assertEqual(req.staff_message, "Please bring your medical abstract.")
+
+    def test_counter_offering_holds_her_slot_and_starts_no_clock_against_her(self):
+        # The delay is the facility's, so nothing should count down against
+        # the mother -- and the slot she already holds must not be released
+        # while she decides.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        booked_before = Facility.objects.get(pk=self.facility.pk).booked_count
+
+        self._propose(req)
+
+        req.refresh_from_db()
+        self.assertIsNone(req.response_deadline)
+        self.assertEqual(Facility.objects.get(pk=self.facility.pk).booked_count, booked_before)
+
+    def test_she_keeps_her_questionnaire_through_a_rejected_counter_offer(self):
+        # The whole reason this replaced a decline: a declined request made
+        # her start over. Proposing a date she then turns down must leave
+        # her exactly where she was -- pending, with her answers intact.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        DonorQuestionnaire.objects.create(
+            request=req, good_general_health=True, lactating_with_excess_supply=True,
+            free_of_infectious_disease=True, recent_transfusion_or_transplant=False,
+            uses_tobacco_alcohol_or_drugs=False, on_medication_or_supplements=False,
+            has_recent_serology_test=True,
+        )
+        self._propose(req)
+
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.post(f"/milkbank/requests/{req.id}/reject-counter-offer/", {
+            "preferred_date": "2026-12-22", "preferred_time": "10:00 AM",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.PENDING)
+        self.assertEqual(str(req.preferred_date), "2026-12-22")
+        # Still hers, still attached -- nothing was re-submitted.
+        self.assertTrue(hasattr(req, "donor_questionnaire"))
+        self.assertTrue(req.donor_questionnaire.good_general_health)
+
+    def test_a_declined_request_cannot_be_counter_offered(self):
+        # DECLINED is terminal. Offering a date on top of one would put a
+        # refused request back in play through the side door.
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        apply_transition(req, Status.DECLINED, self.staff, "declined")
+
+        response = self._propose(req)
+
+        self.assertEqual(response.status_code, 400)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.DECLINED)
+
+    def test_staff_from_another_facility_cannot_counter_offer(self):
+        other_facility = make_facility(name="PGH", booked_count=1)
+        outsider = User.objects.create_user(
+            email="outsider@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=other_facility,
+        )
+        req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+
+        self.client.force_authenticate(user=outsider)
+        response = self.client.post(f"/milkbank/requests/{req.id}/propose-counter-offer/", {
+            "counter_offer_date": "2026-12-20", "counter_offer_time": "2:00 PM",
+        })
+
+        self.assertEqual(response.status_code, 403)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.PENDING)
 
 
 class CanViewQuestionnaireTests(APITestCase):

@@ -59,8 +59,31 @@ STATUS_NOTIFICATIONS = {
 #     the graph, and it is deliberate: for a RECIPIENT the staff review
 #     happens BEFORE attendance is confirmed, so the two statuses occur
 #     in the opposite order to the DONOR pathway.
+#
+#   PENDING -> COUNTER_OFFERED
+#     "No doctor available on the date she asked for" is not a reason to
+#     refuse a mother -- it is a reason to offer her a different date. It
+#     used to be one of the Booking Request desk's decline reasons, which
+#     ended the request outright and made her submit the whole thing
+#     again (questionnaire, serology photo and all) just to change one
+#     date. Staff now propose a date a doctor IS available instead, from
+#     the same desk, before the request has been accepted -- so this edge
+#     has to exist alongside DECLINED rather than after it.
+#
+#     Applies to both pathways: a DONOR needs a doctor for Counseling and
+#     Testing, a RECIPIENT for her dispensing appointment, and neither
+#     should be turned away over staff scheduling.
+#
+#     COUNTER_OFFERED deliberately carries no SLA clock (it is not in
+#     STATUSES_WITH_SLA_CLOCK above) and is not terminal, so proposing a
+#     date keeps her booking slot held at the facility while she decides,
+#     and does not start a countdown against her for a delay that was
+#     never hers.
 ALLOWED_TRANSITIONS = {
-    Status.PENDING: {Status.AWAITING_ATTENDANCE, Status.SCHEDULED, Status.DECLINED, Status.EXPIRED},
+    Status.PENDING: {
+        Status.AWAITING_ATTENDANCE, Status.SCHEDULED, Status.COUNTER_OFFERED,
+        Status.DECLINED, Status.EXPIRED,
+    },
     Status.AWAITING_ATTENDANCE: {Status.SCHEDULED, Status.COUNTER_OFFERED, Status.EXPIRED},
     Status.COUNTER_OFFERED: {Status.SCHEDULED, Status.PENDING},
     Status.SCHEDULED: {Status.COMPLETED, Status.AWAITING_ATTENDANCE},

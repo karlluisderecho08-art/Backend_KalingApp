@@ -89,8 +89,21 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
 
 
 class ProposeCounterOfferSerializer(serializers.Serializer):
+    """
+    What staff send when offering a mother a different appointment slot.
+
+    staff_message is optional at this layer but the facility dashboard
+    always sends one, because a proposed date with no explanation reads
+    as the facility moving her appointment for no reason. It lands in
+    MilkBankRequest.staff_message, which the mobile app already shows in
+    its "Message from Facility Team" card right above the accept/decline
+    buttons for the counter-offer -- so this is the only thing that tells
+    her a doctor was not available on the day she picked.
+    """
+
     counter_offer_date = serializers.DateField()
     counter_offer_time = serializers.CharField(max_length=20)
+    staff_message = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class RebookSerializer(serializers.Serializer):
