@@ -371,6 +371,111 @@ STORAGES = {
 MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_URL = "/media/"
 
+# --- Serology photo storage override (Supabase Storage, S3-compatible) ---
+#
+# The FileSystemStorage default above writes to local disk, which is fine
+# for dev but is quietly wrong in production: Render's free web service
+# (see render.yaml) has no persistent disk attached, so its filesystem is
+# EPHEMERAL -- wiped on every new deploy, not just on a restart. A
+# serology photo saved there survives only until the next `git push`
+# triggers a redeploy, even though DonorQuestionnaire.serology_photo (the
+# database row) and SerologyPhotoView's permission check both act like
+# it's there forever. That's silent data loss, not a cosmetic gap --
+# discovered 2026-10-01, see CAPSTONE_DEFENSE_GUIDE.md.
+#
+# serology_photo is (checked directly) the ONLY FileField/ImageField in
+# this codebase, so overriding STORAGES["default"] affects exactly that
+# one field in practice, not a wider blast radius.
+#
+# Supabase Storage, not a fresh AWS S3 bucket: this project already has a
+# Supabase project (see DATABASE_URL above) -- one fewer vendor/account to
+# manage, not a new one -- and Supabase exposes an S3-compatible API, so
+# django-storages' ordinary S3Boto3Storage backend works against it
+# unmodified; nothing here needs a Supabase-specific SDK.
+#
+# All four SUPABASE_STORAGE_* values must be set together for this to
+# switch on. Get them from the Supabase dashboard, Project Settings ->
+# Storage -> S3 Connection:
+#   SUPABASE_STORAGE_ENDPOINT_URL      the "Endpoint" shown there
+#   SUPABASE_STORAGE_REGION            the "Region" shown there (defaults
+#                                       to this project's existing
+#                                       ap-southeast-1 Supabase project)
+#   SUPABASE_STORAGE_ACCESS_KEY_ID     from "New access key" on that page
+#   SUPABASE_STORAGE_SECRET_ACCESS_KEY the secret shown once, at the same
+#                                       time as the access key -- copy it
+#                                       immediately, Supabase does not
+#                                       show it again
+#   SUPABASE_STORAGE_BUCKET            a bucket you create yourself under
+#                                       Storage -- create it PRIVATE, not
+#                                       public. SerologyPhotoView is still
+#                                       the only path that ever serves the
+#                                       bytes, same posture as local disk
+#                                       today; a public bucket would
+#                                       undermine that.
+#
+# Leaving any one of these unset keeps local FileSystemStorage as the
+# default -- same "missing credential -> safe local fallback" pattern as
+# every other optional integration in this file (BREVO_API_KEY,
+# GEMINI_API_KEY, etc.), so local dev and the test suite need none of
+# this configured and are completely unaffected either way.
+#
+# OPTIONS (not the bare AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY settings
+# django-storages defaults to reading) is deliberate: those two names are
+# ALREADY used above by chat/bedrock_client.py for its own, unrelated AWS
+# Bedrock credentials. That module is dead code today (superseded by
+# Gemini -- see chat/gemini_client.py's own docstring and
+# CAPSTONE_DEFENSE_GUIDE.md's Q35), but it's still present and still
+# reads settings.AWS_ACCESS_KEY_ID directly, so setting that name
+# globally here would silently wire Supabase's storage credentials into
+# Bedrock auth (or vice versa) the moment that code is ever reactivated.
+# Passing access_key/secret_key etc. as OPTIONS instead scopes them to
+# this storage backend instance only, and never touches
+# settings.AWS_ACCESS_KEY_ID at all -- safe regardless of whether
+# Bedrock ever comes back.
+#
+# file_overwrite=False matches FileSystemStorage's own always-safe
+# default (get_available_name() appends a random suffix on a name
+# collision) -- django-storages' own default is True (silently overwrite
+# same-named file), which would risk one donor's serology photo quietly
+# replacing another's. querystring_auth=False is defense in depth for the
+# "never a bare URL" posture above: this app never calls .url() on this
+# field (SerologyPhotoView always proxies the bytes itself), so there is
+# no presigned link to disable, but nothing should start emitting one if
+# that ever changes without someone deciding so on purpose.
+# addressing_style="path" and signature_version="s3v4" are Supabase's own
+# documented requirements for third-party S3 clients (Supabase isn't AWS,
+# so AWS's default virtual-hosted-style addressing doesn't resolve
+# against its endpoint) -- NOT verified end-to-end against a real bucket
+# by this change (no live Supabase Storage credentials were available to
+# test against); upload a real serology photo after wiring these in and
+# flag it if anything here needs adjusting.
+SUPABASE_STORAGE_ENDPOINT_URL = env("SUPABASE_STORAGE_ENDPOINT_URL", default="")
+SUPABASE_STORAGE_REGION = env("SUPABASE_STORAGE_REGION", default="ap-southeast-1")
+SUPABASE_STORAGE_ACCESS_KEY_ID = env("SUPABASE_STORAGE_ACCESS_KEY_ID", default="")
+SUPABASE_STORAGE_SECRET_ACCESS_KEY = env("SUPABASE_STORAGE_SECRET_ACCESS_KEY", default="")
+SUPABASE_STORAGE_BUCKET = env("SUPABASE_STORAGE_BUCKET", default="")
+
+if (
+    SUPABASE_STORAGE_ENDPOINT_URL
+    and SUPABASE_STORAGE_ACCESS_KEY_ID
+    and SUPABASE_STORAGE_SECRET_ACCESS_KEY
+    and SUPABASE_STORAGE_BUCKET
+):
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        "OPTIONS": {
+            "endpoint_url": SUPABASE_STORAGE_ENDPOINT_URL,
+            "region_name": SUPABASE_STORAGE_REGION,
+            "access_key": SUPABASE_STORAGE_ACCESS_KEY_ID,
+            "secret_key": SUPABASE_STORAGE_SECRET_ACCESS_KEY,
+            "bucket_name": SUPABASE_STORAGE_BUCKET,
+            "file_overwrite": False,
+            "querystring_auth": False,
+            "addressing_style": "path",
+            "signature_version": "s3v4",
+        },
+    }
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # No CACHES here on purpose: Django's default LocMemCache is correct

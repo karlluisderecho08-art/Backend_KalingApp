@@ -182,6 +182,26 @@ services:
       # happens lazily, on someone's next page load, not on a timer.
       - key: MILKBANK_SWEEP_TOKEN
         sync: false
+      # Moves serology photo storage off this service's own (ephemeral --
+      # no disk: block below, free plan doesn't offer one) filesystem and
+      # onto Supabase Storage, which already has a project here (see
+      # DATABASE_URL above). Without these four set TOGETHER, uploads
+      # keep going to local disk and get silently wiped on every deploy
+      # -- see config/settings/base.py's SUPABASE_STORAGE_* block for the
+      # full reasoning and exactly where in Supabase's dashboard to find
+      # each value (Project Settings -> Storage -> S3 Connection for the
+      # first three, a bucket you create yourself -- PRIVATE, not public
+      # -- for the bucket name).
+      - key: SUPABASE_STORAGE_ENDPOINT_URL
+        sync: false
+      - key: SUPABASE_STORAGE_REGION
+        sync: false
+      - key: SUPABASE_STORAGE_ACCESS_KEY_ID
+        sync: false
+      - key: SUPABASE_STORAGE_SECRET_ACCESS_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
 
 # Still running, still owned by this blueprint, but no longer what
 # DATABASE_URL points at (see the top-of-file comment) -- nothing here
