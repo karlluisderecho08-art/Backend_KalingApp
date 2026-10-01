@@ -8,11 +8,16 @@ class Command(BaseCommand):
     manage.py seed_support_contacts
 
     Creates the two organizations the Kotlin app's ContactDirectoryScreen
-    already shows (CODEBASE-1.md section 5/7). phone/address are left
-    blank on purpose -- same "" the current app ships with, which is why
-    it falls back to "pending verification" copy. Filling in the real
-    numbers/addresses is an admin data-entry task, not a code change
-    (see roadmap Phase 2), so this command doesn't guess at them.
+    originally showed (CODEBASE-1.md section 5/7), if they are missing.
+
+    The directory's verified details -- and its other entries -- now come
+    from migration 0003_support_contact_details, which runs before this
+    on every deploy. So in practice both rows below already exist by the
+    time this runs and it changes nothing; it is kept as a safety net,
+    and its values match that migration so it can never put a stale
+    address back. Arugaan's phone stays blank because no number for it
+    has been confirmed -- the app shows "pending verification" for a
+    blank field, which is the honest thing to show.
     """
 
     help = "Seed the Arugaan and Fabella support contact entries"
@@ -29,9 +34,9 @@ class Command(BaseCommand):
             {
                 "name": "Dr. Jose Fabella Memorial Hospital Human Milk Bank",
                 "description": "Government-accredited human milk bank.",
-                "email": "",
-                "phone": "8866-7960",
-                "address": "1003 Lope de Vega St, Santa Cruz, Manila, 1003 Metro Manila",
+                "email": "mcc@fabella.doh.gov.ph",
+                "phone": "(02) 8866-7960",
+                "address": "San Lazaro Compound, Tayuman St., Santa Cruz, Manila",
             },
         ]
         for data in contacts:
