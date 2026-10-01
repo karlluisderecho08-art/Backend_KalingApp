@@ -18,9 +18,12 @@ class Command(BaseCommand):
     Fabella (Sta. Cruz, Manila) -- those are just public facts, safe to
     hardcode. St. Martin de Porres' exact address isn't confirmed
     anywhere in this repo, so its coordinates are a placeholder pin in
-    Metro Manila, clearly not verified. Fabella's coordinates are an
-    approximate geocode of its confirmed street address, not a surveyed
-    pin.
+    Metro Manila, clearly not verified. Fabella's address is the one on
+    its own site (San Lazaro Compound, Tayuman St. -- it moved out of
+    Lope de Vega St.), and its coordinates are OpenStreetMap's pin for
+    the hospital on Tayuman Street, not a surveyed pin. A database seeded
+    before that move is corrected by migration 0011_fabella_current_address;
+    the values below match it so a fresh database starts out right.
 
     capacity / booked_count / stock_level_ml are STILL not real
     operational data -- nobody has supplied real figures (same open item
@@ -85,12 +88,12 @@ class Command(BaseCommand):
                 "name": "Dr. Jose Fabella Memorial Hospital Human Milk Bank",
                 "type": Facility.FacilityType.HUMAN_MILK_BANK,
                 "contact": "8866-7960",
-                "address": "1003 Lope de Vega St, Santa Cruz, Manila, 1003 Metro Manila",
+                "address": "San Lazaro Compound, Tayuman St., Santa Cruz, Manila",
                 "capacity": 24,
                 "booked_count": 7,
                 "stock_level_ml": 910,
-                "latitude": 14.6169,
-                "longitude": 120.9833,
+                "latitude": 14.6153,
+                "longitude": 120.9804,
             },
         ]
         for data in facilities:

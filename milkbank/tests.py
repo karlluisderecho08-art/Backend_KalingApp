@@ -1,6 +1,8 @@
 from datetime import date, datetime, timedelta
+from importlib import import_module
 
-from django.test import SimpleTestCase, override_settings
+from django.apps import apps
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
@@ -1572,3 +1574,38 @@ class BusinessHoursClockTests(SimpleTestCase):
     def test_result_is_utc_aware(self):
         deadline = add_business_hours(self.manila(2026, 9, 9, 9))
         self.assertEqual(deadline.utcoffset(), timedelta(0))
+
+
+class FabellaCurrentAddressMigrationTests(TestCase):
+    """0011_fabella_current_address -- run directly against a row shaped
+    like production's, since the test database starts with no facilities."""
+
+    # Migration modules start with a digit, so a plain `import` can't name them.
+    migration = import_module("milkbank.migrations.0011_fabella_current_address")
+
+    def test_moves_the_row_that_still_has_the_old_address(self):
+        fabella = make_facility(
+            name=self.migration.FACILITY_NAME, address=self.migration.OLD_ADDRESS,
+            latitude=14.6169, longitude=120.9833,
+        )
+        other = make_facility(name="Philippine General Hospital", address="Taft Ave, Ermita, Manila")
+
+        self.migration.move_fabella(apps, None)
+
+        fabella.refresh_from_db()
+        self.assertEqual(fabella.address, "San Lazaro Compound, Tayuman St., Santa Cruz, Manila")
+        self.assertEqual((fabella.latitude, fabella.longitude), (14.6153, 120.9804))
+        other.refresh_from_db()
+        self.assertEqual(other.address, "Taft Ave, Ermita, Manila")
+
+    def test_leaves_an_address_an_admin_already_corrected(self):
+        fabella = make_facility(
+            name=self.migration.FACILITY_NAME, address="Corrected by hand",
+            latitude=14.1, longitude=121.1,
+        )
+
+        self.migration.move_fabella(apps, None)
+
+        fabella.refresh_from_db()
+        self.assertEqual(fabella.address, "Corrected by hand")
+        self.assertEqual((fabella.latitude, fabella.longitude), (14.1, 121.1))
