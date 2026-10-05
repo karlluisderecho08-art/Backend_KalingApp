@@ -709,3 +709,89 @@ class FacilityStaffPermissionTests(APITestCase):
         self.client.force_authenticate(user=admin)
         response = self.client.get("/auth/users/")
         self.assertEqual(response.status_code, 403)
+
+
+class AdminUserManagementTests(APITestCase):
+    """
+    /auth/admin/users/ -- the admin dashboard's User Management page.
+    Platform-admin only (is_staff), and unlike StaffUserListView above,
+    must return every role, not just mothers.
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="mother@example.com", password="password123", is_active=True)
+        self.staff = User.objects.create_user(
+            email="staff@example.com", password="password123", is_active=True, role=User.Role.FACILITY_STAFF,
+        )
+        self.admin = User.objects.create_superuser(email="admin@example.com", password="password123")
+        self.other_admin = User.objects.create_superuser(email="other-admin@example.com", password="password123")
+
+    def test_mother_cannot_list_every_account(self):
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.get("/auth/admin/users/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_facility_staff_role_alone_does_not_grant_admin_access(self):
+        # Mirrors test_django_is_staff_alone_does_not_grant_facility_staff_access
+        # above, in the opposite direction -- the facility_staff role
+        # must not satisfy the platform-admin gate either.
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get("/auth/admin/users/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_sees_every_role_with_email(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get("/auth/admin/users/")
+        self.assertEqual(response.status_code, 200)
+        by_email = {row["email"]: row for row in response.data}
+        self.assertEqual(
+            set(by_email),
+            {"mother@example.com", "staff@example.com", "admin@example.com", "other-admin@example.com"},
+        )
+        self.assertEqual(by_email["mother@example.com"]["role"], User.Role.MOTHER)
+        self.assertEqual(by_email["staff@example.com"]["role"], User.Role.FACILITY_STAFF)
+        self.assertTrue(by_email["admin@example.com"]["is_staff"])
+
+    def test_admin_can_delete_another_account(self):
+        from core.models import AuditLogEntry
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.delete(f"/auth/admin/users/{self.mother.id}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(User.objects.filter(id=self.mother.id).exists())
+        entry = AuditLogEntry.objects.get(action="user.deleted")
+        self.assertEqual(entry.actor, self.admin)
+        self.assertIn("mother@example.com", entry.target)
+
+    def test_admin_cannot_delete_their_own_account(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.delete(f"/auth/admin/users/{self.admin.id}/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(User.objects.filter(id=self.admin.id).exists())
+
+    def test_mother_cannot_delete_an_account(self):
+        self.client.force_authenticate(user=self.mother)
+        response = self.client.delete(f"/auth/admin/users/{self.staff.id}/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(User.objects.filter(id=self.staff.id).exists())
+
+    def test_deleting_a_mother_cascades_her_booking(self):
+        from milkbank.models import Facility, MilkBankRequest
+
+        facility = Facility.objects.create(
+            name="Test Facility", type=Facility.FacilityType.HOSPITAL_DEPOT, contact="000-0000",
+            address="Somewhere", capacity=10, latitude=14.6, longitude=121.0,
+        )
+        booking = MilkBankRequest.objects.create(
+            owner=self.mother, request_type=MilkBankRequest.RequestType.DONOR,
+            allocated_facility=facility, preferred_date="2026-01-01", preferred_time="9:00 AM",
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.delete(f"/auth/admin/users/{self.mother.id}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(MilkBankRequest.objects.filter(id=booking.id).exists())

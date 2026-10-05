@@ -2,6 +2,8 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
+    AdminUserDeleteView,
+    AdminUserListView,
     CheckInView,
     DemoLoginView,
     ForgotPasswordView,
@@ -37,4 +39,8 @@ urlpatterns = [
     path("users/", StaffUserListView.as_view(), name="staff-user-list"),
     path("users/<int:pk>/activate/", StaffUserSetActiveView.as_view(active=True), name="staff-user-activate"),
     path("users/<int:pk>/deactivate/", StaffUserSetActiveView.as_view(active=False), name="staff-user-deactivate"),
+    # Platform-admin account management -- every role, not just mothers
+    # (see AdminUserListView/AdminUserDeleteView's own docstrings).
+    path("admin/users/", AdminUserListView.as_view(), name="admin-user-list"),
+    path("admin/users/<int:pk>/", AdminUserDeleteView.as_view(), name="admin-user-delete"),
 ]

@@ -7,6 +7,7 @@ from django.http import Http404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -24,6 +25,7 @@ from .emails import (
 )
 from .models import PendingRegistration, User
 from .serializers import (
+    AdminUserListSerializer,
     LocationConsentSerializer,
     RegisterSerializer,
     StaffUserListSerializer,
@@ -511,6 +513,58 @@ class StaffUserSetActiveView(APIView):
         user.save(update_fields=["is_active"])
         log_action(request.user, "user.activated" if self.active else "user.deactivated", f"User:{user.id}")
         return Response(StaffUserListSerializer(user).data)
+
+
+# --- Platform-admin account management (Django's is_staff, NOT the
+# facility_staff role gated above by IsFacilityStaff) ---
+
+class AdminUserListView(generics.ListAPIView):
+    """
+    GET /auth/admin/users/ -- every account in the system, for the admin
+    dashboard's User Management page. Deliberately crosses every role
+    (mother, facility_staff, admin) -- a platform admin is the one role
+    meant to see who the facility-staff accounts actually are and which
+    facility each belongs to, not just mothers like StaffUserListView
+    above.
+    """
+
+    serializer_class = AdminUserListSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_queryset(self):
+        return User.objects.select_related("facility").order_by("-date_joined")
+
+
+class AdminUserDeleteView(generics.DestroyAPIView):
+    """
+    DELETE /auth/admin/users/<id>/ -- platform-admin only, permanently
+    removes an account.
+
+    A hard delete, not a deactivate (StaffUserSetActiveView above is the
+    reversible version, left in place for facility staff to use on a
+    mother account). Every other model's FK to User is CASCADE (milkbank
+    requests and their questionnaires, transactions, chat history,
+    notifications, article comments -- see each model's own FK), so this
+    also removes everything that account ever did. core.AuditLogEntry.
+    actor is the one exception (SET_NULL), so the "who did what" audit
+    trail survives the account itself being gone.
+
+    Logged BEFORE the delete runs, not after: once the row is gone
+    there's no User left to log_action() against, and the target string
+    has to say who this was while it still can.
+    """
+
+    queryset = User.objects.all()
+    permission_classes = [permissions.IsAdminUser]
+
+    def perform_destroy(self, instance):
+        # Checked here, not as a queryset exclusion, so deleting yourself
+        # fails with a clear reason instead of a bare 404 -- and so an
+        # admin can never delete the only account that could undo it.
+        if instance.id == self.request.user.id:
+            raise ValidationError("You cannot delete your own account.")
+        log_action(self.request.user, "user.deleted", f"User:{instance.id} ({instance.email}, {instance.role})")
+        instance.delete()
 
 
 class LocationConsentView(APIView):

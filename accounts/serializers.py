@@ -137,6 +137,35 @@ class StaffUserListSerializer(serializers.ModelSerializer):
         ]
 
 
+class AdminUserListSerializer(serializers.ModelSerializer):
+    """
+    Read shape for the admin dashboard's User Management table -- every
+    account in the system, not just mothers like StaffUserListSerializer
+    above. A platform admin is the only role meant to see across that
+    whole boundary: who the facility-staff accounts actually are, which
+    facility each is assigned to, and who else has platform-admin access.
+
+    facility_name mirrors UserSerializer's own field -- None for a
+    mother or an unassigned staff account, the facility's name otherwise.
+    total_drawn_ml / total_received_ml are 0 for a staff or admin
+    account (the fields exist on every row, but only a mother's booking
+    history ever credits them) -- shown anyway rather than hidden
+    per-role, so the table has one consistent shape to render.
+    """
+
+    facility_name = serializers.CharField(source="facility.name", read_only=True, default=None)
+
+    class Meta:
+        model = User
+        fields = [
+            "id", "email", "role", "is_staff", "is_superuser",
+            "facility", "facility_name",
+            "mom_name", "baby_name", "baby_age_weeks",
+            "total_drawn_ml", "total_received_ml", "location_consent_given",
+            "is_active", "date_joined", "last_login",
+        ]
+
+
 class LocationConsentSerializer(serializers.Serializer):
     """
     Not a ModelSerializer -- this isn't "edit some User fields," it's
