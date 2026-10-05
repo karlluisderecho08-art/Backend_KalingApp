@@ -1,5 +1,8 @@
 from rest_framework import serializers
 
+from accounts.models import User
+from core.audit import log_action
+
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 
 
@@ -8,6 +11,26 @@ class AllocationRequestSerializer(serializers.Serializer):
 
 
 class FacilitySerializer(serializers.ModelSerializer):
+    """
+    staff_user_id / new_staff_email / new_staff_password are write-only
+    and not Facility columns -- see create() below, which is the only
+    place they do anything. Accepted (and silently ignored, same as any
+    unknown attribute Django lets you set on an instance without saving
+    it) on an update too, since ModelSerializer.update() isn't
+    overridden here -- FacilityDetailView's PATCH/PUT was never meant to
+    reassign staff, only FacilityListView's POST (a brand-new facility,
+    from the admin dashboard's Add Facility modal).
+
+    A facility is created with no staff account at all by default --
+    both fields are optional, and leaving them out is the common case
+    for every facility already seeded (see milkbank/management/commands/
+    seed_facilities.py, none of which pass either).
+    """
+
+    staff_user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    new_staff_email = serializers.EmailField(write_only=True, required=False)
+    new_staff_password = serializers.CharField(write_only=True, required=False, min_length=8)
+
     class Meta:
         model = Facility
         fields = [
@@ -16,7 +39,69 @@ class FacilitySerializer(serializers.ModelSerializer):
             "unavailable_donor_dates", "unavailable_recipient_dates",
             "is_operational", "capacity", "booked_count", "stock_level_ml",
             "latitude", "longitude",
+            "staff_user_id", "new_staff_email", "new_staff_password",
         ]
+
+    def validate(self, attrs):
+        staff_user_id = attrs.get("staff_user_id")
+        new_staff_email = attrs.get("new_staff_email")
+        new_staff_password = attrs.get("new_staff_password")
+
+        if staff_user_id and new_staff_email:
+            raise serializers.ValidationError(
+                "Choose either an existing staff account or a new one, not both."
+            )
+        if bool(new_staff_email) != bool(new_staff_password):
+            raise serializers.ValidationError(
+                {"new_staff_email": "A new staff account needs both an email and a password."}
+            )
+
+        if staff_user_id:
+            try:
+                user = User.objects.get(pk=staff_user_id, role=User.Role.FACILITY_STAFF)
+            except User.DoesNotExist:
+                raise serializers.ValidationError(
+                    {"staff_user_id": "No facility-staff account with that id."}
+                )
+            # Reassigning a staff member already running a different
+            # facility is a real, disruptive action (that facility loses
+            # its only logged-in account) and not what "assign a staff
+            # account for the facility being created" asks for -- this
+            # flow is for staff with nowhere to log in yet.
+            if user.facility_id is not None:
+                raise serializers.ValidationError(
+                    {"staff_user_id": "That staff account is already assigned to a facility."}
+                )
+
+        if new_staff_email and User.objects.filter(email__iexact=new_staff_email).exists():
+            raise serializers.ValidationError(
+                {"new_staff_email": "An account with this email already exists."}
+            )
+
+        return attrs
+
+    def create(self, validated_data):
+        staff_user_id = validated_data.pop("staff_user_id", None)
+        new_staff_email = validated_data.pop("new_staff_email", None)
+        new_staff_password = validated_data.pop("new_staff_password", None)
+
+        facility = super().create(validated_data)
+
+        actor = self.context["request"].user if "request" in self.context else None
+        if staff_user_id:
+            User.objects.filter(pk=staff_user_id).update(facility=facility)
+            log_action(actor, "facility.staff_assigned", f"User:{staff_user_id} -> Facility:{facility.id}")
+        elif new_staff_email:
+            new_user = User.objects.create_user(
+                email=new_staff_email, password=new_staff_password,
+                role=User.Role.FACILITY_STAFF, facility=facility, is_active=True,
+            )
+            log_action(
+                actor, "facility.staff_created",
+                f"User:{new_user.id} ({new_staff_email}) -> Facility:{facility.id}",
+            )
+
+        return facility
 
 
 class RankedFacilitySerializer(FacilitySerializer):

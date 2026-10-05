@@ -7,6 +7,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from accounts.models import User
+from core.models import AuditLogEntry
 from notifications.models import NotificationItem
 
 from .allocation import LocationRequired, NoOperationalFacility, get_ranked_facilities, rank_facilities
@@ -1609,3 +1610,108 @@ class FabellaCurrentAddressMigrationTests(TestCase):
         fabella.refresh_from_db()
         self.assertEqual(fabella.address, "Corrected by hand")
         self.assertEqual((fabella.latitude, fabella.longitude), (14.1, 121.1))
+
+
+class FacilityCreationStaffAssignmentTests(APITestCase):
+    """
+    POST /milkbank/facilities/ -- the admin dashboard's Add Facility
+    modal can assign a staff account to the facility it's creating, in
+    the same request: either an existing unassigned facility_staff
+    account (staff_user_id), or a brand-new one (new_staff_email +
+    new_staff_password). Platform-admin only, same as every other
+    write on this endpoint (see FacilityListView).
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(email="admin@example.com", password="password123")
+        self.payload = dict(
+            name="New Facility", type=Facility.FacilityType.HOSPITAL_DEPOT,
+            contact="000-0000", address="Somewhere", capacity=10,
+            latitude=14.6, longitude=121.0,
+        )
+
+    def test_creating_a_facility_needs_no_staff_fields_at_all(self):
+        # The common case, and what every seeded facility already does
+        # (see seed_facilities.py) -- must keep working unchanged.
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/milkbank/facilities/", self.payload)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Facility.objects.get(pk=response.data["id"]).staff.count(), 0)
+
+    def test_assigns_an_existing_unassigned_staff_account(self):
+        staff = User.objects.create_user(
+            email="staff@example.com", password="x", role=User.Role.FACILITY_STAFF,
+        )
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/milkbank/facilities/", {**self.payload, "staff_user_id": staff.id})
+
+        self.assertEqual(response.status_code, 201)
+        staff.refresh_from_db()
+        self.assertEqual(staff.facility_id, response.data["id"])
+        self.assertTrue(AuditLogEntry.objects.filter(action="facility.staff_assigned").exists())
+
+    def test_refuses_a_staff_account_already_assigned_elsewhere(self):
+        other_facility = make_facility(name="Other Facility")
+        staff = User.objects.create_user(
+            email="staff@example.com", password="x", role=User.Role.FACILITY_STAFF, facility=other_facility,
+        )
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/milkbank/facilities/", {**self.payload, "staff_user_id": staff.id})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Facility.objects.filter(name="New Facility").exists())
+        staff.refresh_from_db()
+        self.assertEqual(staff.facility_id, other_facility.id)
+
+    def test_refuses_a_non_facility_staff_user_id(self):
+        mother = User.objects.create_user(email="mother@example.com", password="x")
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/milkbank/facilities/", {**self.payload, "staff_user_id": mother.id})
+        self.assertEqual(response.status_code, 400)
+
+    def test_creates_a_brand_new_staff_account(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/milkbank/facilities/", {
+            **self.payload, "new_staff_email": "newstaff@example.com", "new_staff_password": "password123",
+        })
+
+        self.assertEqual(response.status_code, 201)
+        new_staff = User.objects.get(email="newstaff@example.com")
+        self.assertEqual(new_staff.role, User.Role.FACILITY_STAFF)
+        self.assertEqual(new_staff.facility_id, response.data["id"])
+        self.assertTrue(new_staff.is_active)
+        self.assertTrue(new_staff.check_password("password123"))
+        self.assertTrue(AuditLogEntry.objects.filter(action="facility.staff_created").exists())
+
+    def test_refuses_a_new_staff_email_already_in_use(self):
+        User.objects.create_user(email="taken@example.com", password="x")
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/milkbank/facilities/", {
+            **self.payload, "new_staff_email": "taken@example.com", "new_staff_password": "password123",
+        })
+        self.assertEqual(response.status_code, 400)
+
+    def test_refuses_a_new_staff_email_without_a_password(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/milkbank/facilities/", {
+            **self.payload, "new_staff_email": "newstaff@example.com",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(User.objects.filter(email="newstaff@example.com").exists())
+
+    def test_refuses_both_an_existing_and_a_new_staff_account_at_once(self):
+        staff = User.objects.create_user(
+            email="staff@example.com", password="x", role=User.Role.FACILITY_STAFF,
+        )
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post("/milkbank/facilities/", {
+            **self.payload, "staff_user_id": staff.id,
+            "new_staff_email": "newstaff@example.com", "new_staff_password": "password123",
+        })
+        self.assertEqual(response.status_code, 400)
+
+    def test_non_admin_cannot_create_a_facility_at_all(self):
+        mother = User.objects.create_user(email="mother@example.com", password="x")
+        self.client.force_authenticate(user=mother)
+        response = self.client.post("/milkbank/facilities/", self.payload)
+        self.assertEqual(response.status_code, 403)
