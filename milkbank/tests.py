@@ -13,10 +13,24 @@ from notifications.models import NotificationItem
 from .allocation import LocationRequired, NoOperationalFacility, get_ranked_facilities, rank_facilities
 from .business_hours import BUSINESS_TZ, add_business_hours, is_business_day, philippine_holidays
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
+from .scheduling import counter_offer_errors
 from .transitions import ALLOWED_TRANSITIONS, InvalidTransition, apply_transition, sweep_expired_requests
 from .views import _can_view_questionnaire
 
 Status = MilkBankRequest.Status
+
+
+def _first_weekday_after(days):
+    """The first Mon-Fri at least `days` days from now (Manila), as yyyy-mm-dd.
+    Counter-offers must be on a future weekday, so tests that offer one can't
+    hard-code a calendar date -- it goes stale, and the one they used was a Sunday."""
+    day = datetime.now(BUSINESS_TZ).date() + timedelta(days=days)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day.isoformat()
+
+
+COUNTER_OFFER_DATE = _first_weekday_after(14)
 
 
 def make_facility(**overrides):
@@ -951,7 +965,7 @@ class BookingStageIndexTests(APITestCase):
         req.current_stage_index = req.stages.index("Booking Confirmation")
         req.save(update_fields=["current_stage_index"])
         apply_transition(req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
-        req.counter_offer_date, req.counter_offer_time = "2026-12-20", "2:00 PM"
+        req.counter_offer_date, req.counter_offer_time = COUNTER_OFFER_DATE, "2:00 PM"
         req.save(update_fields=["counter_offer_date", "counter_offer_time"])
 
         self.client.force_authenticate(user=self.mother)
@@ -976,7 +990,7 @@ class BookingStageIndexTests(APITestCase):
         req.current_stage_index = req.stages.index("Booking Confirmation")
         req.save(update_fields=["current_stage_index"])
         apply_transition(req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
-        req.counter_offer_date, req.counter_offer_time = "2026-12-20", "2:00 PM"
+        req.counter_offer_date, req.counter_offer_time = COUNTER_OFFER_DATE, "2:00 PM"
         req.save(update_fields=["counter_offer_date", "counter_offer_time"])
 
         self.client.force_authenticate(user=self.mother)
@@ -1092,7 +1106,7 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
 
     def _propose(self, req, **extra):
         self.client.force_authenticate(user=self.staff)
-        payload = {"counter_offer_date": "2026-12-20", "counter_offer_time": "2:00 PM"}
+        payload = {"counter_offer_date": COUNTER_OFFER_DATE, "counter_offer_time": "2:00 PM"}
         payload.update(extra)
         return self.client.post(f"/milkbank/requests/{req.id}/propose-counter-offer/", payload)
 
@@ -1105,7 +1119,7 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         req.refresh_from_db()
         self.assertEqual(req.current_sub_status, Status.COUNTER_OFFERED)
-        self.assertEqual(str(req.counter_offer_date), "2026-12-20")
+        self.assertEqual(str(req.counter_offer_date), COUNTER_OFFER_DATE)
         self.assertEqual(req.counter_offer_time, "2:00 PM")
 
     def test_a_pending_recipient_request_can_be_counter_offered(self):
@@ -1194,7 +1208,7 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         self.assertEqual(accepted.status_code, 200)
         req.refresh_from_db()
         # The facility's proposed slot becomes hers.
-        self.assertEqual(str(req.preferred_date), "2026-12-20")
+        self.assertEqual(str(req.preferred_date), COUNTER_OFFER_DATE)
         self.assertEqual(req.preferred_time, "2:00 PM")
 
         confirmed = self.client.post(f"/milkbank/requests/{req.id}/confirm-attendance/")
@@ -1231,7 +1245,7 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
 
         apply_transition(req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
-        req.counter_offer_date, req.counter_offer_time = "2026-12-20", "2:00 PM"
+        req.counter_offer_date, req.counter_offer_time = COUNTER_OFFER_DATE, "2:00 PM"
         req.save(update_fields=["counter_offer_date", "counter_offer_time"])
 
         self.client.force_authenticate(user=self.mother)
@@ -1241,7 +1255,7 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         req.refresh_from_db()
         self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
         self.assertEqual(req.stages[req.current_stage_index], "Booking Confirmation")
-        self.assertEqual(str(req.preferred_date), "2026-12-20")
+        self.assertEqual(str(req.preferred_date), COUNTER_OFFER_DATE)
 
         confirmed = self.client.post(f"/milkbank/requests/{req.id}/confirm-attendance/")
         self.assertEqual(confirmed.status_code, 200, confirmed.data)
@@ -1296,7 +1310,7 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         self.client.post(f"/milkbank/requests/{req.id}/advance-stage/")
         req.refresh_from_db()
         self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
-        self.assertEqual(str(req.preferred_date), "2026-12-20")
+        self.assertEqual(str(req.preferred_date), COUNTER_OFFER_DATE)
 
         self.client.force_authenticate(user=self.mother)
         confirmed = self.client.post(f"/milkbank/requests/{req.id}/confirm-attendance/")
@@ -1327,12 +1341,159 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
 
         self.client.force_authenticate(user=outsider)
         response = self.client.post(f"/milkbank/requests/{req.id}/propose-counter-offer/", {
-            "counter_offer_date": "2026-12-20", "counter_offer_time": "2:00 PM",
+            "counter_offer_date": COUNTER_OFFER_DATE, "counter_offer_time": "2:00 PM",
         })
 
         self.assertEqual(response.status_code, 403)
         req.refresh_from_db()
         self.assertEqual(req.current_sub_status, Status.PENDING)
+
+
+class CounterOfferSlotRulesTests(APITestCase):
+    """
+    The slots staff may offer in a counter-offer. The facility dashboard
+    greys these out; these tests are for the backend refusing them, so a
+    stale tab or a direct API call can't offer a slot nobody could attend.
+
+    Rules are pinned to a fixed clock -- Wednesday 7 Oct 2026, 1:30 PM in
+    Manila -- so they don't depend on the day the suite runs.
+    """
+
+    NOW = datetime(2026, 10, 7, 13, 30, tzinfo=BUSINESS_TZ)
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="slot-mother@example.com", password="x", is_active=True)
+        self.facility = make_facility(
+            name="St. Luke's", booked_count=1,
+            unavailable_donor_dates=["2026-10-14"], unavailable_recipient_dates=["2026-10-15"],
+        )
+        self.staff = User.objects.create_user(
+            email="slot-staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+        self.req = make_request(
+            self.mother, self.facility, preferred_date="2026-10-09", preferred_time="10:00 AM",
+        )
+        self.req.refresh_from_db()  # preferred_date back to a date, as the view sees it
+
+    def errors(self, day, time, req=None, now=None):
+        return counter_offer_errors(req or self.req, date.fromisoformat(day), time, now or self.NOW)
+
+    # --- dates ---
+
+    def test_an_ordinary_future_weekday_is_fine(self):
+        self.assertEqual(self.errors("2026-10-08", "9:00 AM"), {})
+
+    def test_a_past_date_is_refused(self):
+        self.assertIn("counter_offer_date", self.errors("2026-10-06", "9:00 AM"))
+
+    def test_weekends_are_refused(self):
+        self.assertIn("counter_offer_date", self.errors("2026-10-10", "9:00 AM"))  # Saturday
+        self.assertIn("counter_offer_date", self.errors("2026-10-11", "9:00 AM"))  # Sunday
+
+    def test_a_date_the_facility_marked_unavailable_is_refused_for_that_pathway(self):
+        self.assertIn("counter_offer_date", self.errors("2026-10-14", "9:00 AM"))  # donor list
+        # ...but the donor list does not close the day to a recipient, and vice versa.
+        recipient = make_request(
+            self.mother, self.facility, request_type=MilkBankRequest.RequestType.RECIPIENT,
+            preferred_date="2026-10-09", preferred_time="10:00 AM",
+        )
+        recipient.refresh_from_db()
+        self.assertEqual(self.errors("2026-10-14", "9:00 AM", req=recipient), {})
+        self.assertIn("counter_offer_date", self.errors("2026-10-15", "9:00 AM", req=recipient))
+        self.assertEqual(self.errors("2026-10-15", "9:00 AM"), {})
+
+    # --- times ---
+
+    def test_only_the_hourly_slots_can_be_offered(self):
+        self.assertIn("counter_offer_time", self.errors("2026-10-08", "5:00 PM"))   # no 5 PM slot
+        self.assertIn("counter_offer_time", self.errors("2026-10-08", "7:00 AM"))
+        self.assertIn("counter_offer_time", self.errors("2026-10-08", "9:30 AM"))
+        self.assertIn("counter_offer_time", self.errors("2026-10-08", "whenever"))
+        self.assertEqual(self.errors("2026-10-08", "4:00 PM"), {})
+
+    def test_a_time_that_has_passed_today_is_refused(self):
+        self.assertIn("counter_offer_time", self.errors("2026-10-07", "9:00 AM"))
+        self.assertIn("counter_offer_time", self.errors("2026-10-07", "1:00 PM"))  # began 30 min ago
+        self.assertEqual(self.errors("2026-10-07", "2:00 PM"), {})
+
+    def test_a_slot_starting_exactly_now_counts_as_started(self):
+        at_two = datetime(2026, 10, 7, 14, 0, tzinfo=BUSINESS_TZ)
+        self.assertIn("counter_offer_time", self.errors("2026-10-07", "2:00 PM", now=at_two))
+        self.assertEqual(self.errors("2026-10-07", "3:00 PM", now=at_two), {})
+
+    def test_today_has_nothing_to_offer_once_the_last_slot_has_started(self):
+        for hour in (16, 18):
+            late = datetime(2026, 10, 7, hour, 0, tzinfo=BUSINESS_TZ)
+            self.assertIn("counter_offer_date", self.errors("2026-10-07", "4:00 PM", now=late))
+        self.assertEqual(
+            self.errors("2026-10-07", "4:00 PM", now=datetime(2026, 10, 7, 15, 59, tzinfo=BUSINESS_TZ)), {},
+        )
+        # Tomorrow is still open that evening.
+        late = datetime(2026, 10, 7, 18, 0, tzinfo=BUSINESS_TZ)
+        self.assertEqual(self.errors("2026-10-08", "9:00 AM", now=late), {})
+
+    def test_today_is_manila_today_not_utc_today(self):
+        # 7:30 AM Manila on the 8th is 11:30 PM UTC on the 7th. Judged by
+        # UTC, the 7th would still be "today" and the 8th a future date.
+        morning = datetime(2026, 10, 8, 7, 30, tzinfo=BUSINESS_TZ)
+        self.assertIn("counter_offer_date", self.errors("2026-10-07", "9:00 AM", now=morning))
+        self.assertEqual(self.errors("2026-10-08", "8:00 AM", now=morning), {})
+
+    # --- her own slot ---
+
+    def test_the_slot_she_asked_for_is_refused(self):
+        self.assertIn("counter_offer_time", self.errors("2026-10-09", "10:00 AM"))
+
+    def test_the_same_time_on_another_day_or_another_time_that_day_is_fine(self):
+        self.assertEqual(self.errors("2026-10-08", "10:00 AM"), {})
+        self.assertEqual(self.errors("2026-10-09", "11:00 AM"), {})
+
+    # --- through the endpoint ---
+
+    def _propose(self, day, time):
+        self.client.force_authenticate(user=self.staff)
+        return self.client.post(
+            f"/milkbank/requests/{self.req.id}/propose-counter-offer/",
+            {"counter_offer_date": day, "counter_offer_time": time},
+        )
+
+    def test_a_refused_slot_returns_400_and_changes_nothing(self):
+        # She asked for a real upcoming slot, so only her-own-slot is wrong
+        # about offering it back (the fixture's fixed date would go stale).
+        hers = _first_weekday_after(21)
+        MilkBankRequest.objects.filter(pk=self.req.pk).update(preferred_date=hers, preferred_time="10:00 AM")
+        past = (datetime.now(BUSINESS_TZ).date() - timedelta(days=3)).isoformat()
+        for day, time, field in (
+            (past, "9:00 AM", "counter_offer_date"),
+            (_first_weekday_after(14), "5:00 PM", "counter_offer_time"),
+            (hers, "10:00 AM", "counter_offer_time"),
+        ):
+            response = self._propose(day, time)
+            self.assertEqual(response.status_code, 400, (day, time))
+            self.assertIn(field, response.data)
+            self.assertEqual(response.data["detail"], response.data[field])  # what the dashboard shows
+
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.current_sub_status, Status.PENDING)
+        self.assertIsNone(self.req.counter_offer_date)
+        self.assertEqual(self.req.counter_offer_time, "")
+        self.assertEqual(Facility.objects.get(pk=self.facility.pk).booked_count, 1)
+
+    def test_a_weekend_is_refused_through_the_endpoint(self):
+        day = datetime.now(BUSINESS_TZ).date() + timedelta(days=14)
+        while day.weekday() != 5:
+            day += timedelta(days=1)
+        response = self._propose(day.isoformat(), "9:00 AM")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("counter_offer_date", response.data)
+
+    def test_a_valid_slot_still_goes_through(self):
+        response = self._propose(_first_weekday_after(14), "11:00 AM")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.req.refresh_from_db()
+        self.assertEqual(self.req.current_sub_status, Status.COUNTER_OFFERED)
+        self.assertEqual(self.req.counter_offer_time, "11:00 AM")
 
 
 class CanViewQuestionnaireTests(APITestCase):

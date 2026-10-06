@@ -19,6 +19,7 @@ from .allocation import AllocationError, LocationRequired, NoOperationalFacility
 from .business_hours import add_business_hours
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
+from .scheduling import counter_offer_errors
 from .serializers import (
     AllocationRequestSerializer,
     ConfirmCompletionSerializer,
@@ -586,6 +587,18 @@ class StaffProposeCounterOfferView(generics.GenericAPIView):
         req = self.get_object()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        # Refuse a slot nobody could attend (past, weekend, facility closed,
+        # her own slot) before anything moves -- the dashboard greys these
+        # out, this is what makes that binding.
+        slot_errors = counter_offer_errors(
+            req,
+            serializer.validated_data["counter_offer_date"],
+            serializer.validated_data["counter_offer_time"],
+        )
+        if slot_errors:
+            # Per-field messages for any client that wants them, plus the
+            # `detail` the dashboard already shows in its dialog.
+            return Response({**slot_errors, "detail": " ".join(slot_errors.values())}, status=400)
         try:
             apply_transition(req, Status.COUNTER_OFFERED, request.user, "counter_offer_proposed")
         except InvalidTransition as exc:
