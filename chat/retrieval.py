@@ -208,7 +208,7 @@ def unembedded_chunks():
     )
 
 
-def ensure_embeddings(limit=None):
+def ensure_embeddings(limit=None, timeout_ms=None):
     """
     Embed chunks that have no usable vector. Returns how many were
     embedded.
@@ -216,6 +216,11 @@ def ensure_embeddings(limit=None):
     A chunk with no vector is not excluded from retrieval -- it still
     competes lexically -- so this is an optimization, not a
     prerequisite, and it is safe for it to do nothing at all.
+
+    `timeout_ms` is for callers with no mother waiting (the reindex
+    command). Left as None, embed_passages() uses its short request-path
+    timeout; it is only forwarded when given, so the request path calls
+    embed_passages() exactly as it always has.
     """
     # Checked before the query, not after: with no key there is nothing
     # this can do, and the pending-chunk lookup would otherwise run on
@@ -228,10 +233,14 @@ def ensure_embeddings(limit=None):
     if not pending:
         return 0
 
-    vectors = embed_passages([
+    passage_texts = [
         embedding_input(chunk.source_title, chunk.source_reference, chunk.text)
         for chunk in pending
-    ])
+    ]
+    if timeout_ms is None:
+        vectors = embed_passages(passage_texts)
+    else:
+        vectors = embed_passages(passage_texts, timeout_ms=timeout_ms)
 
     embedded = []
     for chunk, vector in zip(pending, vectors):

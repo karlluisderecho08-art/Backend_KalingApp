@@ -30,8 +30,10 @@ from django.conf import settings
 
 from core.audit import log_action
 
-from .knowledge import build_system_prompt
+from .citations import verify_citations
+from .knowledge import build_system_prompt, retrieval_query
 from .local_fallback import get_local_clinical_response
+from .retrieval import retrieve
 
 SYSTEM_PROMPT = (
     "You are Kali, a breastfeeding and lactation support assistant. Stay strictly "
@@ -137,6 +139,14 @@ def get_ai_response(prompt, model=None, history=None):
             )
         contents.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
 
+        # Retrieved once, up front, because the same passages are needed
+        # twice: to build the prompt now, and to check afterwards that
+        # the citation in the reply names something she was shown.
+        # Searched with the conversation behind the message where it needs
+        # it ("yes" has no topic of its own) -- but the model below is
+        # still sent exactly what the mother typed.
+        passages = retrieve(retrieval_query(prompt, history or []))
+
         client = _get_client()
         response = client.models.generate_content(
             model=settings.GEMINI_MODEL,
@@ -153,6 +163,7 @@ def get_ai_response(prompt, model=None, history=None):
                     SYSTEM_PROMPT,
                     question=prompt,
                     strict=settings.CHAT_STRICT_KNOWLEDGE_ONLY,
+                    passages=passages,
                 ),
                 max_output_tokens=MAX_TOKENS,
                 temperature=0.4,
@@ -162,6 +173,16 @@ def get_ai_response(prompt, model=None, history=None):
         reply = response.text
         if not reply:
             raise ValueError("Gemini response had no text content")
+
+        # A citation naming a source she was not shown is removed, not
+        # corrected -- see chat/citations.py. Logged so how often the
+        # model does this is something we can look at rather than guess.
+        reply, removed_citations = verify_citations(reply, passages)
+        for line in removed_citations:
+            log_action(None, "chat.citation_removed", line[:200])
+        if not reply.strip():
+            raise ValueError("Gemini response was only an unsupported citation")
+
         tokens = getattr(response.usage_metadata, "total_token_count", None) or 0
         return reply, tokens, False
     except Exception as exc:

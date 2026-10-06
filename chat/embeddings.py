@@ -23,6 +23,31 @@ from core.audit import log_action
 # corpus. Comfortably under the documented request limit.
 BATCH_SIZE = 32
 
+# How long one embedding call may block, in milliseconds, when it is made
+# while a mother is waiting for her reply.
+#
+# This has to be bounded, and the bound has to leave room for what runs
+# after it. Embedding happens on the chat request path *before* the
+# generation call, whose own HTTP timeout is 25 s
+# (gemini_client.HTTP_TIMEOUT_MS) precisely so that it fails as a
+# catchable exception before gunicorn's 40 s worker timeout kills the
+# process (render.yaml). One request can make two embedding calls -- a
+# batch of not-yet-embedded passages (retrieval.ensure_embeddings) and
+# the question itself -- so the worst case is 5 + 5 + 25 = 35 s, inside
+# the 40 s limit. test_embedding_timeouts.py asserts that arithmetic, so
+# raising any of the three numbers fails a test instead of reopening this.
+#
+# Without it the call has no timeout at all: measured against a server
+# that accepts the connection and never answers, embed_content was still
+# blocked after 30 s. That is a request that dies to gunicorn rather than
+# degrading to keyword retrieval, which is what a failed embedding is
+# supposed to cost.
+EMBED_REQUEST_TIMEOUT_MS = 5_000
+
+# For `manage.py reindex_knowledge`, which embeds the whole corpus up
+# front and has no mother waiting on it -- and so no 40 s ceiling either.
+EMBED_BULK_TIMEOUT_MS = 60_000
+
 _client = None
 
 
@@ -41,12 +66,23 @@ def embeddings_available():
     return bool(settings.GEMINI_API_KEY)
 
 
-def _embed(texts, task_type):
-    """Returns a list of vectors (or Nones) the same length as `texts`."""
+def _embed(texts, task_type, timeout_ms=None):
+    """
+    Returns a list of vectors (or Nones) the same length as `texts`.
+
+    `timeout_ms` applies to each batch's call separately, and a call that
+    exceeds it is handled exactly like any other failed call below: its
+    texts get None, and retrieval carries on without them. None means the
+    request-path default, looked up here at call time rather than bound
+    as a default argument, so the module constant is the one place it is
+    set.
+    """
     if not texts:
         return []
     if not embeddings_available():
         return [None] * len(texts)
+    if timeout_ms is None:
+        timeout_ms = EMBED_REQUEST_TIMEOUT_MS
 
     from google.genai import types
 
@@ -58,7 +94,10 @@ def _embed(texts, task_type):
             response = client.models.embed_content(
                 model=settings.GEMINI_EMBEDDING_MODEL,
                 contents=batch,
-                config=types.EmbedContentConfig(task_type=task_type),
+                config=types.EmbedContentConfig(
+                    task_type=task_type,
+                    http_options=types.HttpOptions(timeout=timeout_ms),
+                ),
             )
             returned = list(response.embeddings or [])
             if len(returned) != len(batch):
@@ -76,14 +115,14 @@ def _embed(texts, task_type):
     return vectors
 
 
-def embed_passages(texts):
+def embed_passages(texts, timeout_ms=None):
     """Embed knowledge-base passages for storage."""
-    return _embed(texts, "RETRIEVAL_DOCUMENT")
+    return _embed(texts, "RETRIEVAL_DOCUMENT", timeout_ms)
 
 
-def embed_query(text):
+def embed_query(text, timeout_ms=None):
     """Embed one mother's question. Returns a vector or None."""
-    return _embed([text], "RETRIEVAL_QUERY")[0]
+    return _embed([text], "RETRIEVAL_QUERY", timeout_ms)[0]
 
 
 def cosine_similarity(left, right):

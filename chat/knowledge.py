@@ -26,6 +26,7 @@ retrieval is passed through honestly instead of being papered over.
 
 from django.conf import settings
 
+from .guardrail import OFF_TOPIC_RESPONSE, is_breastfeeding_topic
 from .retrieval import retrieve
 
 # Only this string stands between the model and answering from general
@@ -80,7 +81,7 @@ NO_MATCH_NOTICE = (
 )
 
 
-def build_knowledge_context(question, top_k=None):
+def build_knowledge_context(question, top_k=None, passages=None):
     """
     The retrieved passages as prompt text, or "" if nothing matched.
 
@@ -89,8 +90,15 @@ def build_knowledge_context(question, top_k=None):
     what the prompt tells it. Passages are numbered as well, so a
     follow-up question that lands on the same sources has a stable way
     to refer to them.
+
+    `passages` lets a caller that has already retrieved hand them in
+    rather than have retrieval run a second time. gemini_client does:
+    it needs the very same passages afterwards to check Kali's citation
+    against, and retrieving twice could (with embeddings on) mean two
+    paid API calls that are not even guaranteed to agree.
     """
-    passages = retrieve(question, top_k=top_k)
+    if passages is None:
+        passages = retrieve(question, top_k=top_k)
     if not passages:
         return ""
 
@@ -102,7 +110,7 @@ def build_knowledge_context(question, top_k=None):
     return "\n\n".join(sections)
 
 
-def build_system_prompt(base_prompt, question="", strict=True):
+def build_system_prompt(base_prompt, question="", strict=True, passages=None):
     """
     Base persona + grounding rules + the passages retrieved for this
     question.
@@ -117,7 +125,7 @@ def build_system_prompt(base_prompt, question="", strict=True):
         return base_prompt
 
     rules = STRICT_GROUNDING_RULES if strict else PREFERRED_GROUNDING_RULES
-    context = build_knowledge_context(question)
+    context = build_knowledge_context(question, passages=passages)
 
     if not context:
         # Strict mode has a defined answer for "not covered", so it keeps
@@ -133,3 +141,53 @@ def build_system_prompt(base_prompt, question="", strict=True):
         f"{rules}\n\n"
         f"=== KNOWLEDGE BASE PASSAGES (retrieved for this question) ===\n{context}"
     )
+
+
+# How much of the conversation so far to search with, when a message needs
+# it. Enough to carry a topic -- the question that opened the exchange and
+# the end of Kali's reply, where her "would you like to know more about X?"
+# lives -- without the reply's full length drowning out the mother's own
+# words in BM25.
+CONTEXT_QUESTION_CHARS = 300
+CONTEXT_REPLY_TAIL_CHARS = 300
+
+
+def retrieval_query(message, history):
+    """
+    What to search the knowledge base with for `message`.
+
+    Almost always that is just the message. The exception is a message
+    that cannot be searched on its own: "yes", "what about at night?",
+    "does it hurt?". Searched alone these retrieve nothing or the wrong
+    thing -- BM25 has no word to match, and the embedding of "yes" sits
+    equally far from every passage -- so Kali answers the follow-up with
+    the model's memory of the conversation but none of the knowledge
+    base's passages for the topic being discussed.
+
+    Such a message is recognised by the same test the guardrail applies,
+    and for the same reason: a message that names no breastfeeding topic
+    can only reach here because it continues an open exchange (see
+    views._continues_conversation), so what it is about is whatever that
+    exchange was about. A message that does name one carries its own
+    topic and is searched on its own words, so changing the subject
+    mid-conversation is not dragged back to the old one.
+
+    `history` is the earlier turns, oldest first, as (is_user, text).
+    The context is dropped when the last turn is not a real reply from
+    Kali -- most importantly when it is the canned off-topic refusal,
+    whose "latching, milk supply, storage, or donor milk" would otherwise
+    steer retrieval toward whichever article those words match best.
+    """
+    if is_breastfeeding_topic(message) or not history:
+        return message
+
+    last_is_user, last_text = history[-1]
+    if last_is_user or last_text == OFF_TOPIC_RESPONSE:
+        return message
+
+    asked = ""
+    if len(history) >= 2 and history[-2][0]:
+        asked = history[-2][1][:CONTEXT_QUESTION_CHARS]
+    reply_tail = last_text[-CONTEXT_REPLY_TAIL_CHARS:]
+
+    return "\n".join(part for part in (asked, reply_tail, message) if part)

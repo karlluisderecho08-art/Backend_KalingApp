@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from chat.embeddings import EMBED_BULK_TIMEOUT_MS
 from chat.models import KnowledgeChunk
 from chat.retrieval import ensure_embeddings, sync_index, unembedded_chunks
 
@@ -72,8 +73,10 @@ class Command(BaseCommand):
             self.stdout.write(f"Cleared {cleared} existing vector(s).")
 
         # No limit here, unlike the request path: the point of running
-        # this is to absorb the whole cost now.
-        embedded = ensure_embeddings()
+        # this is to absorb the whole cost now -- and the longer timeout
+        # goes with it, since nobody is waiting on this the way a mother
+        # waits on a chat reply.
+        embedded = ensure_embeddings(timeout_ms=EMBED_BULK_TIMEOUT_MS)
         total = KnowledgeChunk.objects.count()
         remaining = unembedded_chunks().count()
 
