@@ -1,6 +1,13 @@
 from django.core.management.base import BaseCommand
 
+from core.audit import log_action
+from core.models import AuditLogEntry
 from milkbank.models import Facility
+
+# Written to the audit log the one time the demo facilities are seeded, and
+# checked on every run after. The audit log is append-only, so the record
+# outlives the facilities themselves.
+SEEDED_ACTION = "seed.facilities"
 
 
 class Command(BaseCommand):
@@ -39,11 +46,24 @@ class Command(BaseCommand):
     They are still unverified, and that has NOT changed -- do not present
     them to a panel as real facility status. Plausible test data is easier
     to demo with; it is not the same as true data.
+
+    Seeds ONCE per database, not once per deploy. build.sh runs this on
+    every deploy, and it used to get_or_create each facility by name every
+    time -- so a facility an admin deleted from the dashboard was quietly
+    recreated by the next deploy, and "keeps coming back" was the bug.
+    The first run now leaves a SEEDED_ACTION line in the audit log and every
+    later run stops there, so what an admin deletes stays deleted. (A
+    database seeded before this existed gets that line from migration
+    0013_mark_facilities_seeded.)
     """
 
     help = "Seed the demo milk bank facilities"
 
     def handle(self, *args, **options):
+        if AuditLogEntry.objects.filter(action=SEEDED_ACTION).exists():
+            self.stdout.write("Facilities were already seeded once -- leaving them as the admin has them.")
+            return
+
         facilities = [
             {
                 "name": "St. Luke's Medical Center",
@@ -100,3 +120,4 @@ class Command(BaseCommand):
             obj, created = Facility.objects.get_or_create(name=data["name"], defaults=data)
             verb = "Created" if created else "Already exists"
             self.stdout.write(self.style.SUCCESS(f"{verb}: {obj.name}"))
+        log_action(None, SEEDED_ACTION, "Facility: demo set")

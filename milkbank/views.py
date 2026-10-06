@@ -1,7 +1,7 @@
 import secrets
 
 from django.conf import settings
-from django.db.models import F
+from django.db.models import F, ProtectedError
 from django.http import FileResponse, Http404
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiTypes, extend_schema
@@ -67,6 +67,26 @@ class FacilityDetailView(generics.RetrieveUpdateDestroyAPIView):
         if self.request.method == "GET":
             return [permissions.AllowAny()]
         return [permissions.IsAdminUser()]
+
+    def destroy(self, request, *args, **kwargs):
+        facility = self.get_object()
+        target = f"Facility:{facility.id} ({facility.name})"
+        try:
+            facility.delete()
+        except ProtectedError:
+            # MilkBankRequest.allocated_facility is PROTECT on purpose: a
+            # booking's history must not lose the facility it happened at.
+            # That used to surface as a bare 500, which the dashboard could
+            # only report as "could not delete" while the facility stayed put.
+            count = facility.requests.count()
+            return Response({
+                "detail": (
+                    f"{facility.name} has {count} booking{'' if count == 1 else 's'} on record, so it "
+                    "can't be deleted. Edit it and switch off \"operational\" to stop new bookings instead."
+                ),
+            }, status=400)
+        log_action(request.user, "facility.deleted", target)
+        return Response(status=204)
 
 
 def _allocation_error_response(exc):

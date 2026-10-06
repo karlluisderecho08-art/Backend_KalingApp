@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime, timedelta
 from importlib import import_module
 
@@ -2007,3 +2008,107 @@ class DeclineFromAPhaseTests(APITestCase):
         req = self._scheduled_at("Breastmilk Analysis")
         response = self._decline(req, reason="Failed breastmilk analysis")
         self.assertEqual(response.data["decline_reason"], "Failed breastmilk analysis")
+
+
+class SeedFacilitiesOnceTests(TestCase):
+    """
+    build.sh runs seed_facilities on every deploy. It used to recreate any
+    seeded facility that was missing, so one an admin deleted from the
+    dashboard came back with the next deploy.
+    """
+
+    def _seed(self):
+        from django.core.management import call_command
+        call_command("seed_facilities", verbosity=0, stdout=open(os.devnull, "w"))
+
+    def test_the_first_run_seeds_the_demo_facilities_and_records_it(self):
+        self._seed()
+        self.assertEqual(Facility.objects.count(), 4)
+        self.assertEqual(AuditLogEntry.objects.filter(action="seed.facilities").count(), 1)
+
+    def test_a_deleted_facility_does_not_come_back_on_the_next_deploy(self):
+        self._seed()
+        Facility.objects.get(name="St. Martin de Porres").delete()
+
+        self._seed()  # the next deploy
+        self._seed()  # and the one after
+
+        self.assertFalse(Facility.objects.filter(name="St. Martin de Porres").exists())
+        self.assertEqual(Facility.objects.count(), 3)
+
+    def test_deleting_every_facility_does_not_bring_the_demo_set_back(self):
+        self._seed()
+        Facility.objects.all().delete()
+        self._seed()
+        self.assertEqual(Facility.objects.count(), 0)
+
+    def test_an_admin_added_facility_is_left_alone(self):
+        self._seed()
+        make_facility(name="Quezon City General Hospital")
+        self._seed()
+        self.assertEqual(Facility.objects.count(), 5)
+
+    def test_a_database_seeded_before_this_fix_is_marked_so_it_is_not_seeded_again(self):
+        # Production today: facilities exist (one already deleted), no record.
+        make_facility(name="St. Luke's Medical Center")
+        mark_seeded = import_module("milkbank.migrations.0013_mark_facilities_seeded").mark_seeded
+
+        mark_seeded(apps, None)
+        mark_seeded(apps, None)  # running twice must not double up
+        self.assertEqual(AuditLogEntry.objects.filter(action="seed.facilities").count(), 1)
+
+        self._seed()
+        self.assertEqual(Facility.objects.count(), 1)  # nothing recreated
+
+    def test_an_empty_database_is_not_marked_and_still_gets_seeded(self):
+        mark_seeded = import_module("milkbank.migrations.0013_mark_facilities_seeded").mark_seeded
+        mark_seeded(apps, None)
+        self.assertFalse(AuditLogEntry.objects.filter(action="seed.facilities").exists())
+        self._seed()
+        self.assertEqual(Facility.objects.count(), 4)
+
+
+class DeleteFacilityTests(APITestCase):
+    """Deleting a facility from the admin dashboard."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(email="del-admin@example.com", password="x", is_active=True, is_staff=True)
+        self.mother = User.objects.create_user(email="del-mother@example.com", password="x", is_active=True)
+        self.client.force_authenticate(user=self.admin)
+
+    def test_a_facility_with_no_bookings_is_deleted_and_logged(self):
+        facility = make_facility(name="Unused Depot")
+        staff = User.objects.create_user(
+            email="del-staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=facility,
+        )
+
+        response = self.client.delete(f"/milkbank/facilities/{facility.id}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Facility.objects.filter(pk=facility.id).exists())
+        staff.refresh_from_db()
+        self.assertIsNone(staff.facility)  # her account survives, unassigned
+        self.assertTrue(AuditLogEntry.objects.filter(action="facility.deleted", actor=self.admin).exists())
+
+    def test_a_facility_with_bookings_is_refused_with_a_reason_not_a_server_error(self):
+        facility = make_facility(name="Busy Milk Bank", booked_count=1)
+        make_request(self.mother, facility)
+
+        response = self.client.delete(f"/milkbank/facilities/{facility.id}/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("1 booking on record", response.data["detail"])
+        self.assertIn("operational", response.data["detail"])
+        self.assertTrue(Facility.objects.filter(pk=facility.id).exists())
+        self.assertFalse(AuditLogEntry.objects.filter(action="facility.deleted").exists())
+
+    def test_facility_staff_cannot_delete_a_facility(self):
+        facility = make_facility(name="Someone Else's")
+        staff = User.objects.create_user(
+            email="del-staff2@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=facility,
+        )
+        self.client.force_authenticate(user=staff)
+        self.assertEqual(self.client.delete(f"/milkbank/facilities/{facility.id}/").status_code, 403)
+        self.assertTrue(Facility.objects.filter(pk=facility.id).exists())
