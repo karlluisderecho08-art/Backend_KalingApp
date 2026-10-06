@@ -36,7 +36,10 @@ class ChatMessage(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["created_at"]
+        # id as the tie-break, for the same reason as SendMessageView's
+        # history query: two messages with an identical created_at must
+        # still come back in the order they were written.
+        ordering = ["created_at", "id"]
 
     def __str__(self):
         who = "Mother" if self.is_user else "Kali"

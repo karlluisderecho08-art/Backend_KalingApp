@@ -47,8 +47,14 @@ class SendMessageView(APIView):
         # handed to the model is what came *before* the current message.
         # Newest-first + reversed so the LIMIT keeps the most recent
         # turns rather than the oldest ones.
+        #
+        # id breaks a created_at tie. Two messages saved in the same clock
+        # tick used to come back in arbitrary order, which could put the
+        # mother's question after Kali's reply -- so _continues_conversation
+        # saw her as the last speaker and refused her "yes" as off topic.
+        # Ids are assigned in insert order, so this is always the true order.
         prior = list(
-            session.messages.filter(is_system_notice=False).order_by("-created_at")[:HISTORY_TURNS]
+            session.messages.filter(is_system_notice=False).order_by("-created_at", "-id")[:HISTORY_TURNS]
         )[::-1]
 
         ChatMessage.objects.create(session=session, text=text, is_user=True)
