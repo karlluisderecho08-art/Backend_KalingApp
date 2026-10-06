@@ -134,7 +134,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
         model = MilkBankRequest
         fields = [
             "id", "request_type", "allocated_facility", "allocated_facility_name",
-            "stages", "current_stage_index", "current_sub_status", "staff_message",
+            "stages", "current_stage_index", "current_sub_status", "staff_message", "decline_reason",
             "submitted_at", "preferred_date", "preferred_time", "attendance_confirmed",
             "counter_offer_date", "counter_offer_time", "owner_email", "owner_name",
             "response_deadline", "needs_representative", "representative_name",
@@ -145,7 +145,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
-            "staff_message", "submitted_at", "attendance_confirmed",
+            "staff_message", "decline_reason", "submitted_at", "attendance_confirmed",
             "counter_offer_date", "counter_offer_time", "response_deadline",
             "needs_representative", "representative_name",
             "representative_birthday", "representative_contact_number",
@@ -211,6 +211,18 @@ class RebookSerializer(serializers.Serializer):
 
 class StaffMessageSerializer(serializers.Serializer):
     staff_message = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class DeclineSerializer(StaffMessageSerializer):
+    """
+    What staff send to decline a request, from the Booking Request desk or
+    from any in-person phase. `reason` is the short label the statistics
+    group by; staff_message is what the mother reads (the dashboard sends
+    the reason followed by any notes). Optional so a client that only sends
+    staff_message keeps working -- those declines count as "Not specified".
+    """
+
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=100, default="")
 
 
 class ConfirmCompletionSerializer(serializers.Serializer):

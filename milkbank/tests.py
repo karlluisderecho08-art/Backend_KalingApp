@@ -1715,3 +1715,134 @@ class FacilityCreationStaffAssignmentTests(APITestCase):
         self.client.force_authenticate(user=mother)
         response = self.client.post("/milkbank/facilities/", self.payload)
         self.assertEqual(response.status_code, 403)
+
+
+class DeclineFromAPhaseTests(APITestCase):
+    """
+    Staff can decline a booking from any in-person phase, not only at the
+    Booking Request desk -- a failed breastmilk analysis, a bad blood test.
+    The booking must end there: declined is terminal, so it can't be
+    advanced or completed afterwards, and the facility's slot is released.
+    """
+
+    def setUp(self):
+        self.facility = make_facility(booked_count=1)
+        self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
+        self.staff = User.objects.create_user(
+            email="staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+        self.client.force_authenticate(user=self.staff)
+
+    def _scheduled_at(self, stage_name, request_type=MilkBankRequest.RequestType.DONOR):
+        req = make_request(self.mother, self.facility, request_type=request_type)
+        req.current_sub_status = Status.SCHEDULED
+        req.current_stage_index = req.stages.index(stage_name)
+        req.save()
+        return req
+
+    def _decline(self, req, **payload):
+        return self.client.post(f"/milkbank/requests/{req.id}/decline/", payload)
+
+    def test_declining_a_failed_breastmilk_analysis_drops_the_booking(self):
+        req = self._scheduled_at("Breastmilk Analysis")
+
+        response = self._decline(
+            req, reason="Failed breastmilk analysis",
+            staff_message="Failed breastmilk analysis \u2014 bacterial growth found",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.DECLINED)
+        self.assertEqual(req.decline_reason, "Failed breastmilk analysis")
+        self.assertIn("bacterial growth", req.staff_message)
+        # Left on the phase it failed at, so staff can see where it ended.
+        self.assertEqual(req.stages[req.current_stage_index], "Breastmilk Analysis")
+
+    def test_the_facility_slot_is_released(self):
+        req = self._scheduled_at("Breastmilk Analysis")
+        self._decline(req, reason="Failed breastmilk analysis")
+        self.facility.refresh_from_db()
+        self.assertEqual(self.facility.booked_count, 0)
+
+    def test_a_declined_booking_cannot_be_advanced_or_completed(self):
+        req = self._scheduled_at("Breastmilk Analysis")
+        self._decline(req, reason="Failed breastmilk analysis")
+
+        advance = self.client.post(f"/milkbank/requests/{req.id}/advance-stage/")
+        complete = self.client.post(f"/milkbank/requests/{req.id}/confirm-completion/", {"amount_ml": 100})
+
+        self.assertEqual(advance.status_code, 400)
+        self.assertEqual(complete.status_code, 400)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.DECLINED)
+        self.assertFalse(TransactionRecord.objects.filter(owner=self.mother).exists())
+
+    def test_every_donor_and_recipient_phase_can_be_declined(self):
+        cases = [
+            (MilkBankRequest.RequestType.DONOR, "Counseling and Testing"),
+            (MilkBankRequest.RequestType.DONOR, "Breastmilk Analysis"),
+            (MilkBankRequest.RequestType.DONOR, "Results"),
+            (MilkBankRequest.RequestType.RECIPIENT, "Status"),
+            (MilkBankRequest.RequestType.RECIPIENT, "Results"),
+        ]
+        # One slot per booking about to be declined -- each decline releases one.
+        Facility.objects.filter(pk=self.facility.pk).update(booked_count=len(cases))
+        for request_type, stage in cases:
+            with self.subTest(request_type=request_type, stage=stage):
+                req = self._scheduled_at(stage, request_type)
+                response = self._decline(req, reason="Others", staff_message="Others \u2014 note")
+                self.assertEqual(response.status_code, 200, response.data)
+                req.refresh_from_db()
+                self.assertEqual(req.current_sub_status, Status.DECLINED)
+
+    def test_the_booking_request_desk_decline_still_works(self):
+        req = make_request(self.mother, self.facility)  # pending
+        response = self._decline(req, reason="Outdated Serological Test")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.decline_reason, "Outdated Serological Test")
+
+    def test_a_decline_with_no_reason_is_still_a_decline(self):
+        # An older dashboard build only sent staff_message.
+        req = self._scheduled_at("Breastmilk Analysis")
+        response = self._decline(req, staff_message="No longer eligible")
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.DECLINED)
+        self.assertEqual(req.decline_reason, "")
+
+    def test_only_a_pending_or_scheduled_booking_can_be_declined(self):
+        for status in (Status.AWAITING_ATTENDANCE, Status.COUNTER_OFFERED, Status.COMPLETED, Status.EXPIRED):
+            with self.subTest(status=status):
+                req = make_request(self.mother, self.facility)
+                req.current_sub_status = status
+                req.save()
+                self.assertEqual(self._decline(req, reason="Others").status_code, 400)
+                req.refresh_from_db()
+                self.assertEqual(req.current_sub_status, status)
+
+    def test_staff_at_another_facility_cannot_decline_it(self):
+        other = make_facility(name="Other", booked_count=1)
+        outsider = User.objects.create_user(
+            email="outsider@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=other,
+        )
+        req = self._scheduled_at("Breastmilk Analysis")
+        self.client.force_authenticate(user=outsider)
+        self.assertEqual(self._decline(req, reason="Others").status_code, 403)
+        req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.SCHEDULED)
+
+    def test_the_mother_is_notified(self):
+        req = self._scheduled_at("Breastmilk Analysis")
+        self._decline(req, reason="Failed breastmilk analysis")
+        self.assertTrue(
+            NotificationItem.objects.filter(owner=self.mother, description__icontains="declined").exists()
+        )
+
+    def test_the_reason_is_in_the_api_response_for_the_dashboard(self):
+        req = self._scheduled_at("Breastmilk Analysis")
+        response = self._decline(req, reason="Failed breastmilk analysis")
+        self.assertEqual(response.data["decline_reason"], "Failed breastmilk analysis")

@@ -22,6 +22,7 @@ from .permissions import IsFacilityStaff, IsRequestOwner
 from .serializers import (
     AllocationRequestSerializer,
     ConfirmCompletionSerializer,
+    DeclineSerializer,
     DonorQuestionnaireCreateSerializer,
     DonorQuestionnaireSerializer,
     FacilitySerializer,
@@ -468,10 +469,23 @@ class StaffAcceptView(generics.GenericAPIView):
 
 
 class StaffDeclineView(generics.GenericAPIView):
-    """POST /milkbank/requests/<id>/decline/  {staff_message?}"""
+    """
+    POST /milkbank/requests/<id>/decline/  {reason?, staff_message?}
+
+    Declines a request from the Booking Request desk (pending) or from any
+    in-person phase (scheduled) -- a failed blood test, a failed breastmilk
+    analysis, documents that don't check out. Either way the request ends
+    here: DECLINED is terminal, so it can't be advanced or completed, and
+    apply_transition releases the facility's slot. Declining from any other
+    status (awaiting attendance, counter-offered, already closed) is
+    refused by the transition table.
+
+    `reason` is the short label the admin statistics group by;
+    `staff_message` is what the mother reads.
+    """
 
     queryset = MilkBankRequest.objects.all()
-    serializer_class = StaffMessageSerializer
+    serializer_class = DeclineSerializer
     permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
 
     def post(self, request, pk):
@@ -482,9 +496,12 @@ class StaffDeclineView(generics.GenericAPIView):
             apply_transition(req, Status.DECLINED, request.user, "declined")
         except InvalidTransition as exc:
             return Response({"detail": str(exc)}, status=400)
+        update_fields = ["decline_reason"]
+        req.decline_reason = serializer.validated_data["reason"]
         if serializer.validated_data["staff_message"]:
             req.staff_message = serializer.validated_data["staff_message"]
-            req.save(update_fields=["staff_message"])
+            update_fields.append("staff_message")
+        req.save(update_fields=update_fields)
         return Response(MilkBankRequestSerializer(req).data)
 
 

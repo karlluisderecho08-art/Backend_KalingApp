@@ -126,3 +126,35 @@ class DashboardStatsViewTests(APITestCase):
         self.assertTrue(all(row["count"] == 0 for row in stats["booking_trend"]))
         self.assertEqual(stats["donor_status_summary"], [])
         self.assertEqual(stats["articles_by_category"], [])
+
+    def decline(self, reason):
+        booking = self.book(months_ago=0, status=MilkBankRequest.Status.DECLINED)
+        MilkBankRequest.objects.filter(pk=booking.pk).update(decline_reason=reason)
+        return booking
+
+    def test_decline_reasons_are_grouped_and_ordered_most_common_first(self):
+        self.decline("Failed breastmilk analysis")
+        self.decline("Failed breastmilk analysis")
+        self.decline("Outdated Serological Test")
+        self.assertEqual(
+            self.get_stats()["decline_reasons"],
+            [
+                {"reason": "Failed breastmilk analysis", "count": 2},
+                {"reason": "Outdated Serological Test", "count": 1},
+            ],
+        )
+
+    def test_a_decline_with_no_reason_is_counted_as_not_specified(self):
+        self.decline("")
+        self.assertEqual(self.get_stats()["decline_reasons"], [{"reason": "Not specified", "count": 1}])
+
+    def test_expired_and_open_bookings_are_not_decline_reasons(self):
+        expired = self.book(months_ago=0, status=MilkBankRequest.Status.EXPIRED)
+        MilkBankRequest.objects.filter(pk=expired.pk).update(decline_reason="Failed breastmilk analysis")
+        self.book(months_ago=0, status=MilkBankRequest.Status.PENDING)
+        self.assertEqual(self.get_stats()["decline_reasons"], [])
+
+    def test_declined_bookings_appear_in_the_status_summary_too(self):
+        self.decline("Failed breastmilk analysis")
+        summary = {row["status"]: row["count"] for row in self.get_stats()["donor_status_summary"]}
+        self.assertEqual(summary["Declined"], 1)

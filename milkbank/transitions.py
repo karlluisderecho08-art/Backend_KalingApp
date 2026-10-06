@@ -80,6 +80,14 @@ STATUS_NOTIFICATIONS = {
 #     and does not start a countdown against her for a delay that was
 #     never hers.
 #
+#   SCHEDULED -> DECLINED
+#     A booking can fail partway through, not only at the Booking Request
+#     desk: a donor's blood test or breastmilk analysis comes back bad, a
+#     recipient's documents don't check out. Staff decline from whichever
+#     in-person phase it happened in, and the request ends there -- DECLINED
+#     is terminal, so it can't be advanced or completed afterwards, and
+#     apply_transition releases the facility's slot like any other decline.
+#
 #   COUNTER_OFFERED -> AWAITING_ATTENDANCE
 #     Accepting the proposed slot is the same decision as accepting the
 #     original request, so it has to land her where acceptance lands her
@@ -95,7 +103,7 @@ ALLOWED_TRANSITIONS = {
     },
     Status.AWAITING_ATTENDANCE: {Status.SCHEDULED, Status.COUNTER_OFFERED, Status.EXPIRED},
     Status.COUNTER_OFFERED: {Status.SCHEDULED, Status.PENDING, Status.AWAITING_ATTENDANCE},
-    Status.SCHEDULED: {Status.COMPLETED, Status.AWAITING_ATTENDANCE},
+    Status.SCHEDULED: {Status.COMPLETED, Status.AWAITING_ATTENDANCE, Status.DECLINED},
     Status.DECLINED: set(),
     Status.EXPIRED: set(),
     Status.COMPLETED: set(),

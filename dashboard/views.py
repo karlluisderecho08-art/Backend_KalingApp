@@ -88,6 +88,22 @@ class AdminDashboardStatsView(APIView):
             Article.objects.values("category").annotate(count=Count("id")).order_by("-count")
         )
 
+        # Why requests were declined, most common first -- feeds the "top
+        # reasons" chart. Only DECLINED (a person said no), never EXPIRED
+        # (a clock ran out), since those are different problems to fix. A
+        # decline with no recorded reason is still a decline, so it is
+        # counted as "Not specified" rather than silently dropped.
+        decline_rows = (
+            MilkBankRequest.objects.filter(current_sub_status=MilkBankRequest.Status.DECLINED)
+            .values("decline_reason")
+            .annotate(count=Count("id"))
+            .order_by("-count", "decline_reason")
+        )
+        decline_reasons = [
+            {"reason": row["decline_reason"] or "Not specified", "count": row["count"]}
+            for row in decline_rows
+        ]
+
         return Response({
             "total_bookings": MilkBankRequest.objects.count(),
             # Distinct owners, not raw request rows -- "how many donors/
@@ -105,4 +121,5 @@ class AdminDashboardStatsView(APIView):
             ],
             "donor_status_summary": status_breakdown(donor_requests),
             "recipient_status_summary": status_breakdown(recipient_requests),
+            "decline_reasons": decline_reasons,
         })
