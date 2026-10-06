@@ -10,6 +10,8 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from core.models import AuditLogEntry
+
 from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
     RESEND_COOLDOWN_SECONDS,
@@ -633,6 +635,24 @@ class ProfileAndConsentTests(APITestCase):
         self.assertTrue(self.user.location_consent_given)
         self.assertAlmostEqual(self.user.latitude, 14.6)
         self.assertIsNotNone(self.user.location_consent_at)
+
+    def test_sharing_again_moves_her_location_but_keeps_the_original_consent(self):
+        # The app re-sends her position at the start of every booking.
+        self.client.post("/auth/location/", {"latitude": 14.6, "longitude": 121.0, "consent": True})
+        self.user.refresh_from_db()
+        first_consent_at = self.user.location_consent_at
+
+        response = self.client.post("/auth/location/", {"latitude": 10.3, "longitude": 123.9, "consent": True})
+
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertAlmostEqual(self.user.latitude, 10.3)
+        self.assertAlmostEqual(self.user.longitude, 123.9)
+        self.assertTrue(self.user.location_consent_given)
+        self.assertEqual(self.user.location_consent_at, first_consent_at)  # not re-stamped
+        actions = list(AuditLogEntry.objects.filter(actor=self.user).values_list("action", flat=True))
+        self.assertEqual(actions.count("location.consent_given"), 1)       # consent logged once
+        self.assertEqual(actions.count("location.updated"), 1)
 
 
 class CheckInStreakTests(APITestCase):

@@ -590,12 +590,21 @@ class LocationConsentView(APIView):
         user = request.user
         user.latitude = data["latitude"]
         user.longitude = data["longitude"]
-        user.location_consent_given = True
-        user.location_consent_at = timezone.now()
-        user.save(update_fields=[
-            "latitude", "longitude", "location_consent_given", "location_consent_at",
-        ])
 
-        log_action(user, "location.consent_given", f"User:{user.id}")
+        if user.location_consent_given:
+            # She already consented. The app re-sends her position at the
+            # start of every booking so Smart Allocation ranks from where she
+            # is now, not from the first place she ever shared it. That is a
+            # refresh, not a new consent: leave location_consent_at as the
+            # original evidence and don't log a second "consent given".
+            user.save(update_fields=["latitude", "longitude"])
+            log_action(user, "location.updated", f"User:{user.id}")
+        else:
+            user.location_consent_given = True
+            user.location_consent_at = timezone.now()
+            user.save(update_fields=[
+                "latitude", "longitude", "location_consent_given", "location_consent_at",
+            ])
+            log_action(user, "location.consent_given", f"User:{user.id}")
 
         return Response(UserSerializer(user).data)
