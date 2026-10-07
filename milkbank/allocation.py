@@ -33,6 +33,59 @@ class NoOperationalFacility(AllocationError):
     """
 
 
+def eligibility_filters(request_type):
+    """
+    The binary eligibility gate, as queryset filters: what a facility must
+    be for a request of this type to be sent to it at all.
+
+    Written once and used twice -- to build the candidate list in
+    get_ranked_facilities(), and again as the WHERE clause of the UPDATE
+    in claim_slot() -- so "eligible when we ranked" and "eligible at the
+    instant we booked" can never drift into two different definitions.
+    """
+    filters = {
+        "is_operational": True,
+        "capacity__gt": 0,
+        "booked_count__lt": F("capacity"),
+    }
+    # A RECIPIENT can't be sent to a facility too low on stock to
+    # actually give her milk -- that's a hard exclusion, not just a
+    # tie-break. A DONOR is never excluded this way: a low-stock
+    # facility is exactly who most needs a donation.
+    if request_type == "RECIPIENT":
+        filters["stock_level_ml__gte"] = MINIMUM_STOCK_THRESHOLD_ML
+    return filters
+
+
+def claim_slot(facility, request_type):
+    """
+    Take one booking slot at `facility`, if it still has one. Returns True
+    if the slot was taken, False if the facility stopped being eligible
+    between being ranked and now.
+
+    The check and the increment are ONE statement:
+
+        UPDATE facility SET booked_count = booked_count + 1
+         WHERE id = ... AND booked_count < capacity AND ...
+
+    That is what makes it safe when two mothers book at the same instant.
+    Ranking reads the facility list, and creating the booking happens a
+    moment later; done as "check there is room, then add one" in Python,
+    two requests could both read 19 of 20, both decide there was room,
+    and both add one -- 21 of 20, with nothing to stop it. A conditional
+    UPDATE cannot do that: the database applies the two one after the
+    other, and the second re-checks its WHERE against the row the first
+    just wrote, finds 20 of 20, and changes nothing. The row count it
+    returns is how the caller learns which of the two it was.
+    """
+    from .models import Facility
+
+    taken = Facility.objects.filter(
+        pk=facility.pk, **eligibility_filters(request_type)
+    ).update(booked_count=F("booked_count") + 1)
+    return taken == 1
+
+
 def get_ranked_facilities(user, request_type):
     """
     Shared by the standalone /milkbank/allocate/ preview endpoint and
@@ -68,20 +121,7 @@ def get_ranked_facilities(user, request_type):
     # accidental protection is gone for good: a full facility that
     # happens to be nearest would otherwise rank FIRST, not last. This
     # gate is what makes reordering the sort safe.
-    candidates = Facility.objects.filter(
-        is_operational=True,
-        capacity__gt=0,
-        booked_count__lt=F("capacity"),
-    )
-
-    # A RECIPIENT can't be sent to a facility too low on stock to
-    # actually give her milk -- that's a hard exclusion, not just a
-    # tie-break. A DONOR is never excluded this way: a low-stock
-    # facility is exactly who most needs a donation.
-    if request_type == "RECIPIENT":
-        candidates = candidates.filter(stock_level_ml__gte=MINIMUM_STOCK_THRESHOLD_ML)
-
-    candidates = list(candidates)
+    candidates = list(Facility.objects.filter(**eligibility_filters(request_type)))
     if not candidates:
         raise NoOperationalFacility()
 

@@ -1,7 +1,8 @@
 import secrets
 
 from django.conf import settings
-from django.db.models import F, ProtectedError
+from django.db import transaction
+from django.db.models import ProtectedError
 from django.http import FileResponse, Http404
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiTypes, extend_schema
@@ -15,7 +16,13 @@ from core.audit import log_action
 from notifications.models import NotificationItem
 from notifications.services import notify, notify_many
 
-from .allocation import AllocationError, LocationRequired, NoOperationalFacility, get_ranked_facilities
+from .allocation import (
+    AllocationError,
+    LocationRequired,
+    NoOperationalFacility,
+    claim_slot,
+    get_ranked_facilities,
+)
 from .business_hours import add_business_hours
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
@@ -169,54 +176,78 @@ class MilkBankRequestCreateView(APIView):
         except AllocationError as exc:
             return _allocation_error_response(exc)
 
-        req = MilkBankRequest.objects.create(
-            owner=request.user,
-            request_type=data["request_type"],
-            allocated_facility=ranked[0],
-            preferred_date=data["preferred_date"],
-            preferred_time=data["preferred_time"],
-            # Starts the facility's 8-business-hour response clock right
-            # away -- this is a plain .create(), not apply_transition (there's
-            # no "from" status on a brand-new request), so it doesn't get this
-            # for free the way every later transition does.
-            response_deadline=add_business_hours(timezone.now()),
-            # Only ever meaningful for a RECIPIENT request, but harmless to
-            # store as-is for a DONOR one -- the mobile form simply never
-            # collects these outside the Recipient Pathway, so they arrive
-            # as the serializer's defaults (False / "").
-            needs_representative=data["needs_representative"],
-            representative_name=data["representative_name"],
-            representative_birthday=data["representative_birthday"],
-            representative_contact_number=data["representative_contact_number"],
-            # Same "harmless as-is for a DONOR" treatment as the
-            # representative fields just above.
-            neonate_name=data["neonate_name"],
-            clinic_info=data["clinic_info"],
-            has_prescription_proof=data["has_prescription_proof"],
-            has_cooler=data["has_cooler"],
-            has_medical_abstract=data["has_medical_abstract"],
-        )
-        # Occupies a slot the moment it's created (status=pending already
-        # counts as "open") -- see transitions.py for where it's released.
-        Facility.objects.filter(pk=ranked[0].id).update(booked_count=F("booked_count") + 1)
-        log_action(request.user, "booking.created", f"MilkBankRequest:{req.id}")
-        notify(
-            request.user,
-            "Milk Bank Request Submitted",
-            f"Your {data['request_type'].lower()} request was submitted to {ranked[0].name}.",
-            NotificationItem.Category.BOOKINGS,
-        )
-        # Staff previously only found out a request was waiting on them by
-        # opening the Booking Request tab and looking -- nothing told them
-        # one had arrived. Every active staff account assigned to the
-        # facility this landed at, not just whoever's logged in right now.
-        notify_many(
-            User.objects.filter(facility=ranked[0], role=User.Role.FACILITY_STAFF, is_active=True),
-            "New Booking Request",
-            f"{request.user.mom_name or request.user.email} submitted a "
-            f"{data['request_type'].lower()} request.",
-            NotificationItem.Category.BOOKINGS,
-        )
+        # Everything from taking the slot to telling people about it is one
+        # transaction: if creating the booking fails after the slot was
+        # claimed, the claim is rolled back with it, instead of leaving a
+        # facility permanently one slot short for a booking that never
+        # existed.
+        with transaction.atomic():
+            # The ranking above was read a moment ago, and "a moment" is
+            # long enough for another mother to take the last slot. So the
+            # slot is not assumed -- it is claimed, in a single conditional
+            # UPDATE (see allocation.claim_slot), which occupies it the
+            # moment the booking exists (status=pending already counts as
+            # "open"; transitions.py is where it is released).
+            #
+            # If her nearest facility filled up in that instant she is not
+            # turned away: she goes to the next one in her own ranking,
+            # which is exactly the facility Smart Allocation would have
+            # chosen had she asked a second later. Only when nothing in
+            # the list has room left is the booking refused, with the same
+            # answer she would have got if they had all been full to
+            # begin with.
+            facility = next(
+                (candidate for candidate in ranked if claim_slot(candidate, data["request_type"])),
+                None,
+            )
+            if facility is None:
+                return _allocation_error_response(NoOperationalFacility())
+
+            req = MilkBankRequest.objects.create(
+                owner=request.user,
+                request_type=data["request_type"],
+                allocated_facility=facility,
+                preferred_date=data["preferred_date"],
+                preferred_time=data["preferred_time"],
+                # Starts the facility's 8-business-hour response clock right
+                # away -- this is a plain .create(), not apply_transition (there's
+                # no "from" status on a brand-new request), so it doesn't get this
+                # for free the way every later transition does.
+                response_deadline=add_business_hours(timezone.now()),
+                # Only ever meaningful for a RECIPIENT request, but harmless to
+                # store as-is for a DONOR one -- the mobile form simply never
+                # collects these outside the Recipient Pathway, so they arrive
+                # as the serializer's defaults (False / "").
+                needs_representative=data["needs_representative"],
+                representative_name=data["representative_name"],
+                representative_birthday=data["representative_birthday"],
+                representative_contact_number=data["representative_contact_number"],
+                # Same "harmless as-is for a DONOR" treatment as the
+                # representative fields just above.
+                neonate_name=data["neonate_name"],
+                clinic_info=data["clinic_info"],
+                has_prescription_proof=data["has_prescription_proof"],
+                has_cooler=data["has_cooler"],
+                has_medical_abstract=data["has_medical_abstract"],
+            )
+            log_action(request.user, "booking.created", f"MilkBankRequest:{req.id}")
+            notify(
+                request.user,
+                "Milk Bank Request Submitted",
+                f"Your {data['request_type'].lower()} request was submitted to {facility.name}.",
+                NotificationItem.Category.BOOKINGS,
+            )
+            # Staff previously only found out a request was waiting on them by
+            # opening the Booking Request tab and looking -- nothing told them
+            # one had arrived. Every active staff account assigned to the
+            # facility this landed at, not just whoever's logged in right now.
+            notify_many(
+                User.objects.filter(facility=facility, role=User.Role.FACILITY_STAFF, is_active=True),
+                "New Booking Request",
+                f"{request.user.mom_name or request.user.email} submitted a "
+                f"{data['request_type'].lower()} request.",
+                NotificationItem.Category.BOOKINGS,
+            )
 
         return Response(MilkBankRequestSerializer(req).data, status=201)
 
