@@ -233,7 +233,7 @@ class MyMilkBankRequestsView(generics.ListAPIView):
         # pending/awaiting_attendance status that's actually already overdue
         # just because nothing else happened to sweep it first.
         sweep_expired_requests()
-        return MilkBankRequest.objects.filter(owner=self.request.user).order_by("-submitted_at")
+        return MilkBankRequest.objects.filter(owner=self.request.user).order_by("-submitted_at", "-id")
 
 
 class AllMilkBankRequestsView(generics.ListAPIView):
@@ -259,7 +259,7 @@ class AllMilkBankRequestsView(generics.ListAPIView):
             MilkBankRequest.objects
             .filter(allocated_facility=self.request.user.facility_id)
             .select_related("owner", "allocated_facility")
-            .order_by("-submitted_at")
+            .order_by("-submitted_at", "-id")
         )
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -784,7 +784,11 @@ class MyLatestDonorQuestionnaireView(APIView):
     def get(self, request):
         questionnaire = (
             DonorQuestionnaire.objects.filter(request__owner=request.user)
-            .order_by("-submitted_at")
+            # id breaks a submitted_at tie: two questionnaires saved in the
+            # same clock tick otherwise come back in arbitrary order, and
+            # .first() would hand her an older submission's answers as her
+            # "latest". Ids are assigned in insert order.
+            .order_by("-submitted_at", "-id")
             .first()
         )
         if questionnaire is None:
