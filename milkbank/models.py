@@ -164,6 +164,13 @@ class MilkBankRequest(models.Model):
     has_prescription_proof = models.BooleanField(default=False)
     has_cooler = models.BooleanField(default=False)
     has_medical_abstract = models.BooleanField(default=False)
+    # How much milk the mother is asking for, in mL -- RECIPIENT only, null for
+    # a DONOR (and for recipient rows created before this existed). Shown to
+    # facility staff next to the facility's current stock to help them decide
+    # whether to accept. It is a request, not a reservation: Facility.stock_level_ml
+    # only moves at completion, by the amount staff actually dispense
+    # (amount_ml below), which may differ.
+    requested_ml = models.PositiveIntegerField(null=True, blank=True)
 
     # The 8-business-hour SLA clock (see milkbank/business_hours.py). Null
     # whenever nothing is actively pending on someone -- set the moment a

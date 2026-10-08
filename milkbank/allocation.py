@@ -9,6 +9,15 @@ from django.db.models import F
 # to replace the moment a real number comes from St. Luke's/PGH/Fabella.
 MINIMUM_STOCK_THRESHOLD_ML = 300
 
+# Bounds on how much milk a mother may ask for in one request. Placeholders in
+# the same sense as the threshold above -- no facility has supplied real
+# figures. 30 mL is one small feed; 1000 mL is a little over two days for a
+# 3 kg neonate at the usual ~150 mL/kg/day, which is as much as one pickup
+# should ever cover. The mobile form and the facility dashboard repeat these
+# two numbers; keep them in step.
+MIN_REQUEST_ML = 30
+MAX_REQUEST_ML = 1000
+
 
 class AllocationError(Exception):
     """A Smart Allocation call couldn't run at all -- a precondition
@@ -33,7 +42,15 @@ class NoOperationalFacility(AllocationError):
     """
 
 
-def eligibility_filters(request_type):
+class InsufficientStock(AllocationError):
+    """Facilities are open and have room, but none holds the requested volume."""
+
+    def __init__(self, max_available_ml):
+        super().__init__(max_available_ml)
+        self.max_available_ml = max_available_ml
+
+
+def eligibility_filters(request_type, requested_ml=None):
     """
     The binary eligibility gate, as queryset filters: what a facility must
     be for a request of this type to be sent to it at all.
@@ -52,12 +69,17 @@ def eligibility_filters(request_type):
     # actually give her milk -- that's a hard exclusion, not just a
     # tie-break. A DONOR is never excluded this way: a low-stock
     # facility is exactly who most needs a donation.
+    #
+    # When the mother also said how much she wants, the facility must hold at
+    # least that much, so a request is never routed to a bank that cannot
+    # fill it. The same dict is the WHERE clause in claim_slot(), so this is
+    # re-checked atomically at the instant the slot is taken.
     if request_type == "RECIPIENT":
-        filters["stock_level_ml__gte"] = MINIMUM_STOCK_THRESHOLD_ML
+        filters["stock_level_ml__gte"] = max(MINIMUM_STOCK_THRESHOLD_ML, requested_ml or 0)
     return filters
 
 
-def claim_slot(facility, request_type):
+def claim_slot(facility, request_type, requested_ml=None):
     """
     Take one booking slot at `facility`, if it still has one. Returns True
     if the slot was taken, False if the facility stopped being eligible
@@ -81,12 +103,12 @@ def claim_slot(facility, request_type):
     from .models import Facility
 
     taken = Facility.objects.filter(
-        pk=facility.pk, **eligibility_filters(request_type)
+        pk=facility.pk, **eligibility_filters(request_type, requested_ml)
     ).update(booked_count=F("booked_count") + 1)
     return taken == 1
 
 
-def get_ranked_facilities(user, request_type):
+def get_ranked_facilities(user, request_type, requested_ml=None):
     """
     Shared by the standalone /milkbank/allocate/ preview endpoint and
     the real booking-creation endpoint, so "how we pick a facility" only
@@ -121,8 +143,15 @@ def get_ranked_facilities(user, request_type):
     # accidental protection is gone for good: a full facility that
     # happens to be nearest would otherwise rank FIRST, not last. This
     # gate is what makes reordering the sort safe.
-    candidates = list(Facility.objects.filter(**eligibility_filters(request_type)))
+    candidates = list(Facility.objects.filter(**eligibility_filters(request_type, requested_ml)))
     if not candidates:
+        # Distinguish "nobody has that much milk" from the general "nothing
+        # available": the mother can act on the former by asking for less.
+        if request_type == "RECIPIENT" and requested_ml:
+            others = Facility.objects.filter(**eligibility_filters(request_type))
+            best = max((f.stock_level_ml for f in others), default=0)
+            if best:
+                raise InsufficientStock(best)
         raise NoOperationalFacility()
 
     return rank_facilities(candidates, request_type, user.latitude, user.longitude)

@@ -148,6 +148,8 @@ class TwoMothersOneSlotTests(APITestCase):
     def book(self, mother, stale_ranking=None, request_type="DONOR"):
         self.client.force_authenticate(user=mother)
         payload = {"request_type": request_type, "preferred_date": BOOKING_DATE, "preferred_time": "10:00 AM"}
+        if request_type == "RECIPIENT":
+            payload["requested_ml"] = 100
         if stale_ranking is None:
             return self.client.post("/milkbank/requests/", payload, format="json")
         with patch("milkbank.views.get_ranked_facilities", return_value=stale_ranking):

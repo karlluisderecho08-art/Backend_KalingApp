@@ -1027,6 +1027,7 @@ class RecipientRequirementsTests(APITestCase):
     def test_a_recipient_requests_requirements_are_saved(self):
         response = self.client.post("/milkbank/requests/", {
             "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "requested_ml": 100,
             "neonate_name": "Baby Cruz", "clinic_info": "Under Dr. Santos, PGH Pediatrics",
             "has_prescription_proof": True, "has_cooler": True, "has_medical_abstract": True,
         })
@@ -1045,6 +1046,7 @@ class RecipientRequirementsTests(APITestCase):
         # same field names straight off the list/detail response.
         response = self.client.post("/milkbank/requests/", {
             "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "requested_ml": 100,
             "neonate_name": "Baby Cruz", "has_cooler": True,
         })
 
@@ -1072,6 +1074,7 @@ class RecipientRequirementsTests(APITestCase):
         # predates this field (or simply omits them) still gets a 201.
         response = self.client.post("/milkbank/requests/", {
             "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "requested_ml": 100,
         })
 
         self.assertEqual(response.status_code, 201)
@@ -2112,3 +2115,105 @@ class DeleteFacilityTests(APITestCase):
         self.client.force_authenticate(user=staff)
         self.assertEqual(self.client.delete(f"/milkbank/facilities/{facility.id}/").status_code, 403)
         self.assertTrue(Facility.objects.filter(pk=facility.id).exists())
+
+
+class RequestedMilkAmountTests(APITestCase):
+    """
+    requested_ml -- how much milk a recipient asks for. Optional (older app
+    installs don't send it) but bounded to MIN/MAX_REQUEST_ML, never routed to a facility that
+    holds less than that, and handed back so the facility dashboard can show
+    it beside the facility's stock.
+    """
+
+    URL = "/milkbank/requests/"
+
+    def setUp(self):
+        self.mother = User.objects.create_user(
+            email="amt-mother@example.com", password="x", is_active=True,
+            latitude=14.6, longitude=121.0,
+        )
+        self.client.force_authenticate(user=self.mother)
+
+    def post(self, **extra):
+        payload = {"request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM"}
+        payload.update(extra)
+        return self.client.post(self.URL, payload, format="json")
+
+    def test_the_amount_is_saved_and_returned(self):
+        make_facility(stock_level_ml=800)
+
+        response = self.post(requested_ml=250)
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["requested_ml"], 250)
+        self.assertEqual(MilkBankRequest.objects.get(pk=response.data["id"]).requested_ml, 250)
+
+    def test_an_app_that_predates_the_field_can_still_request(self):
+        # Installed copies of the app don't send it; they must not be locked
+        # out of requesting milk by a backend deploy.
+        make_facility(stock_level_ml=800)
+
+        response = self.post()
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.data["requested_ml"])
+
+    def test_the_amount_is_bounded(self):
+        make_facility(stock_level_ml=5000)
+
+        for bad in (0, -5, 29, 1001, 2500):
+            with self.subTest(requested_ml=bad):
+                self.assertEqual(self.post(requested_ml=bad).status_code, 400)
+        for ok in (30, 1000):
+            with self.subTest(requested_ml=ok):
+                MilkBankRequest.objects.all().delete()
+                self.assertEqual(self.post(requested_ml=ok).status_code, 201)
+
+    def test_a_fraction_of_a_millilitre_is_refused(self):
+        make_facility(stock_level_ml=800)
+
+        self.assertEqual(self.post(requested_ml=12.5).status_code, 400)
+
+    def test_more_than_any_facility_holds_is_refused_with_the_most_available(self):
+        make_facility(name="A", stock_level_ml=400)
+        make_facility(name="B", stock_level_ml=600)
+
+        response = self.post(requested_ml=700)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["max_available_ml"], 600)
+        self.assertFalse(MilkBankRequest.objects.exists())
+
+    def test_it_is_routed_past_a_nearer_facility_that_cannot_fill_it(self):
+        make_facility(name="Near", stock_level_ml=350, latitude=14.6, longitude=121.0)
+        make_facility(name="Far", stock_level_ml=900, latitude=14.9, longitude=121.3)
+
+        response = self.post(requested_ml=500)
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["allocated_facility_name"], "Far")
+
+    def test_asking_for_exactly_the_stock_on_hand_is_allowed(self):
+        make_facility(stock_level_ml=450)
+
+        self.assertEqual(self.post(requested_ml=450).status_code, 201)
+
+    def test_a_donor_request_ignores_the_amount(self):
+        make_facility()
+
+        response = self.client.post(self.URL, {
+            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "requested_ml": 200,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.data["requested_ml"])
+
+    def test_the_preview_only_offers_facilities_that_can_fill_it(self):
+        make_facility(name="Near", stock_level_ml=350, latitude=14.6, longitude=121.0)
+        make_facility(name="Far", stock_level_ml=900, latitude=14.9, longitude=121.3)
+
+        response = self.client.post("/milkbank/allocate/", {"request_type": "RECIPIENT", "requested_ml": 500}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([f["name"] for f in response.data["ranked_facilities"]], ["Far"])

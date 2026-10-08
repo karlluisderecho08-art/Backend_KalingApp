@@ -18,6 +18,7 @@ from notifications.services import notify, notify_many
 
 from .allocation import (
     AllocationError,
+    InsufficientStock,
     LocationRequired,
     NoOperationalFacility,
     claim_slot,
@@ -110,7 +111,15 @@ def _allocation_error_response(exc):
             {"detail": "No facility is available right now -- they're either closed or fully booked. Please try again later."},
             status=404,
         )
-    raise exc  # pragma: no cover -- only the two subclasses above exist today
+    if isinstance(exc, InsufficientStock):
+        return Response({
+            "detail": (
+                f"No milk bank currently holds that much milk. The most available right now is "
+                f"{exc.max_available_ml} mL -- please request that amount or less."
+            ),
+            "max_available_ml": exc.max_available_ml,
+        }, status=400)
+    raise exc  # pragma: no cover -- only the subclasses above exist today
 
 
 class SmartAllocationView(APIView):
@@ -131,9 +140,10 @@ class SmartAllocationView(APIView):
         serializer = AllocationRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         request_type = serializer.validated_data["request_type"]
+        requested_ml = serializer.validated_data["requested_ml"] if request_type == "RECIPIENT" else None
 
         try:
-            ranked = get_ranked_facilities(request.user, request_type)
+            ranked = get_ranked_facilities(request.user, request_type, requested_ml)
         except AllocationError as exc:
             return _allocation_error_response(exc)
 
@@ -172,7 +182,7 @@ class MilkBankRequestCreateView(APIView):
             return Response({"detail": "You already have an open request."}, status=400)
 
         try:
-            ranked = get_ranked_facilities(request.user, data["request_type"])
+            ranked = get_ranked_facilities(request.user, data["request_type"], data["requested_ml"])
         except AllocationError as exc:
             return _allocation_error_response(exc)
 
@@ -197,7 +207,7 @@ class MilkBankRequestCreateView(APIView):
             # answer she would have got if they had all been full to
             # begin with.
             facility = next(
-                (candidate for candidate in ranked if claim_slot(candidate, data["request_type"])),
+                (candidate for candidate in ranked if claim_slot(candidate, data["request_type"], data["requested_ml"])),
                 None,
             )
             if facility is None:
@@ -229,6 +239,7 @@ class MilkBankRequestCreateView(APIView):
                 has_prescription_proof=data["has_prescription_proof"],
                 has_cooler=data["has_cooler"],
                 has_medical_abstract=data["has_medical_abstract"],
+                requested_ml=data["requested_ml"],
             )
             log_action(request.user, "booking.created", f"MilkBankRequest:{req.id}")
             notify(
@@ -245,7 +256,8 @@ class MilkBankRequestCreateView(APIView):
                 User.objects.filter(facility=facility, role=User.Role.FACILITY_STAFF, is_active=True),
                 "New Booking Request",
                 f"{request.user.mom_name or request.user.email} submitted a "
-                f"{data['request_type'].lower()} request.",
+                f"{data['request_type'].lower()} request"
+                + (f" for {data['requested_ml']} mL." if data["requested_ml"] else "."),
                 NotificationItem.Category.BOOKINGS,
             )
 

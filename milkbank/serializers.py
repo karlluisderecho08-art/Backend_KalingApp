@@ -3,11 +3,18 @@ from rest_framework import serializers
 from accounts.models import User
 from core.audit import log_action
 
+from .allocation import MAX_REQUEST_ML, MIN_REQUEST_ML
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 
 
 class AllocationRequestSerializer(serializers.Serializer):
     request_type = serializers.ChoiceField(choices=MilkBankRequest.RequestType.choices)
+    # Optional on the preview so older clients keep working; when present the
+    # preview only offers facilities that can actually fill it.
+    requested_ml = serializers.IntegerField(
+        required=False, allow_null=True, default=None,
+        min_value=MIN_REQUEST_ML, max_value=MAX_REQUEST_ML,
+    )
 
 
 class FacilitySerializer(serializers.ModelSerializer):
@@ -141,7 +148,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "representative_birthday", "representative_contact_number",
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract",
-            "amount_ml", "completed_at",
+            "amount_ml", "completed_at", "requested_ml",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
@@ -150,7 +157,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "needs_representative", "representative_name",
             "representative_birthday", "representative_contact_number",
             "neonate_name", "clinic_info", "has_prescription_proof",
-            "has_cooler", "has_medical_abstract",
+            "has_cooler", "has_medical_abstract", "requested_ml",
         ]
 
 
@@ -184,6 +191,30 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
     has_prescription_proof = serializers.BooleanField(required=False, default=False)
     has_cooler = serializers.BooleanField(required=False, default=False)
     has_medical_abstract = serializers.BooleanField(required=False, default=False)
+
+    # RECIPIENT only, ignored for a DONOR (see validate()). Whole mL, like every
+    # other volume in the system. The bounds are the per-request limits in
+    # allocation.py; "not more than the facility holds" can't be checked here
+    # because the facility isn't chosen yet -- allocation does it.
+    #
+    # Optional rather than required, same as the requirements fields above: the
+    # mobile app always sends it now, but an installed copy that predates it
+    # must still be able to request milk. The facility dashboard shows such a
+    # request as "No amount was specified".
+    requested_ml = serializers.IntegerField(
+        required=False, allow_null=True, default=None,
+        min_value=MIN_REQUEST_ML, max_value=MAX_REQUEST_ML,
+        error_messages={
+            "min_value": f"The minimum request is {MIN_REQUEST_ML} mL.",
+            "max_value": f"The maximum per request is {MAX_REQUEST_ML} mL.",
+            "invalid": "Enter a whole number of millilitres.",
+        },
+    )
+
+    def validate(self, attrs):
+        if attrs["request_type"] != MilkBankRequest.RequestType.RECIPIENT:
+            attrs["requested_ml"] = None
+        return attrs
 
 
 class ProposeCounterOfferSerializer(serializers.Serializer):
