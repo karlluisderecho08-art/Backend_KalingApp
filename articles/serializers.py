@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .formatting import normalize_markers
 from .models import Article, ArticleComment, ResourceLink
 
 
@@ -80,6 +81,12 @@ class AdminArticleSerializer(serializers.ModelSerializer):
             "id", "title", "category", "read_time", "teaser", "content",
             "author", "rating", "evidence_label", "date",
         ]
+
+    def validate_content(self, value):
+        # Bold/italic markers split across a line break render as literal
+        # asterisks in the app -- repaired here so no client can store them.
+        # See articles/formatting.py.
+        return normalize_markers(value)
 
 
 class ResourceLinkSerializer(serializers.ModelSerializer):
