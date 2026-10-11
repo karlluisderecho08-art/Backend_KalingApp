@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Article, ArticleComment, ResourceLink
+from .models import Article, ArticleComment, CommentReport, ResourceLink
 
 
 @admin.register(Article)
@@ -14,6 +14,12 @@ class ArticleAdmin(admin.ModelAdmin):
 class ArticleCommentAdmin(admin.ModelAdmin):
     list_display = ("article", "author", "is_reported", "created_at")
     list_filter = ("is_reported",)
+
+
+@admin.register(CommentReport)
+class CommentReportAdmin(admin.ModelAdmin):
+    list_display = ("comment", "reporter", "reason", "created_at")
+    list_filter = ("reason",)
 
 
 @admin.register(ResourceLink)

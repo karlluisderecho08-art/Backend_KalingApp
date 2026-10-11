@@ -89,6 +89,13 @@ GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-3.5-flash-lite")
 # IBCLC guidance where they fall short.
 CHAT_STRICT_KNOWLEDGE_ONLY = env.bool("CHAT_STRICT_KNOWLEDGE_ONLY", default=True)
 
+# How many different users must report one Knowledge Hub comment before it is
+# deleted automatically, without waiting for an admin (articles.views.
+# ArticleCommentReportView). 30 is a PLACEHOLDER chosen for the prototype, not
+# a researched figure; set COMMENT_AUTO_REMOVE_REPORTS on Render to change it
+# without a deploy.
+COMMENT_AUTO_REMOVE_REPORTS = env.int("COMMENT_AUTO_REMOVE_REPORTS", default=30)
+
 # --- Retrieval (chat/retrieval.py) ---
 # Kali answers from passages retrieved for the question asked, not from
 # the whole library sent every time. These tune that retrieval.

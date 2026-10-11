@@ -64,6 +64,34 @@ class ArticleComment(models.Model):
         return f"{self.author} on {self.article_id}"
 
 
+class CommentReport(models.Model):
+    """
+    One user's report of one comment.
+
+    A comment used to carry only a reported flag and the latest reason, so
+    there was nothing to count and one person could "report" it any number
+    of times. One row per (comment, reporter) makes the count mean "how many
+    different people reported this" -- which is what the automatic removal
+    threshold (settings.COMMENT_AUTO_REMOVE_REPORTS) is measured against.
+
+    Deleted with the comment. An admin's "No violation" also clears them, so
+    a comment staff have reviewed and kept starts counting from zero again.
+    """
+
+    comment = models.ForeignKey(ArticleComment, related_name="reports", on_delete=models.CASCADE)
+    reporter = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    reason = models.CharField(max_length=20, choices=ArticleComment.ReportReason.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["comment", "reporter"], name="one_report_per_user_per_comment"),
+        ]
+
+    def __str__(self):
+        return f"{self.reporter} reported comment {self.comment_id} ({self.reason})"
+
+
 class ResourceLink(models.Model):
     """
     An external "Milk Expression Guide" link shown on the Knowledge Hub

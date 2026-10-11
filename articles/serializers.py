@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .formatting import normalize_markers
-from .models import Article, ArticleComment, ResourceLink
+from .models import Article, ArticleComment, CommentReport, ResourceLink
 
 
 class ArticleCommentSerializer(serializers.ModelSerializer):
@@ -29,9 +29,23 @@ class ReportedCommentSerializer(ArticleCommentSerializer):
     comments."""
 
     article_title = serializers.CharField(source="article.title", read_only=True)
+    # How many different users have reported it, and for what -- so a
+    # moderator can tell one complaint from twenty-nine. A comment reaching
+    # settings.COMMENT_AUTO_REMOVE_REPORTS is deleted before it gets here.
+    report_count = serializers.SerializerMethodField()
+    report_reasons = serializers.SerializerMethodField()
 
     class Meta(ArticleCommentSerializer.Meta):
-        fields = ArticleCommentSerializer.Meta.fields + ["article_title"]
+        fields = ArticleCommentSerializer.Meta.fields + ["article_title", "report_count", "report_reasons"]
+
+    def get_report_count(self, obj) -> int:
+        return len(obj.reports.all())
+
+    def get_report_reasons(self, obj) -> dict:
+        counts = {}
+        for report in obj.reports.all():
+            counts[report.reason] = counts.get(report.reason, 0) + 1
+        return counts
 
 
 class ArticleCommentCreateSerializer(serializers.ModelSerializer):

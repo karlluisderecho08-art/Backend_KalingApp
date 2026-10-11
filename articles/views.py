@@ -1,3 +1,5 @@
+from django.conf import settings
+from django.db import IntegrityError, transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
@@ -6,9 +8,9 @@ from rest_framework.views import APIView
 from accounts.models import User
 from core.audit import log_action
 from notifications.models import NotificationItem
-from notifications.services import notify_many
+from notifications.services import notify, notify_many
 
-from .models import Article, ArticleComment, ResourceLink
+from .models import Article, ArticleComment, CommentReport, ResourceLink
 from .serializers import (
     AdminArticleSerializer,
     ArticleCommentCreateSerializer,
@@ -105,34 +107,92 @@ class ArticleCommentReportView(APIView):
     """
     POST /articles/comments/<id>/report/  {reason}
 
-    Any authenticated user (not just the comment's author) can flag a
-    comment -- this only raises the flag. Deciding what happens next is
-    a staff-only decision, made in ArticleCommentResolveView below.
+    Any authenticated user can report a comment. Each user counts once per
+    comment (CommentReport); reporting it again changes nothing. Deciding
+    what happens next is normally a staff decision (ArticleCommentResolveView
+    below) -- except that once settings.COMMENT_AUTO_REMOVE_REPORTS different
+    users have reported it, the comment is deleted straight away, without
+    waiting for an admin to get to it.
+
+    Always answers with the comment as it stood, plus `report_count` and
+    `removed` (true when this report was the one that removed it), so the
+    app can drop it from the list immediately. A client that predates
+    `removed` just sees a reported comment that is gone on its next refresh.
     """
 
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ReportCommentSerializer
 
     def post(self, request, pk):
-        comment = generics.get_object_or_404(ArticleComment, pk=pk)
         serializer = ReportCommentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data["reason"]
 
-        comment.is_reported = True
-        comment.report_reason = serializer.validated_data["reason"]
-        comment.save(update_fields=["is_reported", "report_reason"])
-        # Previously a reported comment just sat in the Moderation tab
-        # until an admin happened to open it -- nothing told them one had
-        # come in. Every active admin account, not just whoever's logged
-        # in right now.
-        notify_many(
-            User.objects.filter(is_staff=True, is_active=True),
-            "Comment Reported",
-            f"A comment on \"{comment.article.title}\" was reported for "
-            f"{comment.report_reason}.",
+        with transaction.atomic():
+            # Locked so two reports landing together are counted one after
+            # the other, and the comment can only be removed once.
+            comment = generics.get_object_or_404(
+                ArticleComment.objects.select_for_update().select_related("article", "author"), pk=pk
+            )
+            # The flag, not the report rows: comments flagged before reports
+            # were counted have no rows, and admins already know about those.
+            first_report = not comment.is_reported
+            try:
+                with transaction.atomic():
+                    CommentReport.objects.create(comment=comment, reporter=request.user, reason=reason)
+                newly_reported = True
+            except IntegrityError:
+                newly_reported = False  # she already reported it; it still counts once
+
+            comment.is_reported = True
+            comment.report_reason = reason if newly_reported else (comment.report_reason or reason)
+            comment.save(update_fields=["is_reported", "report_reason"])
+            report_count = comment.reports.count()
+            data = dict(ArticleCommentSerializer(comment).data, report_count=report_count, removed=False)
+
+            if newly_reported:
+                log_action(request.user, "comment.reported", f"ArticleComment:{comment.id} ({reason})")
+
+            if report_count >= settings.COMMENT_AUTO_REMOVE_REPORTS:
+                self._remove(comment, report_count)
+                data["removed"] = True
+                return Response(data)
+
+        # Admins hear about a comment once, when it is first reported -- not
+        # once per report, which at the removal threshold would be dozens of
+        # notifications for a single comment. The Moderation queue shows the
+        # running count.
+        if newly_reported and first_report:
+            notify_many(
+                User.objects.filter(is_staff=True, is_active=True),
+                "Comment Reported",
+                f"A comment on \"{comment.article.title}\" was reported for {reason}.",
+                NotificationItem.Category.ARTICLES,
+            )
+        return Response(data)
+
+    @staticmethod
+    def _remove(comment, report_count):
+        target = f"ArticleComment:{comment.id}"
+        article_title = comment.article.title
+        author = comment.author
+        comment.delete()
+        # No human actor: the threshold did this, which is what a null actor
+        # means in the audit log.
+        log_action(None, "comment.auto_removed", f"{target} after {report_count} reports")
+        notify(
+            author,
+            "Comment Removed",
+            f"Your comment on \"{article_title}\" was removed after it was reported by "
+            f"{report_count} members of the community.",
             NotificationItem.Category.ARTICLES,
         )
-        return Response(ArticleCommentSerializer(comment).data)
+        notify_many(
+            User.objects.filter(is_staff=True, is_active=True),
+            "Comment Removed Automatically",
+            f"A comment on \"{article_title}\" reached {report_count} reports and was removed.",
+            NotificationItem.Category.ARTICLES,
+        )
 
 
 class ReportedCommentListView(generics.ListAPIView):
@@ -144,7 +204,11 @@ class ReportedCommentListView(generics.ListAPIView):
     rejected status to track here -- "flagged" is the whole queue.
     """
 
-    queryset = ArticleComment.objects.filter(is_reported=True).select_related("article", "author")
+    queryset = (
+        ArticleComment.objects.filter(is_reported=True)
+        .select_related("article", "author")
+        .prefetch_related("reports")
+    )
     serializer_class = ReportedCommentSerializer
     permission_classes = [permissions.IsAdminUser]
 
@@ -178,6 +242,9 @@ class ArticleCommentResolveView(APIView):
         comment.is_reported = False
         comment.report_reason = ""
         comment.save(update_fields=["is_reported", "report_reason"])
+        # Staff looked and kept it, so the reports they judged no longer count
+        # toward automatic removal -- it would take that many fresh reports.
+        comment.reports.all().delete()
         log_action(request.user, "comment.dismissed_report", f"ArticleComment:{comment.id}")
         return Response(ArticleCommentSerializer(comment).data)
 
