@@ -18,6 +18,7 @@ from notifications.services import notify, notify_many
 
 from .allocation import (
     AllocationError,
+    DayFullyBooked,
     InsufficientStock,
     LocationRequired,
     NoOperationalFacility,
@@ -25,6 +26,7 @@ from .allocation import (
     get_ranked_facilities,
 )
 from .business_hours import add_business_hours
+from .capacity import has_room
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
 from .scheduling import counter_offer_errors
@@ -111,6 +113,15 @@ def _allocation_error_response(exc):
             {"detail": "No facility is available right now -- they're either closed or fully booked. Please try again later."},
             status=404,
         )
+    if isinstance(exc, DayFullyBooked):
+        # Unlike the catch-all above, this one she can act on: pick another day.
+        return Response({
+            "detail": (
+                f"Every milk bank is fully booked on {exc.day:%B} {exc.day.day}, {exc.day.year}. "
+                "Please choose another date."
+            ),
+            "fully_booked_date": exc.day.isoformat(),
+        }, status=409)
     if isinstance(exc, InsufficientStock):
         return Response({
             "detail": (
@@ -182,7 +193,9 @@ class MilkBankRequestCreateView(APIView):
             return Response({"detail": "You already have an open request."}, status=400)
 
         try:
-            ranked = get_ranked_facilities(request.user, data["request_type"], data["requested_ml"])
+            ranked = get_ranked_facilities(
+                request.user, data["request_type"], data["requested_ml"], day=data["preferred_date"],
+            )
         except AllocationError as exc:
             return _allocation_error_response(exc)
 
@@ -193,11 +206,12 @@ class MilkBankRequestCreateView(APIView):
         # existed.
         with transaction.atomic():
             # The ranking above was read a moment ago, and "a moment" is
-            # long enough for another mother to take the last slot. So the
-            # slot is not assumed -- it is claimed, in a single conditional
-            # UPDATE (see allocation.claim_slot), which occupies it the
-            # moment the booking exists (status=pending already counts as
-            # "open"; transitions.py is where it is released).
+            # long enough for another mother to take the last slot of her
+            # day. So the slot is not assumed -- it is claimed: the
+            # facility's row is locked and her day re-counted (see
+            # allocation.claim_slot), and the booking created below, still
+            # inside this transaction, is what occupies the slot (a pending
+            # request already holds its day -- see capacity.py).
             #
             # If her nearest facility filled up in that instant she is not
             # turned away: she goes to the next one in her own ranking,
@@ -207,11 +221,14 @@ class MilkBankRequestCreateView(APIView):
             # answer she would have got if they had all been full to
             # begin with.
             facility = next(
-                (candidate for candidate in ranked if claim_slot(candidate, data["request_type"], data["requested_ml"])),
+                (
+                    candidate for candidate in ranked
+                    if claim_slot(candidate, data["request_type"], data["preferred_date"], data["requested_ml"])
+                ),
                 None,
             )
             if facility is None:
-                return _allocation_error_response(NoOperationalFacility())
+                return _allocation_error_response(DayFullyBooked(data["preferred_date"]))
 
             req = MilkBankRequest.objects.create(
                 owner=request.user,
@@ -433,14 +450,25 @@ class AcceptCounterOfferView(generics.GenericAPIView):
         else:
             target_status = Status.SCHEDULED
             target_stage = "Status"
-        try:
-            apply_transition(req, target_status, request.user, "counter_offer_accepted")
-        except InvalidTransition as exc:
-            return Response({"detail": str(exc)}, status=400)
-        req.preferred_date = req.counter_offer_date
-        req.preferred_time = req.counter_offer_time
-        req.current_stage_index = req.stages.index(target_stage)
-        req.save(update_fields=["preferred_date", "preferred_time", "current_stage_index"])
+        with transaction.atomic():
+            # Accepting moves her booking onto the offered day, so that day
+            # needs a free slot NOW -- it had one when staff offered it, but
+            # other mothers may have filled it since. Locked so two
+            # acceptances can't both take the last one (see claim_slot).
+            facility = Facility.objects.select_for_update().get(pk=req.allocated_facility_id)
+            if req.counter_offer_date and not has_room(facility, req.counter_offer_date, exclude_request_id=req.pk):
+                return Response({
+                    "detail": "The date the facility offered has filled up since. "
+                              "Please choose a new time instead.",
+                }, status=409)
+            try:
+                apply_transition(req, target_status, request.user, "counter_offer_accepted")
+            except InvalidTransition as exc:
+                return Response({"detail": str(exc)}, status=400)
+            req.preferred_date = req.counter_offer_date
+            req.preferred_time = req.counter_offer_time
+            req.current_stage_index = req.stages.index(target_stage)
+            req.save(update_fields=["preferred_date", "preferred_time", "current_stage_index"])
         return Response(MilkBankRequestSerializer(req).data)
 
 
@@ -460,22 +488,33 @@ class RejectCounterOfferView(generics.GenericAPIView):
         req = self.get_object()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        new_date = serializer.validated_data["preferred_date"]
 
-        try:
-            apply_transition(req, Status.PENDING, request.user, "counter_offer_rejected")
-        except InvalidTransition as exc:
-            return Response({"detail": str(exc)}, status=400)
-        req.preferred_date = serializer.validated_data["preferred_date"]
-        req.preferred_time = serializer.validated_data["preferred_time"]
-        req.counter_offer_date = None
-        req.counter_offer_time = ""
-        # Back to square one for the facility to review, not still parked on
-        # "Booking Confirmation" -- see StaffAcceptView's comment for why the
-        # stage tracker (not just current_sub_status) has to move here too.
-        req.current_stage_index = req.stages.index("Status")
-        req.save(update_fields=[
-            "preferred_date", "preferred_time", "counter_offer_date", "counter_offer_time", "current_stage_index",
-        ])
+        with transaction.atomic():
+            # Her request moves to the day she picked, so that day needs a
+            # free slot at her facility -- same lock as claim_slot.
+            facility = Facility.objects.select_for_update().get(pk=req.allocated_facility_id)
+            if not has_room(facility, new_date, exclude_request_id=req.pk):
+                return Response({
+                    "detail": f"{facility.name} is fully booked on {new_date:%B} {new_date.day}, "
+                              f"{new_date.year}. Please choose another date.",
+                    "fully_booked_date": new_date.isoformat(),
+                }, status=409)
+            try:
+                apply_transition(req, Status.PENDING, request.user, "counter_offer_rejected")
+            except InvalidTransition as exc:
+                return Response({"detail": str(exc)}, status=400)
+            req.preferred_date = new_date
+            req.preferred_time = serializer.validated_data["preferred_time"]
+            req.counter_offer_date = None
+            req.counter_offer_time = ""
+            # Back to square one for the facility to review, not still parked on
+            # "Booking Confirmation" -- see StaffAcceptView's comment for why the
+            # stage tracker (not just current_sub_status) has to move here too.
+            req.current_stage_index = req.stages.index("Status")
+            req.save(update_fields=[
+                "preferred_date", "preferred_time", "counter_offer_date", "counter_offer_time", "current_stage_index",
+            ])
         return Response(MilkBankRequestSerializer(req).data)
 
 

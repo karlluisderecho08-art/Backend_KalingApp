@@ -1,6 +1,5 @@
 import math
-
-from django.db.models import F
+from datetime import timedelta
 
 # PLACEHOLDER, not a researched figure. Nobody -- not the partner
 # facilities, not this codebase -- has supplied a real minimum-stock
@@ -32,14 +31,22 @@ class NoOperationalFacility(AllocationError):
     """
     Nothing was left to rank. Covers every way the candidate list can
     come back empty, which is more than the name suggests: no facility
-    operational, none with a capacity configured, none with room left
-    (added with the capacity gate below), or -- RECIPIENT only -- none
-    holding at least MINIMUM_STOCK_THRESHOLD_ML. The caller can't tell
+    operational, none with a capacity configured, or -- RECIPIENT only --
+    none holding at least MINIMUM_STOCK_THRESHOLD_ML. (A full DAY is its
+    own error, DayFullyBooked, because the mother can act on it.) The caller can't tell
     these apart, and deliberately doesn't try: see
     _allocation_error_response, which answers with one message covering
     all of them rather than telling a mother which internal filter
     rejected her.
     """
+
+
+class DayFullyBooked(AllocationError):
+    """Facilities are open, but every one of them is full on the day she chose."""
+
+    def __init__(self, day):
+        super().__init__(day)
+        self.day = day
 
 
 class InsufficientStock(AllocationError):
@@ -56,14 +63,16 @@ def eligibility_filters(request_type, requested_ml=None):
     be for a request of this type to be sent to it at all.
 
     Written once and used twice -- to build the candidate list in
-    get_ranked_facilities(), and again as the WHERE clause of the UPDATE
-    in claim_slot() -- so "eligible when we ranked" and "eligible at the
+    get_ranked_facilities(), and again as the filter on the row
+    claim_slot() locks -- so "eligible when we ranked" and "eligible at the
     instant we booked" can never drift into two different definitions.
     """
+    # Whether there is room is a per-DAY question now (see capacity.py), so
+    # it is not part of this date-free gate: get_ranked_facilities() and
+    # claim_slot() check the chosen day on top of it.
     filters = {
         "is_operational": True,
         "capacity__gt": 0,
-        "booked_count__lt": F("capacity"),
     }
     # A RECIPIENT can't be sent to a facility too low on stock to
     # actually give her milk -- that's a hard exclusion, not just a
@@ -79,41 +88,52 @@ def eligibility_filters(request_type, requested_ml=None):
     return filters
 
 
-def claim_slot(facility, request_type, requested_ml=None):
+def claim_slot(facility, request_type, day, requested_ml=None):
     """
-    Take one booking slot at `facility`, if it still has one. Returns True
-    if the slot was taken, False if the facility stopped being eligible
+    Whether one more booking on `day` can be placed at `facility` right now.
+    Returns False if the facility stopped being eligible, or `day` filled up,
     between being ranked and now.
 
-    The check and the increment are ONE statement:
+    MUST be called inside transaction.atomic(), with the booking created in
+    that same transaction. The facility's row is locked (SELECT ... FOR
+    UPDATE) before that day is counted, and the lock is held until the
+    transaction commits -- by which time the new booking exists and counts.
 
-        UPDATE facility SET booked_count = booked_count + 1
-         WHERE id = ... AND booked_count < capacity AND ...
-
-    That is what makes it safe when two mothers book at the same instant.
-    Ranking reads the facility list, and creating the booking happens a
-    moment later; done as "check there is room, then add one" in Python,
-    two requests could both read 19 of 20, both decide there was room,
-    and both add one -- 21 of 20, with nothing to stop it. A conditional
-    UPDATE cannot do that: the database applies the two one after the
-    other, and the second re-checks its WHERE against the row the first
-    just wrote, finds 20 of 20, and changes nothing. The row count it
-    returns is how the caller learns which of the two it was.
+    That is what makes it safe when two mothers book the last slot of a day
+    at the same instant. Ranking reads the facility list and creating the
+    booking happens a moment later; done as "count, then add" with nothing
+    held in between, both could count 19 of 20 and both be booked: 21 of 20.
+    With the lock, the second one waits for the first to commit, then counts
+    20 of 20 and is refused. (SQLite, used by the tests, has no row locks,
+    but it serialises every write anyway.)
     """
+    from .capacity import slots_taken
     from .models import Facility
 
-    taken = Facility.objects.filter(
-        pk=facility.pk, **eligibility_filters(request_type, requested_ml)
-    ).update(booked_count=F("booked_count") + 1)
-    return taken == 1
+    locked = (
+        Facility.objects.select_for_update()
+        .filter(pk=facility.pk, **eligibility_filters(request_type, requested_ml))
+        .first()
+    )
+    if locked is None:
+        return False
+    return slots_taken(locked.pk, day) < locked.capacity
 
 
-def get_ranked_facilities(user, request_type, requested_ml=None):
+def get_ranked_facilities(user, request_type, requested_ml=None, day=None):
     """
     Shared by the standalone /milkbank/allocate/ preview endpoint and
     the real booking-creation endpoint, so "how we pick a facility" only
     exists in one place.
+
+    `day` is the date she is booking for. When given (the real booking),
+    facilities with no slot left on that day are dropped, and if that is
+    all of them DayFullyBooked is raised. The preview runs before she has
+    picked a date, so it passes none: it ranks every eligible facility, and
+    the scheduler then greys out that facility's full days
+    (Facility.fully_booked_dates).
     """
+    from .capacity import counts_by_day, today
     from .models import Facility
 
     if user.latitude is None or user.longitude is None:
@@ -124,9 +144,8 @@ def get_ranked_facilities(user, request_type, requested_ml=None):
     #
     #   is_operational=False   the facility isn't running at all
     #   capacity=0             it exists but takes no bookings, ever
-    #   booked_count >= capacity
-    #                          it takes bookings, but has no room left
-    #                          right now
+    #   no slot left on `day`  it takes bookings, but that day is full
+    #                          (checked below, once the day is known)
     #
     # That last one used to be missing entirely. Only capacity__gt=0 was
     # checked -- "is a capacity configured", not "is there any of it
@@ -154,6 +173,19 @@ def get_ranked_facilities(user, request_type, requested_ml=None):
                 raise InsufficientStock(best)
         raise NoOperationalFacility()
 
+    # Each candidate's load on the day in question -- the chosen day, or
+    # today for the date-less preview -- for the room check and the ratio
+    # tie-breaker in rank_facilities().
+    load_day = day or today()
+    counts = counts_by_day([f.pk for f in candidates], load_day, load_day + timedelta(days=1))
+    for facility in candidates:
+        facility.slots_taken = counts.get((facility.pk, load_day), 0)
+
+    if day is not None:
+        candidates = [f for f in candidates if f.slots_taken < f.capacity]
+        if not candidates:
+            raise DayFullyBooked(day)
+
     return rank_facilities(candidates, request_type, user.latitude, user.longitude)
 
 
@@ -180,14 +212,16 @@ def rank_facilities(facilities, request_type, mother_lat, mother_lon):
 
     Caller must already have applied the binary eligibility gate (step 1)
     in get_ranked_facilities(): operational, capacity configured, and
-    with room left right now. Everything this function sees can actually
+    with room left on her day. Everything this function sees can actually
     take the booking, so the only question left is which one to prefer.
 
       2. distance from the mother (Haversine), ascending -- nearest
          wins.
-      3. booked_count / capacity, ascending -- the *ratio*, not the raw
-         count, so a 100-slot facility with 50 bookings doesn't look
-         "busier" than a 10-slot facility with 8 bookings.
+      3. that day's bookings / capacity per day, ascending -- the *ratio*,
+         not the raw count, so a 100-a-day facility with 50 bookings that
+         day doesn't look "busier" than a 10-a-day one with 8. The day's
+         count is attached by get_ranked_facilities() as `slots_taken`
+         (0 when called without it).
       4. stock_level_ml -- which direction depends on request_type:
            DONOR:     ascending  (send donors to whoever needs milk most)
            RECIPIENT: descending (send recipients to whoever has the most to give)
@@ -237,7 +271,7 @@ def rank_facilities(facilities, request_type, mother_lat, mother_lon):
     stock_sign = 1 if request_type == "DONOR" else -1
 
     def sort_key(facility):
-        ratio = facility.booked_count / facility.capacity
+        ratio = getattr(facility, "slots_taken", 0) / facility.capacity
         distance = haversine_km(mother_lat, mother_lon, facility.latitude, facility.longitude)
         facility.booked_ratio = ratio
         facility.distance_km = distance

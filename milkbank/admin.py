@@ -5,7 +5,7 @@ from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRe
 
 @admin.register(Facility)
 class FacilityAdmin(admin.ModelAdmin):
-    list_display = ("name", "type", "is_operational", "capacity", "booked_count", "stock_level_ml")
+    list_display = ("name", "type", "is_operational", "capacity", "stock_level_ml")
     list_filter = ("type", "is_operational")
     search_fields = ("name", "address")
 

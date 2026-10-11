@@ -37,12 +37,9 @@ class Facility(models.Model):
 
     # --- New in Phase 3, for Smart Allocation ---
     is_operational = models.BooleanField(default=True)
-    capacity = models.PositiveIntegerField(help_text="Total booking slots this facility can handle")
-    booked_count = models.PositiveIntegerField(
-        default=0,
-        help_text="Slots currently booked. Kept in sync automatically as requests are "
-        "created/close out -- see milkbank/transitions.py -- but still editable by hand "
-        "in admin, e.g. to seed a starting count before any real bookings exist.",
+    capacity = models.PositiveIntegerField(
+        help_text="Bookings this facility can take per day. Each day has its own count, "
+        "worked out from that day's bookings -- see milkbank/capacity.py.",
     )
     stock_level_ml = models.PositiveIntegerField(default=0, help_text="Current stored milk volume, in mL")
     latitude = models.FloatField()

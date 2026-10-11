@@ -32,7 +32,7 @@ class Command(BaseCommand):
     before that move is corrected by migration 0011_fabella_current_address;
     the values below match it so a fresh database starts out right.
 
-    capacity / booked_count / stock_level_ml are STILL not real
+    capacity / stock_level_ml are STILL not real
     operational data -- nobody has supplied real figures (same open item
     as the roadmap's "minimum stock threshold" gap, see
     MINIMUM_STOCK_THRESHOLD_ML in allocation.py). They have been made
@@ -40,8 +40,9 @@ class Command(BaseCommand):
     facilities sitting at exactly 50% booked (20/10, 40/20) and stock in
     flat hundreds, which reads as invented the moment anyone looks at it
     on screen. The figures now vary the way real readings do, scale
-    roughly with each facility's size, and keep booked_count under
-    capacity.
+    roughly with each facility's size. capacity is now bookings PER DAY
+    (milkbank/capacity.py); the old seeded booked_count is gone, since a
+    day's count is worked out from its real bookings.
 
     They are still unverified, and that has NOT changed -- do not present
     them to a panel as real facility status. Plausible test data is easier
@@ -71,7 +72,6 @@ class Command(BaseCommand):
                 "contact": "(02) 8723-0101",
                 "address": "279 E. Rodriguez Sr. Ave, Quezon City",
                 "capacity": 18,
-                "booked_count": 11,
                 "stock_level_ml": 740,
                 "latitude": 14.6091,
                 "longitude": 121.0223,
@@ -82,7 +82,6 @@ class Command(BaseCommand):
                 "contact": "(02) 8554-8400",
                 "address": "Taft Ave, Ermita, Manila",
                 "capacity": 36,
-                "booked_count": 23,
                 "stock_level_ml": 1620,
                 "latitude": 14.5764,
                 "longitude": 120.9850,
@@ -99,7 +98,6 @@ class Command(BaseCommand):
                 # via the admin panel once verified.
                 "address": "",
                 "capacity": 12,
-                "booked_count": 9,
                 "stock_level_ml": 185,
                 "latitude": 14.5794,
                 "longitude": 121.0359,
@@ -110,7 +108,6 @@ class Command(BaseCommand):
                 "contact": "8866-7960",
                 "address": "San Lazaro Compound, Tayuman St., Santa Cruz, Manila",
                 "capacity": 24,
-                "booked_count": 7,
                 "stock_level_ml": 910,
                 "latitude": 14.6153,
                 "longitude": 120.9804,

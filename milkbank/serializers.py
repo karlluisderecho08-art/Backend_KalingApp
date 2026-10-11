@@ -4,6 +4,7 @@ from accounts.models import User
 from core.audit import log_action
 
 from .allocation import MAX_REQUEST_ML, MIN_REQUEST_ML
+from .capacity import day_summary
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 
 
@@ -34,6 +35,22 @@ class FacilitySerializer(serializers.ModelSerializer):
     seed_facilities.py, none of which pass either).
     """
 
+    # capacity is bookings PER DAY. These describe its calendar and are
+    # computed from the bookings themselves (capacity.py), never stored:
+    #   bookings_today      slots taken today
+    #   upcoming_bookings   [{date, count}] for the next 10 weekdays
+    #   fully_booked_dates  days with no slot left -- the mother's scheduler
+    #                       and the dashboard's "Propose New Date" grey these
+    #                       out, the same way they grey out unavailable dates
+    #   booked_count        = bookings_today. The old single running total
+    #                       this name used to mean is gone; kept so a
+    #                       dashboard build that still reads it shows today's
+    #                       figure rather than breaking.
+    bookings_today = serializers.SerializerMethodField()
+    upcoming_bookings = serializers.SerializerMethodField()
+    fully_booked_dates = serializers.SerializerMethodField()
+    booked_count = serializers.SerializerMethodField()
+
     staff_user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     new_staff_email = serializers.EmailField(write_only=True, required=False)
     new_staff_password = serializers.CharField(write_only=True, required=False, min_length=8)
@@ -44,10 +61,32 @@ class FacilitySerializer(serializers.ModelSerializer):
             "id", "name", "type", "contact", "address", "operating_hours",
             "donor_requirements", "recipient_requirements",
             "unavailable_donor_dates", "unavailable_recipient_dates",
-            "is_operational", "capacity", "booked_count", "stock_level_ml",
+            "is_operational", "capacity", "booked_count", "bookings_today",
+            "upcoming_bookings", "fully_booked_dates", "stock_level_ml",
             "latitude", "longitude",
             "staff_user_id", "new_staff_email", "new_staff_password",
         ]
+
+    def _calendar(self, obj):
+        # One query per facility for all three fields, cached on the instance
+        # for the duration of this serialization.
+        if not hasattr(obj, "_calendar_summary"):
+            obj._calendar_summary = day_summary(obj) if obj.pk else {
+                "bookings_today": 0, "upcoming_bookings": [], "fully_booked_dates": [],
+            }
+        return obj._calendar_summary
+
+    def get_bookings_today(self, obj) -> int:
+        return self._calendar(obj)["bookings_today"]
+
+    def get_booked_count(self, obj) -> int:
+        return self._calendar(obj)["bookings_today"]
+
+    def get_upcoming_bookings(self, obj) -> list:
+        return self._calendar(obj)["upcoming_bookings"]
+
+    def get_fully_booked_dates(self, obj) -> list:
+        return self._calendar(obj)["fully_booked_dates"]
 
     def validate(self, attrs):
         staff_user_id = attrs.get("staff_user_id")

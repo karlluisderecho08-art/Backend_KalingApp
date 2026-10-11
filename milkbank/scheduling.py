@@ -15,6 +15,7 @@ direct API call cannot offer a slot nobody could attend.
   - On today's date, a slot that has already started is out.
   - The slot she already asked for is out -- offering it back is not a
     counter-offer.
+  - A day with no booking slot left at her facility is out (capacity.py).
 
 "Today" and "now" are Manila time, the same clock the SLA uses
 (business_hours.BUSINESS_TZ): a facility's day does not roll over at
@@ -24,6 +25,7 @@ direct API call cannot offer a slot nobody could attend.
 from datetime import datetime
 
 from .business_hours import BUSINESS_TZ
+from .capacity import has_room
 from .models import MilkBankRequest
 
 # What the mother's scheduler offers, in this order. Labels, not parsed
@@ -66,6 +68,8 @@ def counter_offer_errors(req, offered_date, offered_time, now=None):
     elif offered_date == today and now.hour >= SLOTS[-1][1]:
         # The last slot has started, so nothing is left to offer today.
         errors["counter_offer_date"] = "There are no times left today."
+    elif not has_room(req.allocated_facility, offered_date, exclude_request_id=req.pk):
+        errors["counter_offer_date"] = "This date is fully booked."
 
     if "counter_offer_time" not in errors and "counter_offer_date" not in errors:
         if offered_date == today and hour <= now.hour:

@@ -11,8 +11,15 @@ from accounts.models import User
 from core.models import AuditLogEntry
 from notifications.models import NotificationItem
 
-from .allocation import LocationRequired, NoOperationalFacility, get_ranked_facilities, rank_facilities
+from .allocation import (
+    DayFullyBooked,
+    LocationRequired,
+    NoOperationalFacility,
+    get_ranked_facilities,
+    rank_facilities,
+)
 from .business_hours import BUSINESS_TZ, add_business_hours, is_business_day, philippine_holidays
+from .capacity import slots_taken
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .scheduling import counter_offer_errors
 from .transitions import ALLOWED_TRANSITIONS, InvalidTransition, apply_transition, sweep_expired_requests
@@ -32,9 +39,21 @@ def _first_weekday_after(days):
 
 
 COUNTER_OFFER_DATE = _first_weekday_after(14)
+# Two different future weekdays, for per-day capacity tests.
+BOOKED_DAY = _first_weekday_after(21)
+# Strictly later than BOOKED_DAY: _first_weekday_after(22) could roll onto the
+# same Monday when day 21 is a Saturday.
+OTHER_DAY = _first_weekday_after(
+    (date.fromisoformat(BOOKED_DAY) - datetime.now(BUSINESS_TZ).date()).days + 1
+)
 
 
-def make_facility(**overrides):
+def make_facility(slots_taken=None, **overrides):
+    """
+    `slots_taken` only attaches that day's load as an attribute, for the pure
+    rank_facilities() tests (the attribute get_ranked_facilities() normally
+    sets). It books nothing -- use fill_day() for real bookings on a day.
+    """
     defaults = dict(
         name="Test Facility",
         type=Facility.FacilityType.HOSPITAL_DEPOT,
@@ -42,13 +61,15 @@ def make_facility(**overrides):
         address="Somewhere",
         is_operational=True,
         capacity=10,
-        booked_count=0,
         stock_level_ml=1000,
         latitude=14.6,
         longitude=121.0,
     )
     defaults.update(overrides)
-    return Facility.objects.create(**defaults)
+    facility = Facility.objects.create(**defaults)
+    if slots_taken is not None:
+        facility.slots_taken = slots_taken
+    return facility
 
 
 def make_request(owner, facility, **overrides):
@@ -61,6 +82,18 @@ def make_request(owner, facility, **overrides):
     )
     defaults.update(overrides)
     return MilkBankRequest.objects.create(**defaults)
+
+
+_filler_count = 0
+
+
+def fill_day(facility, day, n, status=None):
+    """Books `n` slots on `day` at `facility`, each by a different mother."""
+    global _filler_count
+    for _ in range(n):
+        _filler_count += 1
+        owner = User.objects.create_user(email=f"filler{_filler_count}@example.com", password=None, is_active=True)  # no hash: fast
+        make_request(owner, facility, preferred_date=day, **({"current_sub_status": status} if status else {}))
 
 
 class TransitionsTests(APITestCase):
@@ -77,7 +110,7 @@ class TransitionsTests(APITestCase):
         self.staff = User.objects.create_user(
             email="staff@example.com", password="x", is_active=True, role=User.Role.FACILITY_STAFF,
         )
-        self.facility = make_facility(booked_count=1)
+        self.facility = make_facility()
         self.req = make_request(self.mother, self.facility)
 
     def test_every_status_has_an_entry_in_the_transition_table(self):
@@ -132,17 +165,25 @@ class TransitionsTests(APITestCase):
         with self.assertRaises(InvalidTransition):
             apply_transition(self.req, Status.SCHEDULED, self.staff, "accepted")
 
-    def test_terminal_status_decrements_facility_booked_count(self):
-        starting_count = self.facility.booked_count
+    def test_declining_frees_the_slot_on_her_day(self):
+        day = self.req.preferred_date
+        self.assertEqual(slots_taken(self.facility.pk, day), 1)
         apply_transition(self.req, Status.DECLINED, self.staff, "declined")
-        self.facility.refresh_from_db()
-        self.assertEqual(self.facility.booked_count, starting_count - 1)
+        self.assertEqual(slots_taken(self.facility.pk, day), 0)
 
-    def test_non_terminal_status_does_not_touch_booked_count(self):
-        starting_count = self.facility.booked_count
+    def test_accepting_keeps_her_slot(self):
+        day = self.req.preferred_date
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
-        self.facility.refresh_from_db()
-        self.assertEqual(self.facility.booked_count, starting_count)
+        self.assertEqual(slots_taken(self.facility.pk, day), 1)
+
+    def test_a_completed_appointment_still_counts_on_its_day(self):
+        # It happened on that day and used that day's slot; finishing it
+        # must not hand the day a spare one.
+        day = self.req.preferred_date
+        apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        apply_transition(self.req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        apply_transition(self.req, Status.COMPLETED, self.staff, "completed", amount_ml=100)
+        self.assertEqual(slots_taken(self.facility.pk, day), 1)
 
     def test_completing_a_donor_request_creates_a_donation_record(self):
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
@@ -301,7 +342,7 @@ class SweepExpiredRequestsTests(APITestCase):
         self.staff = User.objects.create_user(
             email="staff@example.com", password="x", is_active=True, role=User.Role.FACILITY_STAFF,
         )
-        self.facility = make_facility(booked_count=1)
+        self.facility = make_facility()
 
     def test_overdue_pending_request_expires(self):
         req = make_request(self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1))
@@ -353,13 +394,13 @@ class SweepExpiredRequestsTests(APITestCase):
         notification = NotificationItem.objects.filter(owner=self.mother).latest("id")
         self.assertIn("attendance wasn't confirmed", notification.description)
 
-    def test_sweep_releases_the_facility_slot(self):
-        # apply_transition's TERMINAL_STATUSES bookkeeping should fire for
-        # an SLA expiry exactly like it does for every other path to expired.
-        make_request(self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1))
+    def test_sweep_releases_the_slot_on_her_day(self):
+        # An SLA expiry frees the day's slot exactly like every other path
+        # to expired: an expired request simply stops being counted.
+        req = make_request(self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1))
+        self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 1)
         sweep_expired_requests()
-        self.facility.refresh_from_db()
-        self.assertEqual(self.facility.booked_count, 0)
+        self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 0)
 
     def test_sweep_is_actor_less_in_the_audit_log(self):
         # No human did this -- confirms apply_transition's actor=None path
@@ -378,7 +419,7 @@ class SweepExpiredEndpointTests(APITestCase):
 
     def setUp(self):
         self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
-        self.facility = make_facility(booked_count=1)
+        self.facility = make_facility()
         self.req = make_request(
             self.mother, self.facility, response_deadline=timezone.now() - timedelta(hours=1)
         )
@@ -444,11 +485,11 @@ class SmartAllocationRankingTests(APITestCase):
         that facility's booked ratio looked better on paper.
         """
         near_busy = make_facility(
-            name="Near but busy", capacity=30, booked_count=25, stock_level_ml=500,
+            name="Near but busy", capacity=30, slots_taken=25, stock_level_ml=500,
             latitude=14.60, longitude=121.00,
         )
         far_quiet = make_facility(
-            name="Far but quiet", capacity=40, booked_count=10, stock_level_ml=500,
+            name="Far but quiet", capacity=40, slots_taken=10, stock_level_ml=500,
             latitude=15.00, longitude=121.00,
         )
 
@@ -458,14 +499,14 @@ class SmartAllocationRankingTests(APITestCase):
         # And it is genuinely still able to take her -- 25 of 30 booked,
         # which is exactly why the capacity gate (not the ratio) is what
         # should be keeping anyone out.
-        self.assertLess(near_busy.booked_count, near_busy.capacity)
+        self.assertLess(near_busy.slots_taken, near_busy.capacity)
 
     def test_lower_booked_ratio_wins_regardless_of_raw_count(self):
         # Same coordinates, so distance ties and the ratio decides.
         # 50/100 (ratio 0.5) beats 8/10 (ratio 0.8): lower ratio wins, so
         # the 100-slot facility ranks first despite more raw bookings.
-        busy_small = make_facility(name="Busy Small", capacity=10, booked_count=8, latitude=14.6, longitude=121.0)
-        quiet_large = make_facility(name="Quiet Large", capacity=100, booked_count=50, latitude=14.6, longitude=121.0)
+        busy_small = make_facility(name="Busy Small", capacity=10, slots_taken=8, latitude=14.6, longitude=121.0)
+        quiet_large = make_facility(name="Quiet Large", capacity=100, slots_taken=50, latitude=14.6, longitude=121.0)
 
         ranked = rank_facilities([busy_small, quiet_large], "DONOR", mother_lat=14.6, mother_lon=121.0)
 
@@ -473,9 +514,9 @@ class SmartAllocationRankingTests(APITestCase):
 
     def test_donor_prefers_lower_stock_facility_on_distance_and_ratio_tie(self):
         # Same coordinates and same ratio, so stock direction decides.
-        low_stock = make_facility(name="Low Stock", capacity=10, booked_count=5, stock_level_ml=100,
+        low_stock = make_facility(name="Low Stock", capacity=10, slots_taken=5, stock_level_ml=100,
                                    latitude=14.6, longitude=121.0)
-        high_stock = make_facility(name="High Stock", capacity=10, booked_count=5, stock_level_ml=900,
+        high_stock = make_facility(name="High Stock", capacity=10, slots_taken=5, stock_level_ml=900,
                                     latitude=14.6, longitude=121.0)
 
         ranked = rank_facilities([high_stock, low_stock], "DONOR", mother_lat=14.6, mother_lon=121.0)
@@ -484,9 +525,9 @@ class SmartAllocationRankingTests(APITestCase):
 
     def test_recipient_prefers_higher_stock_facility_on_distance_and_ratio_tie(self):
         # Same coordinates and same ratio, so stock direction decides.
-        low_stock = make_facility(name="Low Stock", capacity=10, booked_count=5, stock_level_ml=100,
+        low_stock = make_facility(name="Low Stock", capacity=10, slots_taken=5, stock_level_ml=100,
                                    latitude=14.6, longitude=121.0)
-        high_stock = make_facility(name="High Stock", capacity=10, booked_count=5, stock_level_ml=900,
+        high_stock = make_facility(name="High Stock", capacity=10, slots_taken=5, stock_level_ml=900,
                                     latitude=14.6, longitude=121.0)
 
         ranked = rank_facilities([high_stock, low_stock], "RECIPIENT", mother_lat=14.6, mother_lon=121.0)
@@ -494,9 +535,9 @@ class SmartAllocationRankingTests(APITestCase):
         self.assertEqual(ranked[0], high_stock)
 
     def test_nearest_wins_when_ratio_and_stock_are_equal(self):
-        near = make_facility(name="Near", capacity=10, booked_count=5, stock_level_ml=500,
+        near = make_facility(name="Near", capacity=10, slots_taken=5, stock_level_ml=500,
                               latitude=14.60, longitude=121.00)
-        far = make_facility(name="Far", capacity=10, booked_count=5, stock_level_ml=500,
+        far = make_facility(name="Far", capacity=10, slots_taken=5, stock_level_ml=500,
                              latitude=16.00, longitude=121.00)
 
         ranked = rank_facilities([far, near], "DONOR", mother_lat=14.60, mother_lon=121.00)
@@ -504,7 +545,7 @@ class SmartAllocationRankingTests(APITestCase):
         self.assertEqual(ranked[0], near)
 
     def test_ranked_facilities_carry_the_computed_ratio_and_distance(self):
-        facility = make_facility(capacity=10, booked_count=5, latitude=14.6, longitude=121.0)
+        facility = make_facility(capacity=10, slots_taken=5, latitude=14.6, longitude=121.0)
         ranked = rank_facilities([facility], "DONOR", mother_lat=14.6, mother_lon=121.0)
         self.assertAlmostEqual(ranked[0].booked_ratio, 0.5)
         self.assertAlmostEqual(ranked[0].distance_km, 0.0, places=3)
@@ -550,20 +591,37 @@ class GetRankedFacilitiesTests(APITestCase):
 
         self.assertIn(low, ranked)
 
-    def test_a_facility_with_no_room_left_is_excluded(self):
-        # The gate that was missing entirely: capacity__gt=0 only asked
-        # whether a capacity was configured, never whether any of it was
-        # left. This matters far more now that distance leads the sort --
-        # a full facility that happens to be nearest would rank FIRST.
+    def test_a_facility_whose_day_is_full_is_excluded_for_that_day(self):
+        # Room is per day: capacity 10 means 10 bookings on each day.
         self.user.latitude, self.user.longitude = 14.6, 121.0
         self.user.save()
-        full = make_facility(name="Full", capacity=10, booked_count=10, latitude=14.6, longitude=121.0)
-        has_room = make_facility(name="Has room", capacity=10, booked_count=9, latitude=14.6, longitude=121.0)
+        full = make_facility(name="Full", capacity=10, latitude=14.6, longitude=121.0)
+        has_room = make_facility(name="Has room", capacity=10, latitude=14.6, longitude=121.0)
+        fill_day(full, BOOKED_DAY, 10)
+        fill_day(has_room, BOOKED_DAY, 9)
 
-        ranked = get_ranked_facilities(self.user, "DONOR")
+        ranked = get_ranked_facilities(self.user, "DONOR", day=date.fromisoformat(BOOKED_DAY))
 
         self.assertNotIn(full, ranked)
         self.assertIn(has_room, ranked)
+
+    def test_a_full_day_does_not_close_the_facility_on_other_days(self):
+        self.user.latitude, self.user.longitude = 14.6, 121.0
+        self.user.save()
+        facility = make_facility(name="Busy on one day", capacity=2, latitude=14.6, longitude=121.0)
+        fill_day(facility, BOOKED_DAY, 2)
+
+        self.assertIn(facility, get_ranked_facilities(self.user, "DONOR", day=date.fromisoformat(OTHER_DAY)))
+
+    def test_declined_and_expired_bookings_do_not_fill_a_day(self):
+        self.user.latitude, self.user.longitude = 14.6, 121.0
+        self.user.save()
+        facility = make_facility(capacity=2, latitude=14.6, longitude=121.0)
+        fill_day(facility, BOOKED_DAY, 1, status=Status.DECLINED)
+        fill_day(facility, BOOKED_DAY, 1, status=Status.EXPIRED)
+        fill_day(facility, BOOKED_DAY, 1)  # pending: holds its slot
+
+        self.assertIn(facility, get_ranked_facilities(self.user, "DONOR", day=date.fromisoformat(BOOKED_DAY)))
 
     def test_a_full_facility_is_excluded_even_when_it_is_the_nearest(self):
         # Distance-first ordering means "nearest" is no longer a safe
@@ -571,45 +629,68 @@ class GetRankedFacilitiesTests(APITestCase):
         # would be ranked first and booked into anyway.
         self.user.latitude, self.user.longitude = 14.6, 121.0
         self.user.save()
-        full_and_nearest = make_facility(
-            name="Full and nearest", capacity=10, booked_count=10, latitude=14.6, longitude=121.0,
-        )
-        farther_with_room = make_facility(
-            name="Farther with room", capacity=10, booked_count=2, latitude=15.6, longitude=121.0,
-        )
+        full_and_nearest = make_facility(name="Full and nearest", capacity=10, latitude=14.6, longitude=121.0)
+        farther_with_room = make_facility(name="Farther with room", capacity=10, latitude=15.6, longitude=121.0)
+        fill_day(full_and_nearest, BOOKED_DAY, 10)
+        fill_day(farther_with_room, BOOKED_DAY, 2)
 
-        ranked = get_ranked_facilities(self.user, "DONOR")
+        ranked = get_ranked_facilities(self.user, "DONOR", day=date.fromisoformat(BOOKED_DAY))
 
         self.assertNotIn(full_and_nearest, ranked)
         self.assertEqual(ranked[0], farther_with_room)
 
-    def test_raises_no_operational_facility_when_every_facility_is_full(self):
+    def test_raises_day_fully_booked_when_every_facility_is_full_that_day(self):
         self.user.latitude, self.user.longitude = 14.6, 121.0
         self.user.save()
-        make_facility(name="Full A", capacity=5, booked_count=5, latitude=14.6, longitude=121.0)
-        make_facility(name="Full B", capacity=8, booked_count=8, latitude=14.6, longitude=121.0)
+        a = make_facility(name="Full A", capacity=5, latitude=14.6, longitude=121.0)
+        b = make_facility(name="Full B", capacity=8, latitude=14.6, longitude=121.0)
+        fill_day(a, BOOKED_DAY, 5)
+        fill_day(b, BOOKED_DAY, 8)
 
-        with self.assertRaises(NoOperationalFacility):
-            get_ranked_facilities(self.user, "DONOR")
+        with self.assertRaises(DayFullyBooked):
+            get_ranked_facilities(self.user, "DONOR", day=date.fromisoformat(BOOKED_DAY))
 
-    def test_a_booking_is_never_created_against_a_full_facility(self):
-        # End to end through the real endpoint rather than the ranking
-        # function: MilkBankRequestCreateView assigns ranked[0]
-        # unconditionally and then increments booked_count, so if a full
-        # facility could ever reach ranked[0] the count would run past
-        # capacity with nothing to stop it.
+    def test_the_date_less_preview_still_offers_a_facility_full_on_some_day(self):
+        # The preview runs before she picks a date; her scheduler then greys
+        # out that facility's full days instead.
         self.user.latitude, self.user.longitude = 14.6, 121.0
         self.user.save()
-        full = make_facility(name="Full", capacity=3, booked_count=3, latitude=14.6, longitude=121.0)
+        facility = make_facility(capacity=1, latitude=14.6, longitude=121.0)
+        fill_day(facility, BOOKED_DAY, 1)
+
+        self.assertIn(facility, get_ranked_facilities(self.user, "DONOR"))
+
+    def test_a_booking_is_never_created_on_a_full_day(self):
+        # End to end through the real endpoint: the day is full, so she is
+        # told to pick another date, and nothing is added to it.
+        self.user.latitude, self.user.longitude = 14.6, 121.0
+        self.user.save()
+        full = make_facility(name="Full", capacity=3, latitude=14.6, longitude=121.0)
+        fill_day(full, BOOKED_DAY, 3)
 
         self.client.force_authenticate(user=self.user)
         response = self.client.post("/milkbank/requests/", {
-            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "DONOR", "preferred_date": BOOKED_DAY, "preferred_time": "10:00 AM",
         })
 
-        self.assertEqual(response.status_code, 404)
-        full.refresh_from_db()
-        self.assertEqual(full.booked_count, 3)  # never pushed past capacity
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("fully booked", response.data["detail"])
+        self.assertEqual(slots_taken(full.pk, BOOKED_DAY), 3)  # never pushed past capacity
+
+    def test_the_same_mother_can_book_another_day_at_that_facility(self):
+        self.user.latitude, self.user.longitude = 14.6, 121.0
+        self.user.save()
+        full = make_facility(name="Full", capacity=3, latitude=14.6, longitude=121.0)
+        fill_day(full, BOOKED_DAY, 3)
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.post("/milkbank/requests/", {
+            "request_type": "DONOR", "preferred_date": OTHER_DAY, "preferred_time": "10:00 AM",
+        })
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(slots_taken(full.pk, OTHER_DAY), 1)
+        self.assertEqual(slots_taken(full.pk, BOOKED_DAY), 3)
 
 
 class BookingEndpointPermissionTests(APITestCase):
@@ -760,11 +841,7 @@ class ConfirmCompletionEndpointTests(APITestCase):
 
     def setUp(self):
         self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
-        # booked_count=1: apply_transition decrements it on every COMPLETED
-        # transition (a terminal status freeing the slot) -- 0 here would
-        # trip the "never negative" CHECK constraint the moment a test
-        # actually completes a request, same as TransitionsTests.setUp.
-        self.facility = make_facility(stock_level_ml=100, booked_count=1)
+        self.facility = make_facility(stock_level_ml=100)
         self.staff = User.objects.create_user(
             email="staff@example.com", password="x", is_active=True,
             role=User.Role.FACILITY_STAFF, facility=self.facility,
@@ -1098,11 +1175,7 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
 
     def setUp(self):
         self.mother = User.objects.create_user(email="co-mother@example.com", password="x", is_active=True)
-        # booked_count=1, not the helper's 0 default: reaching a terminal
-        # status decrements it (see apply_transition), and booked_count is
-        # a PositiveIntegerField -- so the declined-request test below would
-        # fail on the constraint rather than on the behaviour it is testing.
-        self.facility = make_facility(name="St. Luke's", booked_count=1)
+        self.facility = make_facility(name="St. Luke's")
         self.staff = User.objects.create_user(
             email="co-staff@example.com", password="x", is_active=True,
             role=User.Role.FACILITY_STAFF, facility=self.facility,
@@ -1165,13 +1238,13 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         # the mother -- and the slot she already holds must not be released
         # while she decides.
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
-        booked_before = Facility.objects.get(pk=self.facility.pk).booked_count
+        self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 1)
 
         self._propose(req)
 
         req.refresh_from_db()
         self.assertIsNone(req.response_deadline)
-        self.assertEqual(Facility.objects.get(pk=self.facility.pk).booked_count, booked_before)
+        self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 1)
 
     def test_she_keeps_her_questionnaire_through_a_rejected_counter_offer(self):
         # The whole reason this replaced a decline: a declined request made
@@ -1336,7 +1409,7 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         self.assertEqual(req.current_sub_status, Status.DECLINED)
 
     def test_staff_from_another_facility_cannot_counter_offer(self):
-        other_facility = make_facility(name="PGH", booked_count=1)
+        other_facility = make_facility(name="PGH")
         outsider = User.objects.create_user(
             email="outsider@example.com", password="x", is_active=True,
             role=User.Role.FACILITY_STAFF, facility=other_facility,
@@ -1368,7 +1441,7 @@ class CounterOfferSlotRulesTests(APITestCase):
     def setUp(self):
         self.mother = User.objects.create_user(email="slot-mother@example.com", password="x", is_active=True)
         self.facility = make_facility(
-            name="St. Luke's", booked_count=1,
+            name="St. Luke's",
             unavailable_donor_dates=["2026-10-14"], unavailable_recipient_dates=["2026-10-15"],
         )
         self.staff = User.objects.create_user(
@@ -1482,7 +1555,7 @@ class CounterOfferSlotRulesTests(APITestCase):
         self.assertEqual(self.req.current_sub_status, Status.PENDING)
         self.assertIsNone(self.req.counter_offer_date)
         self.assertEqual(self.req.counter_offer_time, "")
-        self.assertEqual(Facility.objects.get(pk=self.facility.pk).booked_count, 1)
+        self.assertEqual(slots_taken(self.facility.pk, self.req.preferred_date), 1)
 
     def test_a_weekend_is_refused_through_the_endpoint(self):
         day = datetime.now(BUSINESS_TZ).date() + timedelta(days=14)
@@ -1609,11 +1682,7 @@ class MyLatestDonorQuestionnaireEndpointTests(APITestCase):
     def setUp(self):
         self.mother = User.objects.create_user(email="donor@example.com", password="x", is_active=True)
         self.other_mother = User.objects.create_user(email="other@example.com", password="x", is_active=True)
-        # booked_count=1: apply_transition decrements it on every DECLINED
-        # transition (a terminal status freeing the slot) -- 0 here would
-        # trip the "never negative" CHECK constraint the moment a test
-        # actually declines a request, same as BookingStageIndexTests.setUp.
-        self.facility = make_facility(name="St. Luke's", booked_count=1)
+        self.facility = make_facility(name="St. Luke's")
         self.answers = {
             "good_general_health": "true",
             "lactating_with_excess_supply": "true",
@@ -1891,7 +1960,7 @@ class DeclineFromAPhaseTests(APITestCase):
     """
 
     def setUp(self):
-        self.facility = make_facility(booked_count=1)
+        self.facility = make_facility()
         self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
         self.staff = User.objects.create_user(
             email="staff@example.com", password="x", is_active=True,
@@ -1927,9 +1996,9 @@ class DeclineFromAPhaseTests(APITestCase):
 
     def test_the_facility_slot_is_released(self):
         req = self._scheduled_at("Breastmilk Analysis")
+        self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 1)
         self._decline(req, reason="Failed breastmilk analysis")
-        self.facility.refresh_from_db()
-        self.assertEqual(self.facility.booked_count, 0)
+        self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 0)
 
     def test_a_declined_booking_cannot_be_advanced_or_completed(self):
         req = self._scheduled_at("Breastmilk Analysis")
@@ -1952,8 +2021,6 @@ class DeclineFromAPhaseTests(APITestCase):
             (MilkBankRequest.RequestType.RECIPIENT, "Status"),
             (MilkBankRequest.RequestType.RECIPIENT, "Results"),
         ]
-        # One slot per booking about to be declined -- each decline releases one.
-        Facility.objects.filter(pk=self.facility.pk).update(booked_count=len(cases))
         for request_type, stage in cases:
             with self.subTest(request_type=request_type, stage=stage):
                 req = self._scheduled_at(stage, request_type)
@@ -1989,7 +2056,7 @@ class DeclineFromAPhaseTests(APITestCase):
                 self.assertEqual(req.current_sub_status, status)
 
     def test_staff_at_another_facility_cannot_decline_it(self):
-        other = make_facility(name="Other", booked_count=1)
+        other = make_facility(name="Other")
         outsider = User.objects.create_user(
             email="outsider@example.com", password="x", is_active=True,
             role=User.Role.FACILITY_STAFF, facility=other,
@@ -2095,7 +2162,7 @@ class DeleteFacilityTests(APITestCase):
         self.assertTrue(AuditLogEntry.objects.filter(action="facility.deleted", actor=self.admin).exists())
 
     def test_a_facility_with_bookings_is_refused_with_a_reason_not_a_server_error(self):
-        facility = make_facility(name="Busy Milk Bank", booked_count=1)
+        facility = make_facility(name="Busy Milk Bank")
         make_request(self.mother, facility)
 
         response = self.client.delete(f"/milkbank/facilities/{facility.id}/")

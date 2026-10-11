@@ -20,9 +20,6 @@ Status = MilkBankRequest.Status
 # nobody is waiting on anyone, so the clock is cleared instead.
 STATUSES_WITH_SLA_CLOCK = {Status.PENDING, Status.AWAITING_ATTENDANCE}
 
-# A request in any of these statuses no longer occupies a booking slot.
-TERMINAL_STATUSES = {Status.DECLINED, Status.EXPIRED, Status.COMPLETED}
-
 # What to tell the mother when her booking reaches each status. This is
 # the server-side replacement for the Kotlin app hand-writing a
 # notification at each call site (e.g. finalizeAppointment()) -- one
@@ -151,12 +148,9 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
     if message:
         notify(req.owner, f"Milk Bank Request: {req.get_current_sub_status_display()}", message, NotificationItem.Category.BOOKINGS)
 
-    # Keep Facility.booked_count -- the number Smart Allocation's ratio
-    # tier depends on -- in sync with reality as requests close out.
-    # F() does the +1/-1 as one atomic UPDATE in the database, so two
-    # requests finishing at the same moment can't race and undercount.
-    if new_status in TERMINAL_STATUSES:
-        Facility.objects.filter(pk=req.allocated_facility_id).update(booked_count=F("booked_count") - 1)
+    # No slot bookkeeping here any more: a day's bookings are counted from
+    # the requests themselves (capacity.py), so declining or expiring a
+    # request frees its day's slot simply by changing its status.
 
     if new_status == Status.COMPLETED:
         TransactionRecord.objects.create(
