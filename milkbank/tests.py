@@ -2070,9 +2070,10 @@ class DeclineFromAPhaseTests(APITestCase):
     def test_the_mother_is_notified(self):
         req = self._scheduled_at("Breastmilk Analysis")
         self._decline(req, reason="Failed breastmilk analysis")
-        self.assertTrue(
-            NotificationItem.objects.filter(owner=self.mother, description__icontains="declined").exists()
-        )
+        # Titled as a decline; the body is her plain explanation of the reason
+        # (milkbank/results.py), not the generic "The facility declined your request."
+        notice = NotificationItem.objects.get(owner=self.mother, title__icontains="Declined")
+        self.assertIn("Milk sample not accepted", notice.description)
 
     def test_the_reason_is_in_the_api_response_for_the_dashboard(self):
         req = self._scheduled_at("Breastmilk Analysis")

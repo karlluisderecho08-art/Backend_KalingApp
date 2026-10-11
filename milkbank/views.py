@@ -29,6 +29,7 @@ from .business_hours import add_business_hours
 from .capacity import has_room
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
+from .results import decline_notification
 from .scheduling import counter_offer_errors
 from .serializers import (
     AllocationRequestSerializer,
@@ -583,8 +584,9 @@ class StaffDeclineView(generics.GenericAPIView):
     status (awaiting attendance, counter-offered, already closed) is
     refused by the transition table.
 
-    `reason` is the short label the admin statistics group by;
-    `staff_message` is what the mother reads.
+    `reason` is the short label the admin statistics group by. The mother is
+    shown a plain explanation of that reason (milkbank/results.py);
+    `staff_message` reaches her only where the reason is not health-related.
     """
 
     queryset = MilkBankRequest.objects.all()
@@ -596,7 +598,15 @@ class StaffDeclineView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            apply_transition(req, Status.DECLINED, request.user, "declined")
+            # Her notification says what the app shows her: a plain explanation
+            # of the reason, never the staff's technical notes for a
+            # health-related decline (see milkbank/results.py).
+            apply_transition(
+                req, Status.DECLINED, request.user, "declined",
+                message_override=decline_notification(
+                    serializer.validated_data["reason"], serializer.validated_data["staff_message"],
+                ),
+            )
         except InvalidTransition as exc:
             return Response({"detail": str(exc)}, status=400)
         update_fields = ["decline_reason"]

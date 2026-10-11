@@ -5,6 +5,7 @@ from core.audit import log_action
 
 from .allocation import MAX_REQUEST_ML, MIN_REQUEST_ML
 from .capacity import day_summary
+from .results import mother_result
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 
 
@@ -175,6 +176,10 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
     # to also hand back to the owner themselves, it's their own info.
     owner_email = serializers.EmailField(source="owner.email", read_only=True)
     owner_name = serializers.CharField(source="owner.mom_name", read_only=True)
+    # How the request ended, in plain words for the mother -- null while it is
+    # still in progress. See milkbank/results.py for why her app shows this
+    # instead of staff_message.
+    result = serializers.SerializerMethodField()
 
     class Meta:
         model = MilkBankRequest
@@ -187,7 +192,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "representative_birthday", "representative_contact_number",
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract",
-            "amount_ml", "completed_at", "requested_ml",
+            "amount_ml", "completed_at", "requested_ml", "result",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
@@ -198,6 +203,9 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract", "requested_ml",
         ]
+
+    def get_result(self, obj):
+        return mother_result(obj)
 
 
 class MilkBankRequestCreateSerializer(serializers.Serializer):
