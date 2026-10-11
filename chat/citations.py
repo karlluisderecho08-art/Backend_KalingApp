@@ -146,3 +146,68 @@ def verify_citations(reply, passages):
     # Taking a line out leaves its blank neighbours behind.
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned, removed
+
+
+def cited_articles(reply, articles):
+    """
+    The Knowledge Hub articles a reply's "Source:" line(s) name, in the order
+    they are named, each at most once -- so the app can make the citation a
+    link that opens the article.
+
+    `articles` is every article that could be linked (objects with id, title
+    and content). Matching uses the same reading of a citation line as
+    verify_citations() above, against articles instead of retrieved passages:
+
+      - the article's whole title appears in the cited text, or
+      - the citation is a shortened title (2+ words, all from one title), or
+      - the citation echoes a phrase from inside the article -- the seeded
+        articles end with their own credit line ("Source: UNICEF India, ..."),
+        which Kali sometimes repeats instead of the title.
+
+    A literature source (not an article) matches nothing and stays plain
+    text; so does a citation that fits more than one article equally well,
+    rather than guessing which to open. Read-only: it never changes the reply.
+    """
+    if not reply:
+        return []
+    indexed = [
+        (article, set(_tokens(article.title)), " ".join(_tokens(article.content or "")))
+        for article in articles
+    ]
+
+    found = []
+    for match in _CITATION_LINE.finditer(reply):
+        for segment in _cited_segments(match.group("body")):
+            article = _article_for_segment(segment, indexed)
+            if article is not None and article not in found:
+                found.append(article)
+    return found
+
+
+def _article_for_segment(segment, indexed):
+    segment_tokens = _tokens(segment)
+    if not segment_tokens:
+        return None
+    segment_set = set(segment_tokens)
+
+    # Whole title present -- the longest such title wins, so "Breastfeeding
+    # Basics" cannot steal a citation of "Breastfeeding Basics for Twins".
+    whole = [(len(title), article) for article, title, _ in indexed if title and title <= segment_set]
+    if whole:
+        best = max(size for size, _ in whole)
+        winners = [article for size, article in whole if size == best]
+        return winners[0] if len(winners) == 1 else None
+
+    if len(segment_tokens) >= 2:
+        shortened = [article for article, title, _ in indexed if segment_set <= title]
+        if len(shortened) == 1:
+            return shortened[0]
+        if len(shortened) > 1:
+            return None
+
+    joined = " ".join(segment_tokens)
+    if len(segment_tokens) >= _MIN_PASSAGE_QUOTE_WORDS and len(joined) >= _MIN_PASSAGE_QUOTE_CHARS:
+        echoed = [article for article, _, content in indexed if joined in content]
+        if len(echoed) == 1:
+            return echoed[0]
+    return None

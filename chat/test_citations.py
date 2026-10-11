@@ -22,7 +22,7 @@ from rest_framework.test import APITestCase
 from accounts.models import User
 from core.models import AuditLogEntry
 
-from .citations import verify_citations
+from .citations import cited_articles, verify_citations
 from .gemini_client import get_ai_response
 from .models import ChatMessage, ChatSession, KnowledgeChunk
 
@@ -308,3 +308,114 @@ class CitationsInTheLiveReplyPathTests(APITestCase):
         stored = ChatMessage.objects.filter(session__owner=user, is_user=False).get()
         self.assertEqual(stored.text, BODY)
         self.assertEqual(ChatSession.objects.get(owner=user).prompt_count, 1)
+
+
+
+# --- Linking a citation to the article it names ---------------------------
+
+
+def article(article_id, title, content="Some article body."):
+    return SimpleNamespace(id=article_id, title=title, content=content)
+
+
+class CitedArticlesTests(SimpleTestCase):
+    """
+    cited_articles() -- which Knowledge Hub article(s) a reply's "Source:"
+    line names, so the app can make the citation a link that opens it.
+    """
+
+    def setUp(self):
+        self.nutrition = article(1, NUTRITION)
+        self.latch = article(2, LATCH)
+        self.why = article(3, WHY, content=WHY_PASSAGE_TEXT)
+        self.articles = [self.nutrition, self.latch, self.why]
+
+    def cited(self, line):
+        return cited_articles(reply_citing(line), self.articles)
+
+    def test_the_format_the_grounding_rules_ask_for(self):
+        self.assertEqual(self.cited(f'Source: "{NUTRITION}" in the Knowledge Hub'), [self.nutrition])
+
+    def test_curly_quotes_and_markdown_emphasis(self):
+        self.assertEqual(self.cited(f"*Source: “{LATCH}” in the Knowledge Hub*"), [self.latch])
+
+    def test_a_shortened_title(self):
+        self.assertEqual(self.cited('Source: "Positioning and Latch"'), [self.latch])
+
+    def test_two_articles_on_one_line_in_the_order_named(self):
+        self.assertEqual(
+            self.cited(f'Sources: "{LATCH}" and "{NUTRITION}" in the Knowledge Hub'),
+            [self.latch, self.nutrition],
+        )
+
+    def test_echoing_the_articles_own_credit_line(self):
+        self.assertEqual(
+            self.cited('Source: UNICEF, "Why breastfeeding is critical for babies."'),
+            [self.why],
+        )
+
+    def test_a_literature_source_links_nowhere(self):
+        self.assertEqual(self.cited(f"Source: {DONOR_REFERENCE}"), [])
+
+    def test_an_article_that_no_longer_exists_links_nowhere(self):
+        self.assertEqual(cited_articles(reply_citing(f'Source: "{LATCH}"'), [self.nutrition]), [])
+
+    def test_no_citation_line_means_no_links(self):
+        self.assertEqual(cited_articles(BODY, self.articles), [])
+        # "source" in running text is not a citation
+        self.assertEqual(cited_articles("Milk is the best source of nutrition.", self.articles), [])
+
+    def test_the_same_article_twice_is_listed_once(self):
+        reply = f'{BODY}\n\nSource: "{NUTRITION}"\nSource: "{NUTRITION}" in the Knowledge Hub'
+        self.assertEqual(cited_articles(reply, self.articles), [self.nutrition])
+
+    def test_an_ambiguous_shortened_title_is_not_guessed(self):
+        twins = article(4, "Breastfeeding Twins: Positioning and Latch")
+        self.assertEqual(
+            cited_articles(reply_citing('Source: "Positioning and Latch"'), self.articles + [twins]), []
+        )
+
+    def test_the_longer_whole_title_wins_over_a_shorter_one_inside_it(self):
+        basics = article(5, "Breastfeeding Basics")
+        twins = article(6, "Breastfeeding Basics for Twins")
+        self.assertEqual(
+            cited_articles(reply_citing('Source: "Breastfeeding Basics for Twins"'), [basics, twins]), [twins]
+        )
+
+
+class ChatHistoryCarriesSourceLinksTests(APITestCase):
+    """GET /chat/history/ hands the app each Kali reply's linked articles."""
+
+    def setUp(self):
+        from articles.models import Article
+
+        self.user = User.objects.create_user(email="links@example.com", password="x", is_active=True)
+        self.client.force_authenticate(user=self.user)
+        self.article = Article.objects.create(
+            title=NUTRITION, category=Article.Category.NUTRITION, read_time="3 min read",
+            teaser="t", content="Eat well.", author="A", date="2026",
+        )
+        session = ChatSession.objects.create(owner=self.user)
+        ChatMessage.objects.create(session=session, text="What should I eat?", is_user=True)
+        ChatMessage.objects.create(
+            session=session, is_user=False, text=reply_citing(f'Source: "{NUTRITION}" in the Knowledge Hub'),
+        )
+        ChatMessage.objects.create(session=session, is_user=False, text="Hello! How can I help?")
+
+    def test_a_cited_article_comes_back_as_a_link_and_other_messages_have_none(self):
+        data = self.client.get("/chat/history/").data
+        results = data["results"] if isinstance(data, dict) else data
+
+        self.assertEqual(results[0]["sources"], [])  # her own message
+        self.assertEqual(results[1]["sources"], [{"article_id": self.article.id, "title": NUTRITION}])
+        self.assertEqual(results[2]["sources"], [])  # no citation
+
+    def test_the_articles_are_read_once_for_the_whole_history(self):
+        # 3 messages, but the article list is loaded once for the response.
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as queries:
+            self.client.get("/chat/history/")
+        article_queries = [q for q in queries.captured_queries if "articles_article" in q["sql"]]
+        self.assertEqual(len(article_queries), 1)
