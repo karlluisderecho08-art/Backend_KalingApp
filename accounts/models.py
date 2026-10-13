@@ -158,6 +158,15 @@ class User(AbstractUser):
     password_reset_sent_at = models.DateTimeField(null=True, blank=True)
     password_reset_attempts = models.PositiveSmallIntegerField(default=0)
 
+    # --- Sign-in lockout (see accounts/lockout.py for the rule) ---
+    # Wrong passwords in a row, when the last one was, and until when the
+    # account refuses every sign-in. Lives on the account (not the IP) so
+    # moving to another network doesn't hand a guesser fresh attempts, and
+    # so the admin dashboard can show who is locked out right now.
+    failed_login_attempts = models.PositiveSmallIntegerField(default=0)
+    last_failed_login_at = models.DateTimeField(null=True, blank=True)
+    locked_until = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return self.email
 

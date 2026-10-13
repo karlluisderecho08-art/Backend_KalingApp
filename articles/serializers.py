@@ -108,6 +108,14 @@ class ResourceLinkSerializer(serializers.ModelSerializer):
         model = ResourceLink
         fields = ["id", "title", "description", "url", "type"]
 
+    def validate_url(self, value):
+        # The app opens this in whatever handles the link (a browser, the
+        # YouTube app). Only web links belong here -- Django's URLField also
+        # lets ftp:// through, which nothing on a phone would play.
+        if not value.lower().startswith(("http://", "https://")):
+            raise serializers.ValidationError("Enter a web link starting with http:// or https://")
+        return value
+
 
 class ReportCommentSerializer(serializers.Serializer):
     reason = serializers.ChoiceField(choices=ArticleComment.ReportReason.choices)
@@ -116,3 +124,9 @@ class ReportCommentSerializer(serializers.Serializer):
 class ResolveCommentSerializer(serializers.Serializer):
     ACTION_CHOICES = [("remove", "remove"), ("no_violation", "no_violation")]
     action = serializers.ChoiceField(choices=ACTION_CHOICES)
+
+
+class SavedArticleIdsSerializer(serializers.Serializer):
+    """Response shape of the saved-articles endpoints (documentation only)."""
+
+    article_ids = serializers.ListField(child=serializers.IntegerField())

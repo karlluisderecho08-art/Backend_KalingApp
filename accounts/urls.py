@@ -4,6 +4,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     AdminUserDeleteView,
     AdminUserListView,
+    AdminUserUnlockView,
     CheckInView,
     DemoLoginView,
     ForgotPasswordView,
@@ -43,4 +44,5 @@ urlpatterns = [
     # (see AdminUserListView/AdminUserDeleteView's own docstrings).
     path("admin/users/", AdminUserListView.as_view(), name="admin-user-list"),
     path("admin/users/<int:pk>/", AdminUserDeleteView.as_view(), name="admin-user-delete"),
+    path("admin/users/<int:pk>/unlock/", AdminUserUnlockView.as_view(), name="admin-user-unlock"),
 ]

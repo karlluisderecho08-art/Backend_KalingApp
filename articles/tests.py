@@ -9,7 +9,7 @@ from core.models import AuditLogEntry
 from notifications.models import NotificationItem
 
 from .formatting import normalize_markers
-from .models import Article, ArticleComment, CommentReport
+from .models import Article, ArticleComment, CommentReport, ResourceLink, SavedArticle
 
 
 def make_article(**overrides):
@@ -270,3 +270,194 @@ class CommentAutoRemovalDefaultTests(SimpleTestCase):
         from django.conf import settings
 
         self.assertEqual(settings.COMMENT_AUTO_REMOVE_REPORTS, 30)
+
+
+class SavedArticleTests(APITestCase):
+    """
+    Bookmarks used to live only in the app's memory, so signing out lost
+    them. They are stored per account on the server instead.
+    """
+
+    def setUp(self):
+        self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
+        self.other = User.objects.create_user(email="other@example.com", password="x", is_active=True)
+        self.first = make_article(title="First")
+        self.second = make_article(title="Second")
+
+    def save_article(self, article):
+        return self.client.put(f"/articles/{article.pk}/save/")
+
+    def test_a_saved_article_is_still_there_after_signing_in_again(self):
+        self.client.force_authenticate(self.mother)
+        self.save_article(self.first)
+
+        self.client.force_authenticate(None)
+        self.client.force_authenticate(User.objects.get(email="mother@example.com"))
+        response = self.client.get("/articles/saved/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["article_ids"], [self.first.pk])
+
+    def test_saving_twice_keeps_one_bookmark(self):
+        self.client.force_authenticate(self.mother)
+        self.save_article(self.first)
+        response = self.save_article(self.first)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["article_ids"], [self.first.pk])
+        self.assertEqual(SavedArticle.objects.count(), 1)
+
+    def test_newest_save_comes_first(self):
+        self.client.force_authenticate(self.mother)
+        self.save_article(self.first)
+        self.save_article(self.second)
+
+        self.assertEqual(
+            self.client.get("/articles/saved/").data["article_ids"], [self.second.pk, self.first.pk]
+        )
+
+    def test_unsaving_removes_it_and_answers_with_what_is_left(self):
+        self.client.force_authenticate(self.mother)
+        self.save_article(self.first)
+        self.save_article(self.second)
+
+        response = self.client.delete(f"/articles/{self.first.pk}/save/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["article_ids"], [self.second.pk])
+
+    def test_unsaving_something_never_saved_is_fine(self):
+        self.client.force_authenticate(self.mother)
+
+        self.assertEqual(self.client.delete(f"/articles/{self.first.pk}/save/").status_code, 200)
+
+    def test_one_mother_never_sees_anothers_bookmarks(self):
+        self.client.force_authenticate(self.mother)
+        self.save_article(self.first)
+
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.client.get("/articles/saved/").data["article_ids"], [])
+        self.client.delete(f"/articles/{self.first.pk}/save/")
+
+        self.client.force_authenticate(self.mother)
+        self.assertEqual(self.client.get("/articles/saved/").data["article_ids"], [self.first.pk])
+
+    def test_saving_an_article_that_does_not_exist_is_a_404(self):
+        self.client.force_authenticate(self.mother)
+
+        self.assertEqual(self.client.put("/articles/99999/save/").status_code, 404)
+
+    def test_signed_out_requests_are_rejected(self):
+        self.assertEqual(self.client.get("/articles/saved/").status_code, 401)
+        self.assertEqual(self.client.put(f"/articles/{self.first.pk}/save/").status_code, 401)
+        self.assertEqual(self.client.delete(f"/articles/{self.first.pk}/save/").status_code, 401)
+
+    def test_deleting_an_article_drops_its_bookmarks(self):
+        self.client.force_authenticate(self.mother)
+        self.save_article(self.first)
+        self.first.delete()
+
+        self.assertEqual(self.client.get("/articles/saved/").data["article_ids"], [])
+
+
+class AdminResourceLinkTests(APITestCase):
+    """
+    Educational video / guide links used to be editable only in Django's own
+    admin site. The dashboard's Knowledge Base now manages them, and whatever
+    it saves is what the app's public list returns.
+    """
+
+    URL = "/articles/resource-links/admin/"
+
+    def setUp(self):
+        self.admin = User.objects.create_user(email="admin@example.com", password="x", is_staff=True, is_active=True)
+        self.mother = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
+        self.client.force_authenticate(self.admin)
+
+    def video(self, **overrides):
+        data = {
+            "title": "Hand expression",
+            "description": "How to express milk by hand.",
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "type": "Video",
+        }
+        data.update(overrides)
+        return data
+
+    def test_an_admin_can_add_a_video_link(self):
+        response = self.client.post(self.URL, self.video(), format="json")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(ResourceLink.objects.get().url, "https://www.youtube.com/watch?v=abc123")
+
+    def test_what_the_admin_adds_reaches_the_public_list_the_app_reads(self):
+        self.client.post(self.URL, self.video(), format="json")
+
+        self.client.force_authenticate(None)
+        shown = self.client.get("/articles/resource-links/")
+
+        self.assertEqual(shown.status_code, 200)
+        self.assertEqual([link["title"] for link in shown.data], ["Hand expression"])
+        self.assertEqual(shown.data[0]["type"], "Video")
+
+    def test_an_admin_can_edit_a_link(self):
+        link = ResourceLink.objects.create(**self.video())
+
+        response = self.client.patch(f"{self.URL}{link.id}/", {"url": "https://example.org/new"}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        link.refresh_from_db()
+        self.assertEqual(link.url, "https://example.org/new")
+
+    def test_an_admin_can_delete_a_link(self):
+        link = ResourceLink.objects.create(**self.video())
+
+        self.assertEqual(self.client.delete(f"{self.URL}{link.id}/").status_code, 204)
+        self.assertFalse(ResourceLink.objects.exists())
+
+    def test_the_admin_list_returns_every_link_oldest_first(self):
+        ResourceLink.objects.create(**self.video(title="First"))
+        ResourceLink.objects.create(**self.video(title="Second", type="Infographic"))
+
+        titles = [link["title"] for link in self.client.get(self.URL).data]
+
+        self.assertEqual(titles, ["First", "Second"])
+
+    def test_only_web_links_are_accepted(self):
+        for bad in ("ftp://example.org/video", "javascript:alert(1)", "not a link", ""):
+            response = self.client.post(self.URL, self.video(url=bad), format="json")
+            self.assertEqual(response.status_code, 400, bad)
+            self.assertIn("url", response.data)
+        self.assertFalse(ResourceLink.objects.exists())
+
+    def test_the_type_must_be_video_or_infographic(self):
+        response = self.client.post(self.URL, self.video(type="Podcast"), format="json")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_title_and_a_link_are_required(self):
+        response = self.client.post(self.URL, {"type": "Video"}, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("title", response.data)
+        self.assertIn("url", response.data)
+
+    def test_mothers_and_signed_out_visitors_cannot_manage_links(self):
+        link = ResourceLink.objects.create(**self.video())
+
+        self.client.force_authenticate(self.mother)
+        self.assertEqual(self.client.post(self.URL, self.video(), format="json").status_code, 403)
+        self.assertEqual(self.client.patch(f"{self.URL}{link.id}/", {"title": "x"}, format="json").status_code, 403)
+        self.assertEqual(self.client.delete(f"{self.URL}{link.id}/").status_code, 403)
+
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.post(self.URL, self.video(), format="json").status_code, 401)
+        self.assertEqual(ResourceLink.objects.count(), 1)
+
+    def test_changes_are_audit_logged(self):
+        created = self.client.post(self.URL, self.video(), format="json").data
+        self.client.patch(f"{self.URL}{created['id']}/", {"title": "Renamed"}, format="json")
+        self.client.delete(f"{self.URL}{created['id']}/")
+
+        actions = list(AuditLogEntry.objects.filter(actor=self.admin).order_by("id").values_list("action", flat=True))
+        self.assertEqual(actions, ["resource_link.created", "resource_link.updated", "resource_link.deleted"])

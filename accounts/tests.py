@@ -11,7 +11,10 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from core.models import AuditLogEntry
+from directory.models import SupportContact
+from notifications.models import NotificationItem
 
+from . import lockout
 from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
     RESEND_COOLDOWN_SECONDS,
@@ -815,3 +818,189 @@ class AdminUserManagementTests(APITestCase):
 
         self.assertEqual(response.status_code, 204)
         self.assertFalse(MilkBankRequest.objects.filter(id=booking.id).exists())
+
+
+class SignInLockoutTests(ThrottleIsolatedTestCase):
+    """
+    Repeated wrong passwords lock the account for longer each time, tell
+    the admins, and show up in User Management. See accounts/lockout.py.
+    """
+
+    PASSWORD = "the-real-password"
+
+    def setUp(self):
+        super().setUp()
+        self.mother = User.objects.create_user(email="mother@example.com", password=self.PASSWORD, is_active=True)
+        self.admin = User.objects.create_user(
+            email="admin@example.com", password="x", is_staff=True, is_active=True,
+            role=User.Role.FACILITY_STAFF,
+        )
+
+    def sign_in(self, password, email="mother@example.com"):
+        # A fresh throttle bucket each time: these tests are about the
+        # per-account lock, not the per-IP rate limit.
+        cache.clear()
+        return self.client.post("/auth/login/", {"email": email, "password": password})
+
+    def wrong_passwords(self, times):
+        return [self.sign_in("wrong") for _ in range(times)]
+
+    def refresh(self):
+        self.mother.refresh_from_db()
+        return self.mother
+
+    def expire_lock(self):
+        User.objects.filter(pk=self.mother.pk).update(locked_until=timezone.now() - timedelta(seconds=1))
+
+    def test_four_wrong_passwords_do_not_lock(self):
+        responses = self.wrong_passwords(4)
+
+        self.assertEqual([r.status_code for r in responses], [401] * 4)
+        self.assertFalse(lockout.is_locked(self.refresh()))
+        self.assertEqual(self.sign_in(self.PASSWORD).status_code, 200)
+
+    def test_the_fifth_wrong_password_locks_for_a_minute(self):
+        response = self.wrong_passwords(5)[-1]
+
+        self.assertEqual(response.status_code, 423)
+        self.assertEqual(response.data["code"], "account_locked")
+        self.assertIn("contact the admin", response.data["detail"].lower())
+        self.assertTrue(55 <= response.data["retry_after_seconds"] <= 61)
+        self.assertEqual(response["Retry-After"], str(response.data["retry_after_seconds"]))
+
+    def test_the_correct_password_is_refused_while_locked(self):
+        self.wrong_passwords(5)
+
+        response = self.sign_in(self.PASSWORD)
+
+        self.assertEqual(response.status_code, 423)
+        self.assertNotIn("access", response.data)
+
+    def test_each_wrong_password_after_a_lock_doubles_it(self):
+        self.wrong_passwords(5)
+        durations = []
+        for _ in range(3):
+            self.expire_lock()
+            durations.append(self.sign_in("wrong").data["retry_after_seconds"])
+
+        # 2, 4 and 8 minutes (give or take the second the request took).
+        for got, minutes in zip(durations, (2, 4, 8)):
+            self.assertTrue(minutes * 60 - 5 <= got <= minutes * 60 + 1, (got, minutes))
+
+    def test_lock_durations_double_and_stop_at_a_day(self):
+        minutes = [lockout.lock_duration(n).total_seconds() / 60 for n in range(4, 9)]
+        self.assertEqual(minutes, [0, 1, 2, 4, 8])
+        self.assertEqual(lockout.lock_duration(60), timedelta(hours=24))
+
+    def test_the_correct_password_works_again_once_the_lock_has_run_out(self):
+        self.wrong_passwords(5)
+        self.expire_lock()
+
+        response = self.sign_in(self.PASSWORD)
+
+        self.assertEqual(response.status_code, 200)
+        user = self.refresh()
+        self.assertEqual(user.failed_login_attempts, 0)
+        self.assertIsNone(user.locked_until)
+
+    def test_a_good_sign_in_resets_the_count(self):
+        self.wrong_passwords(4)
+        self.assertEqual(self.sign_in(self.PASSWORD).status_code, 200)
+
+        responses = self.wrong_passwords(4)
+
+        self.assertEqual([r.status_code for r in responses], [401] * 4)
+
+    def test_old_mistakes_are_forgotten(self):
+        User.objects.filter(pk=self.mother.pk).update(
+            failed_login_attempts=4, last_failed_login_at=timezone.now() - timedelta(hours=25),
+        )
+
+        self.assertEqual(self.sign_in("wrong").status_code, 401)
+        self.assertEqual(self.refresh().failed_login_attempts, 1)
+
+    def test_an_unknown_address_is_never_locked(self):
+        statuses = {self.sign_in("wrong", email="nobody@example.com").status_code for _ in range(7)}
+
+        self.assertEqual(statuses, {401})
+
+    def test_the_lock_names_arugaan_as_the_contact(self):
+        # The directory migration already seeds Arugaan; the lock reads whatever it holds now.
+        SupportContact.objects.filter(name__icontains="arugaan").update(email="help@arugaan.example", phone="0917")
+
+        contact = self.wrong_passwords(5)[-1].data["contact"]
+
+        self.assertEqual(contact, {"name": "Arugaan", "email": "help@arugaan.example", "phone": "0917"})
+
+    def test_admins_are_notified_once_when_the_lock_starts(self):
+        self.wrong_passwords(5)
+        self.expire_lock()
+        self.sign_in("wrong")  # a 6th, longer lock -- no second alert
+
+        alerts = NotificationItem.objects.filter(title="Account Locked")
+        self.assertEqual(alerts.count(), 1)
+        alert = alerts.get()
+        self.assertEqual(alert.owner, self.admin)
+        self.assertEqual(alert.category, NotificationItem.Category.SECURITY)
+        self.assertIn("mother@example.com", alert.description)
+        self.assertFalse(NotificationItem.objects.filter(owner=self.mother).exists())
+
+    def test_a_lock_is_written_to_the_audit_log(self):
+        self.wrong_passwords(5)
+
+        entry = AuditLogEntry.objects.get(action="account.locked")
+        self.assertIn("mother@example.com", entry.target)
+
+    def test_resetting_the_password_lifts_the_lock(self):
+        self.wrong_passwords(5)
+        User.objects.filter(pk=self.mother.pk).update(
+            password_reset_code="123456", password_reset_sent_at=timezone.now(),
+        )
+
+        reset = self.client.post("/auth/reset-password/", {
+            "email": "mother@example.com", "code": "123456", "new_password": "a-brand-new-password",
+        })
+
+        self.assertEqual(reset.status_code, 200)
+        self.assertEqual(self.sign_in("a-brand-new-password").status_code, 200)
+
+    def test_the_admin_list_shows_who_is_locked(self):
+        self.wrong_passwords(5)
+        self.client.force_authenticate(self.admin)
+
+        rows = {row["email"]: row for row in self.client.get("/auth/admin/users/").data}
+
+        self.assertTrue(rows["mother@example.com"]["is_locked"])
+        self.assertEqual(rows["mother@example.com"]["failed_login_attempts"], 5)
+        self.assertIsNotNone(rows["mother@example.com"]["locked_until"])
+        self.assertFalse(rows["admin@example.com"]["is_locked"])
+
+    def test_an_expired_lock_no_longer_shows_as_locked(self):
+        self.wrong_passwords(5)
+        self.expire_lock()
+        self.client.force_authenticate(self.admin)
+
+        rows = {row["email"]: row for row in self.client.get("/auth/admin/users/").data}
+
+        self.assertFalse(rows["mother@example.com"]["is_locked"])
+
+    def test_an_admin_can_unlock_an_account(self):
+        self.wrong_passwords(5)
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(f"/auth/admin/users/{self.mother.pk}/unlock/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["is_locked"])
+        self.assertTrue(AuditLogEntry.objects.filter(action="account.unlocked", actor=self.admin).exists())
+        self.client.force_authenticate(None)
+        self.assertEqual(self.sign_in(self.PASSWORD).status_code, 200)
+
+    def test_only_an_admin_can_unlock(self):
+        self.wrong_passwords(5)
+        self.client.force_authenticate(self.mother)
+
+        response = self.client.post(f"/auth/admin/users/{self.mother.pk}/unlock/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(lockout.is_locked(self.refresh()))

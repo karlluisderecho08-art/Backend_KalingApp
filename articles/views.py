@@ -10,7 +10,7 @@ from core.audit import log_action
 from notifications.models import NotificationItem
 from notifications.services import notify, notify_many
 
-from .models import Article, ArticleComment, CommentReport, ResourceLink
+from .models import Article, ArticleComment, CommentReport, ResourceLink, SavedArticle
 from .serializers import (
     AdminArticleSerializer,
     ArticleCommentCreateSerializer,
@@ -20,6 +20,7 @@ from .serializers import (
     ReportCommentSerializer,
     ReportedCommentSerializer,
     ResolveCommentSerializer,
+    SavedArticleIdsSerializer,
     ResourceLinkSerializer,
 )
 
@@ -38,6 +39,40 @@ class ArticleDetailView(generics.RetrieveAPIView):
     queryset = Article.objects.all()
     serializer_class = ArticleSerializer
     permission_classes = [permissions.AllowAny]
+
+
+class AdminResourceLinkListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /articles/resource-links/admin/ -- every educational video / guide link.
+    POST /articles/resource-links/admin/ -- add one.
+    Platform-admin only (is_staff). What is saved here is what mothers see in
+    the Knowledge Hub, via the public GET /articles/resource-links/.
+    """
+
+    queryset = ResourceLink.objects.order_by("id")
+    serializer_class = ResourceLinkSerializer
+    permission_classes = [permissions.IsAdminUser]
+    pagination_class = None
+
+    def perform_create(self, serializer):
+        link = serializer.save()
+        log_action(self.request.user, "resource_link.created", f"ResourceLink:{link.id} ({link.title})"[:255])
+
+
+class AdminResourceLinkDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """PATCH/PUT/DELETE /articles/resource-links/admin/<id>/ -- platform-admin only."""
+
+    queryset = ResourceLink.objects.all()
+    serializer_class = ResourceLinkSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+    def perform_update(self, serializer):
+        link = serializer.save()
+        log_action(self.request.user, "resource_link.updated", f"ResourceLink:{link.id} ({link.title})"[:255])
+
+    def perform_destroy(self, instance):
+        log_action(self.request.user, "resource_link.deleted", f"ResourceLink:{instance.id} ({instance.title})"[:255])
+        instance.delete()
 
 
 class AdminArticleListCreateView(generics.ListCreateAPIView):
@@ -255,3 +290,47 @@ class ResourceLinkListView(generics.ListAPIView):
     queryset = ResourceLink.objects.all()
     serializer_class = ResourceLinkSerializer
     permission_classes = [permissions.AllowAny]
+
+
+class SavedArticleListView(APIView):
+    """
+    GET /articles/saved/ -- the ids of the articles the signed-in mother has
+    bookmarked, newest first: {"article_ids": [7, 3]}. The app already holds
+    the article list, so ids are all it needs to mark and filter it.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(responses={200: SavedArticleIdsSerializer})
+    def get(self, request):
+        ids = list(
+            SavedArticle.objects.filter(user=request.user).values_list("article_id", flat=True)
+        )
+        return Response({"article_ids": ids})
+
+
+class SavedArticleDetailView(APIView):
+    """
+    PUT    /articles/<id>/save/ -- bookmark the article.
+    DELETE /articles/<id>/save/ -- remove the bookmark.
+
+    Both are idempotent, so a retry after a dropped connection is harmless,
+    and both answer with the full set of saved ids afterwards. That way the
+    app ends up in step with the server even if two devices are tapping.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _saved_ids(self, user):
+        return list(SavedArticle.objects.filter(user=user).values_list("article_id", flat=True))
+
+    @extend_schema(request=None, responses={200: SavedArticleIdsSerializer})
+    def put(self, request, pk):
+        article = generics.get_object_or_404(Article, pk=pk)
+        SavedArticle.objects.get_or_create(user=request.user, article=article)
+        return Response({"article_ids": self._saved_ids(request.user)})
+
+    @extend_schema(responses={200: SavedArticleIdsSerializer})
+    def delete(self, request, pk):
+        SavedArticle.objects.filter(user=request.user, article_id=pk).delete()
+        return Response({"article_ids": self._saved_ids(request.user)})

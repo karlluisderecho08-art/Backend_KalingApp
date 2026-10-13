@@ -7,7 +7,7 @@ from django.http import Http404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import AuthenticationFailed, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -15,7 +15,11 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.audit import log_action
 from core.throttling import ClientIPScopedRateThrottle
+from directory.models import SupportContact
+from notifications.models import NotificationItem
+from notifications.services import notify_many
 
+from . import lockout
 from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
     RESEND_COOLDOWN_SECONDS,
@@ -137,6 +141,69 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
 
     throttle_scope = "login"
     throttle_classes = [ClientIPScopedRateThrottle]
+
+    def post(self, request, *args, **kwargs):
+        """
+        Wrong passwords lock the account for longer and longer (see
+        accounts/lockout.py). A locked account answers 423 with how long is
+        left and who to contact -- before the password is even looked at, so
+        a correct guess made during a lock gains nothing.
+
+        Only an account that exists and is active can be locked. Someone
+        typing an unknown address just gets the ordinary 401 every time.
+        """
+        email = str(request.data.get("email") or "").strip()
+        user = User.objects.filter(email__iexact=email, is_active=True).first() if email else None
+
+        if user and lockout.is_locked(user):
+            return self._locked_response(user)
+
+        try:
+            response = super().post(request, *args, **kwargs)
+        except AuthenticationFailed:
+            # simplejwt reports wrong credentials by raising, not by returning.
+            if user is None:
+                raise
+            attempts, newly_locked = lockout.register_failure(user)
+            if newly_locked:
+                self._tell_admins(user)
+            if not lockout.is_locked(user):
+                raise
+            log_action(None, "account.locked", f"User:{user.id} ({user.email}) after {attempts} failed sign-ins, "
+                                               f"until {user.locked_until.isoformat()}")
+            return self._locked_response(user)
+
+        if user is not None and response.status_code == 200:
+            lockout.clear(user)
+        return response
+
+    @staticmethod
+    def _tell_admins(user):
+        notify_many(
+            User.objects.filter(is_staff=True, is_active=True),
+            "Account Locked",
+            f"{user.email} was locked after {lockout.LOCK_THRESHOLD} wrong passwords in a row. "
+            "You can unlock it under User Management.",
+            NotificationItem.Category.SECURITY,
+        )
+
+    @staticmethod
+    def _locked_response(user):
+        seconds = lockout.seconds_remaining(user)
+        contact = SupportContact.objects.filter(name__icontains="arugaan").first()
+        body = {
+            "code": "account_locked",
+            "detail": "Too many incorrect passwords, so this account is locked for now. "
+                      "Please contact the admin for help and assistance.",
+            "locked_until": user.locked_until.isoformat(),
+            "retry_after_seconds": seconds,
+            "contact": {
+                "name": contact.name if contact else "",
+                "email": contact.email if contact else "",
+                "phone": contact.phone if contact else "",
+            },
+        }
+        return Response(body, status=423, headers={"Retry-After": str(seconds)})
 
 
 class RegisterView(generics.CreateAPIView):
@@ -370,6 +437,8 @@ class ResetPasswordView(APIView):
         user.password_reset_code = ""
         user.password_reset_attempts = 0
         user.save(update_fields=["password", "password_reset_code", "password_reset_attempts"])
+        # Proving she owns the email address is how a locked-out mother gets back in.
+        lockout.clear(user)
 
         log_action(user, "account.password_reset", f"User:{user.id}")
 
@@ -533,6 +602,25 @@ class AdminUserListView(generics.ListAPIView):
 
     def get_queryset(self):
         return User.objects.select_related("facility").order_by("-date_joined")
+
+
+class AdminUserUnlockView(APIView):
+    """
+    POST /auth/admin/users/<id>/unlock/ -- platform-admin only.
+
+    Lifts a sign-in lockout and forgets the failed attempts, for a mother
+    who contacted the admin because she is locked out. Safe to press on an
+    account that isn't locked.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    @extend_schema(request=None, responses=AdminUserListSerializer)
+    def post(self, request, pk):
+        user = generics.get_object_or_404(User, pk=pk)
+        lockout.clear(user)
+        log_action(request.user, "account.unlocked", f"User:{user.id} ({user.email})")
+        return Response(AdminUserListSerializer(user).data)
 
 
 class AdminUserDeleteView(generics.DestroyAPIView):

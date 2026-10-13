@@ -17,6 +17,7 @@ class NotificationItem(models.Model):
         REMINDERS = "Reminders", "Reminders"
         ARTICLES = "Articles", "Articles"
         BOOKINGS = "Bookings", "Bookings"
+        SECURITY = "Security", "Security"
 
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
     title = models.CharField(max_length=255)

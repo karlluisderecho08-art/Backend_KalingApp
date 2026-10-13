@@ -92,6 +92,32 @@ class CommentReport(models.Model):
         return f"{self.reporter} reported comment {self.comment_id} ({self.reason})"
 
 
+class SavedArticle(models.Model):
+    """
+    One mother's bookmark on one article.
+
+    Kept on the server, per account, so a bookmark follows her across
+    sign-outs, reinstalls and devices -- the app used to hold them only in
+    memory. One row per (user, article); saving twice changes nothing.
+    Deleted with either the user or the article.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, related_name="saved_articles", on_delete=models.CASCADE
+    )
+    article = models.ForeignKey(Article, related_name="saved_by", on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "article"], name="one_save_per_user_per_article"),
+        ]
+
+    def __str__(self):
+        return f"{self.user} saved {self.article_id}"
+
+
 class ResourceLink(models.Model):
     """
     An external "Milk Expression Guide" link shown on the Knowledge Hub
