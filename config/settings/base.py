@@ -297,6 +297,7 @@ INSTALLED_APPS = [
     "notifications",
     "chat",
     "dashboard",
+    "messaging",
 ]
 
 # Must be set before the first migration that touches auth tables --
@@ -530,6 +531,9 @@ REST_FRAMEWORK = {
         # signup down for genuine users as collateral.
         "register": "5/min",
         "resend": "3/min",
+        # Facility <-> admin messages. Generous for a person typing, low
+        # enough that a runaway script can't flood the other side's inbox.
+        "messaging_send": "30/min",
     },
 }
 
