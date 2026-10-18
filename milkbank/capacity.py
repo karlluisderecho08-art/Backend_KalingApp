@@ -25,6 +25,15 @@ Which requests hold their day's slot:
 A counter-offered request keeps holding its ORIGINAL day until she accepts
 the new one; accepting moves it (and is refused if the new day has filled
 up in the meantime -- see AcceptCounterOfferView).
+
+Per-time-slot limit for donors (optional, per facility):
+
+When Facility.limit_donor_slots is on, each appointment time (preferred_time,
+one of scheduling.SLOTS) on a day takes at most donor_bookings_per_slot DONOR
+bookings -- the lab can only run so many donor screenings at once. It sits
+alongside the daily capacity, it does not replace it: a donor booking needs
+room in BOTH its day and its hour. The same requests hold an hour as hold a
+day (everything but declined / expired), counting donors only.
 """
 
 from datetime import date, datetime, timedelta
@@ -74,6 +83,53 @@ def has_room(facility, day, exclude_request_id=None) -> bool:
     return slots_taken(facility.pk, day, exclude_request_id) < facility.capacity
 
 
+def donor_slot_taken(facility_id, day, time, exclude_request_id=None) -> int:
+    """How many DONOR bookings hold the `time` slot on `day` at the facility."""
+    queryset = holding_requests().filter(
+        allocated_facility_id=facility_id, preferred_date=day, preferred_time=time,
+        request_type=MilkBankRequest.RequestType.DONOR,
+    )
+    if exclude_request_id is not None:
+        queryset = queryset.exclude(pk=exclude_request_id)
+    return queryset.count()
+
+
+def has_donor_slot_room(facility, day, time, exclude_request_id=None) -> bool:
+    """
+    Whether one more DONOR booking fits in the `time` slot on `day`. Always
+    true when the facility doesn't limit donor slots. Checks the hour only --
+    the day's own capacity is has_room()'s job, and a booking needs both.
+    """
+    if not facility.limit_donor_slots:
+        return True
+    return donor_slot_taken(facility.pk, day, time, exclude_request_id) < facility.donor_bookings_per_slot
+
+
+def full_donor_slots(facility, start: date, end: date) -> dict:
+    """{"yyyy-mm-dd": [times with no donor room left]} for start <= day < end."""
+    if not facility.limit_donor_slots:
+        return {}
+    rows = (
+        holding_requests()
+        .filter(
+            allocated_facility_id=facility.pk, preferred_date__gte=start, preferred_date__lt=end,
+            request_type=MilkBankRequest.RequestType.DONOR,
+        )
+        .values("preferred_date", "preferred_time")
+        .annotate(n=Count("id"))
+        .filter(n__gte=facility.donor_bookings_per_slot)
+    )
+    full = {}
+    for row in rows:
+        full.setdefault(row["preferred_date"].isoformat(), []).append(row["preferred_time"])
+    return {day: sorted(times, key=_slot_order) for day, times in sorted(full.items())}
+
+
+def _slot_order(time):
+    from .scheduling import SLOT_HOURS  # scheduling imports this module
+    return SLOT_HOURS.get(time, 99)
+
+
 def counts_by_day(facility_ids, start: date, end: date) -> dict:
     """{(facility_id, day): slots taken} for start <= day < end, one query."""
     rows = (
@@ -109,8 +165,19 @@ def day_summary(facility, start=None, days=BOOKING_HORIZON_DAYS) -> dict:
     else:
         full = sorted(d.isoformat() for d, n in per_day.items() if n >= facility.capacity)
 
+    # Donor hours that are full, and the days where every hour is -- a donor
+    # can't book those days at all, even while the day itself has room left
+    # for recipients.
+    from .scheduling import SLOTS  # scheduling imports this module
+
+    donor_full_slots = full_donor_slots(facility, start, start + timedelta(days=days))
+    every_slot = {label for label, _hour in SLOTS}
+    donor_full_days = sorted(day for day, times in donor_full_slots.items() if every_slot <= set(times))
+
     return {
         "bookings_today": per_day.get(start, 0),
         "upcoming_bookings": upcoming,
         "fully_booked_dates": full,
+        "full_donor_slots": donor_full_slots,
+        "donor_fully_booked_dates": donor_full_days,
     }

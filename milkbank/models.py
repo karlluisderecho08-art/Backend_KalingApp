@@ -57,6 +57,17 @@ class Facility(models.Model):
     # number of bottles instead of a number of mL.
     dispenses_bottles = models.BooleanField(default=False)
 
+    # An optional cap on DONOR bookings per appointment time (each hourly
+    # slot of a day). A donor's appointment is Counseling and Testing, which
+    # uses the facility's laboratory, and a lab can only run so many at once
+    # -- the daily capacity alone would let every donor of the day pick the
+    # same hour. Recipients are never limited this way (their visit is a
+    # document check and a pickup) and do not count toward it. Kept separate
+    # from the on/off switch so switching the limit off and on again keeps
+    # the number the admin chose. See capacity.has_donor_slot_room().
+    limit_donor_slots = models.BooleanField(default=False)
+    donor_bookings_per_slot = models.PositiveIntegerField(default=3)
+
     def __str__(self):
         return self.name
 

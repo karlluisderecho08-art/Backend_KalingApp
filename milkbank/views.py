@@ -23,11 +23,12 @@ from .allocation import (
     InsufficientStock,
     LocationRequired,
     NoOperationalFacility,
+    TimeSlotFull,
     claim_slot,
     get_ranked_facilities,
 )
 from .business_hours import add_business_hours
-from .capacity import has_room
+from .capacity import has_donor_slot_room, has_room
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
 from .results import decline_notification
@@ -124,6 +125,15 @@ def _allocation_error_response(exc):
             ),
             "fully_booked_date": exc.day.isoformat(),
         }, status=409)
+    if isinstance(exc, TimeSlotFull):
+        # She can act on it: another time that day, or another day.
+        return Response({
+            "detail": (
+                f"{exc.time} on {exc.day:%B} {exc.day.day}, {exc.day.year} is fully booked for donors. "
+                "Please choose another time."
+            ),
+            "full_slot": {"date": exc.day.isoformat(), "time": exc.time},
+        }, status=409)
     if isinstance(exc, AmountOutsideLimits):
         return Response({
             "detail": (
@@ -215,7 +225,7 @@ class MilkBankRequestCreateView(APIView):
         try:
             ranked = get_ranked_facilities(
                 request.user, data["request_type"], data["requested_ml"], day=data["preferred_date"],
-                bottles=bottles,
+                bottles=bottles, time=data["preferred_time"],
             )
         except AllocationError as exc:
             return _allocation_error_response(exc)
@@ -246,6 +256,7 @@ class MilkBankRequestCreateView(APIView):
                     candidate for candidate in ranked
                     if claim_slot(
                         candidate, data["request_type"], data["preferred_date"], data["requested_ml"], bottles,
+                        time=data["preferred_time"],
                     )
                 ),
                 None,
@@ -485,6 +496,19 @@ class AcceptCounterOfferView(generics.GenericAPIView):
                     "detail": "The date the facility offered has filled up since. "
                               "Please choose a new time instead.",
                 }, status=409)
+            # A donor also needs room in the offered hour, if the facility
+            # limits donor slots -- it may have filled since it was offered.
+            if (
+                req.counter_offer_date
+                and req.request_type == MilkBankRequest.RequestType.DONOR
+                and not has_donor_slot_room(
+                    facility, req.counter_offer_date, req.counter_offer_time, exclude_request_id=req.pk,
+                )
+            ):
+                return Response({
+                    "detail": "The time the facility offered has filled up since. "
+                              "Please choose a new time instead.",
+                }, status=409)
             try:
                 apply_transition(req, target_status, request.user, "counter_offer_accepted")
             except InvalidTransition as exc:
@@ -523,6 +547,15 @@ class RejectCounterOfferView(generics.GenericAPIView):
                     "detail": f"{facility.name} is fully booked on {new_date:%B} {new_date.day}, "
                               f"{new_date.year}. Please choose another date.",
                     "fully_booked_date": new_date.isoformat(),
+                }, status=409)
+            new_time = serializer.validated_data["preferred_time"]
+            if req.request_type == MilkBankRequest.RequestType.DONOR and not has_donor_slot_room(
+                facility, new_date, new_time, exclude_request_id=req.pk,
+            ):
+                return Response({
+                    "detail": f"{new_time} on {new_date:%B} {new_date.day}, {new_date.year} is fully "
+                              "booked for donors. Please choose another time.",
+                    "full_slot": {"date": new_date.isoformat(), "time": new_time},
                 }, status=409)
             try:
                 apply_transition(req, Status.PENDING, request.user, "counter_offer_rejected")

@@ -16,6 +16,8 @@ direct API call cannot offer a slot nobody could attend.
   - The slot she already asked for is out -- offering it back is not a
     counter-offer.
   - A day with no booking slot left at her facility is out (capacity.py).
+  - For a DONOR at a facility that limits donor bookings per time slot, a
+    time already at that limit is out (capacity.has_donor_slot_room).
 
 "Today" and "now" are Manila time, the same clock the SLA uses
 (business_hours.BUSINESS_TZ): a facility's day does not roll over at
@@ -25,7 +27,7 @@ direct API call cannot offer a slot nobody could attend.
 from datetime import datetime
 
 from .business_hours import BUSINESS_TZ
-from .capacity import has_room
+from .capacity import has_donor_slot_room, has_room
 from .models import MilkBankRequest
 
 # What the mother's scheduler offers, in this order. Labels, not parsed
@@ -77,6 +79,10 @@ def counter_offer_errors(req, offered_date, offered_time, now=None):
             errors["counter_offer_time"] = "This time has already passed."
         elif offered_date == req.preferred_date and offered_time == req.preferred_time:
             errors["counter_offer_time"] = "This is the time she already asked for."
+        elif req.request_type == MilkBankRequest.RequestType.DONOR and not has_donor_slot_room(
+            req.allocated_facility, offered_date, offered_time, exclude_request_id=req.pk,
+        ):
+            errors["counter_offer_time"] = "This time is fully booked for donors."
 
     return errors
 

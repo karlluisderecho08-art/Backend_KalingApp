@@ -2432,3 +2432,189 @@ class RecipientAmountPerFacilityTests(APITestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual([f["name"] for f in response.data["ranked_facilities"]], ["Far"])
+
+
+def fill_slot(facility, day, time, n, request_type=MilkBankRequest.RequestType.DONOR, status=None):
+    """Books `n` requests at `time` on `day` at `facility`, each by a different mother."""
+    global _filler_count
+    for _ in range(n):
+        _filler_count += 1
+        owner = User.objects.create_user(email=f"slotfiller{_filler_count}@example.com", password=None, is_active=True)
+        make_request(
+            owner, facility, preferred_date=day, preferred_time=time, request_type=request_type,
+            **({"current_sub_status": status} if status else {}),
+        )
+
+
+class DonorSlotLimitTests(APITestCase):
+    """
+    The optional per-time-slot limit for DONOR bookings (the lab), alongside
+    the daily capacity. Recipients are never limited by it and never use it up.
+    """
+
+    DAY = "2026-12-15"
+    URL = "/milkbank/requests/"
+
+    def setUp(self):
+        self.mother = User.objects.create_user(
+            email="slot-mother@example.com", password="x", is_active=True, latitude=14.6, longitude=121.0,
+        )
+        self.facility = make_facility(name="Lab Bank", capacity=25, limit_donor_slots=True, donor_bookings_per_slot=2)
+
+    def book(self, time="10:00 AM", request_type="DONOR", day=None):
+        self.client.force_authenticate(user=self.mother)
+        MilkBankRequest.objects.filter(owner=self.mother).delete()
+        return self.client.post(self.URL, {
+            "request_type": request_type, "preferred_date": day or self.DAY, "preferred_time": time,
+        }, format="json")
+
+    def test_a_full_donor_slot_refuses_the_next_donor(self):
+        fill_slot(self.facility, self.DAY, "10:00 AM", 2)
+
+        response = self.book("10:00 AM")
+
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data["full_slot"], {"date": self.DAY, "time": "10:00 AM"})
+
+    def test_below_the_limit_and_other_times_are_fine(self):
+        fill_slot(self.facility, self.DAY, "10:00 AM", 1)
+        self.assertEqual(self.book("10:00 AM").status_code, 201)
+
+        fill_slot(self.facility, self.DAY, "11:00 AM", 2)
+        self.assertEqual(self.book("9:00 AM").status_code, 201)
+
+    def test_recipients_are_not_limited_and_do_not_use_up_donor_slots(self):
+        fill_slot(self.facility, self.DAY, "10:00 AM", 5, request_type=MilkBankRequest.RequestType.RECIPIENT)
+
+        self.assertEqual(self.book("10:00 AM").status_code, 201)  # a donor still fits
+        fill_slot(self.facility, self.DAY, "10:00 AM", 2)
+        self.assertEqual(self.book("10:00 AM", request_type="RECIPIENT").status_code, 201)
+
+    def test_with_the_limit_off_only_the_daily_capacity_applies(self):
+        self.facility.limit_donor_slots = False
+        self.facility.save()
+        fill_slot(self.facility, self.DAY, "10:00 AM", 10)
+
+        self.assertEqual(self.book("10:00 AM").status_code, 201)
+
+    def test_the_daily_capacity_still_applies_with_the_limit_on(self):
+        self.facility.capacity = 3
+        self.facility.save()
+        fill_slot(self.facility, self.DAY, "9:00 AM", 1)
+        fill_slot(self.facility, self.DAY, "1:00 PM", 2)
+
+        self.assertEqual(self.book("3:00 PM").status_code, 409)  # the day is full
+
+    def test_a_declined_booking_frees_its_slot(self):
+        fill_slot(self.facility, self.DAY, "10:00 AM", 1)
+        fill_slot(self.facility, self.DAY, "10:00 AM", 1, status=Status.DECLINED)
+
+        self.assertEqual(self.book("10:00 AM").status_code, 201)
+
+    def test_a_donor_goes_to_the_next_facility_when_her_hour_is_full_here(self):
+        make_facility(name="Other Bank", latitude=14.9, longitude=121.3)
+        fill_slot(self.facility, self.DAY, "10:00 AM", 2)
+
+        response = self.book("10:00 AM")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["allocated_facility_name"], "Other Bank")
+
+    def test_the_facility_reports_its_full_donor_slots_and_days(self):
+        from .scheduling import SLOTS
+        fill_slot(self.facility, self.DAY, "10:00 AM", 2)
+        full_day = "2026-12-16"
+        for label, _hour in SLOTS:
+            fill_slot(self.facility, full_day, label, 2)
+
+        data = self.client.get(f"/milkbank/facilities/{self.facility.id}/").data
+
+        self.assertEqual(data["full_donor_slots"][self.DAY], ["10:00 AM"])
+        self.assertEqual(data["donor_fully_booked_dates"], [full_day])
+        self.assertNotIn(self.DAY, data["donor_fully_booked_dates"])
+
+    def test_rebooking_into_a_full_donor_slot_is_refused(self):
+        req = make_request(
+            self.mother, self.facility, preferred_date=self.DAY, preferred_time="9:00 AM",
+            current_sub_status=Status.COUNTER_OFFERED, counter_offer_date=COUNTER_OFFER_DATE,
+            counter_offer_time="2:00 PM",
+        )
+        fill_slot(self.facility, "2026-12-22", "11:00 AM", 2)
+        self.client.force_authenticate(user=self.mother)
+
+        response = self.client.post(f"/milkbank/requests/{req.id}/reject-counter-offer/", {
+            "preferred_date": "2026-12-22", "preferred_time": "11:00 AM",
+        })
+
+        self.assertEqual(response.status_code, 409, response.data)
+
+    def test_accepting_an_offered_time_that_filled_since_is_refused(self):
+        req = make_request(
+            self.mother, self.facility, preferred_date=self.DAY, preferred_time="9:00 AM",
+            current_sub_status=Status.COUNTER_OFFERED, counter_offer_date=COUNTER_OFFER_DATE,
+            counter_offer_time="2:00 PM",
+        )
+        fill_slot(self.facility, COUNTER_OFFER_DATE, "2:00 PM", 2)
+        self.client.force_authenticate(user=self.mother)
+
+        response = self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
+
+        self.assertEqual(response.status_code, 409, response.data)
+
+    def test_staff_cannot_offer_a_full_donor_slot(self):
+        staff = User.objects.create_user(
+            email="slot-staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+        req = make_request(self.mother, self.facility, preferred_date=self.DAY, preferred_time="9:00 AM")
+        fill_slot(self.facility, COUNTER_OFFER_DATE, "2:00 PM", 2)
+        self.client.force_authenticate(user=staff)
+
+        response = self.client.post(f"/milkbank/requests/{req.id}/propose-counter-offer/", {
+            "counter_offer_date": COUNTER_OFFER_DATE, "counter_offer_time": "2:00 PM",
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("counter_offer_time", response.data)
+
+
+class DonorSlotLimitSettingTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(email="slot-admin@example.com", password="password123")
+        self.client.force_authenticate(user=self.admin)
+        self.payload = dict(
+            name="Slots Facility", type=Facility.FacilityType.HUMAN_MILK_BANK,
+            contact="000-0000", address="Somewhere", capacity=25, latitude=14.6, longitude=121.0,
+        )
+
+    def test_off_by_default(self):
+        response = self.client.post("/milkbank/facilities/", self.payload, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(response.data["limit_donor_slots"])
+        self.assertEqual(response.data["full_donor_slots"], {})
+
+    def test_the_admin_turns_it_on_with_a_number(self):
+        response = self.client.post("/milkbank/facilities/", {
+            **self.payload, "limit_donor_slots": True, "donor_bookings_per_slot": 3,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual((response.data["limit_donor_slots"], response.data["donor_bookings_per_slot"]), (True, 3))
+
+    def test_a_limit_above_the_daily_capacity_is_refused_while_on(self):
+        response = self.client.post("/milkbank/facilities/", {
+            **self.payload, "limit_donor_slots": True, "donor_bookings_per_slot": 30,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("donor_bookings_per_slot", response.data)
+
+    def test_the_number_is_kept_while_switched_off(self):
+        facility = make_facility(capacity=25, limit_donor_slots=True, donor_bookings_per_slot=4)
+
+        self.client.patch(f"/milkbank/facilities/{facility.id}/", {"limit_donor_slots": False}, format="json")
+        facility.refresh_from_db()
+
+        self.assertFalse(facility.limit_donor_slots)
+        self.assertEqual(facility.donor_bookings_per_slot, 4)

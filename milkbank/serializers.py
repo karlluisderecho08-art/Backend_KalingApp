@@ -83,6 +83,12 @@ class FacilitySerializer(serializers.ModelSerializer):
     upcoming_bookings = serializers.SerializerMethodField()
     fully_booked_dates = serializers.SerializerMethodField()
     booked_count = serializers.SerializerMethodField()
+    # With limit_donor_slots on: {"yyyy-mm-dd": ["10:00 AM", ...]} -- the donor
+    # appointment times already at donor_bookings_per_slot -- and the days on
+    # which every time is. The donor's scheduler greys these out; recipients
+    # are unaffected. Both empty when the facility doesn't limit donor slots.
+    full_donor_slots = serializers.SerializerMethodField()
+    donor_fully_booked_dates = serializers.SerializerMethodField()
 
     staff_user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     new_staff_email = serializers.EmailField(write_only=True, required=False)
@@ -98,11 +104,14 @@ class FacilitySerializer(serializers.ModelSerializer):
             "upcoming_bookings", "fully_booked_dates", "stock_level_ml",
             "latitude", "longitude",
             "min_request_ml", "max_request_ml", "dispenses_bottles",
+            "limit_donor_slots", "donor_bookings_per_slot",
+            "full_donor_slots", "donor_fully_booked_dates",
             "staff_user_id", "new_staff_email", "new_staff_password",
         ]
         extra_kwargs = {
             "min_request_ml": {"min_value": 1, "max_value": REQUEST_ML_CEILING},
             "max_request_ml": {"min_value": 1, "max_value": REQUEST_ML_CEILING},
+            "donor_bookings_per_slot": {"min_value": 1},
         }
 
     def _calendar(self, obj):
@@ -111,6 +120,7 @@ class FacilitySerializer(serializers.ModelSerializer):
         if not hasattr(obj, "_calendar_summary"):
             obj._calendar_summary = day_summary(obj) if obj.pk else {
                 "bookings_today": 0, "upcoming_bookings": [], "fully_booked_dates": [],
+                "full_donor_slots": {}, "donor_fully_booked_dates": [],
             }
         return obj._calendar_summary
 
@@ -125,6 +135,12 @@ class FacilitySerializer(serializers.ModelSerializer):
 
     def get_fully_booked_dates(self, obj) -> list:
         return self._calendar(obj)["fully_booked_dates"]
+
+    def get_full_donor_slots(self, obj) -> dict:
+        return self._calendar(obj)["full_donor_slots"]
+
+    def get_donor_fully_booked_dates(self, obj) -> list:
+        return self._calendar(obj)["donor_fully_booked_dates"]
 
     def _validate_request_limits(self, attrs):
         """The per-request range must make sense on its own, and -- for a
@@ -151,8 +167,30 @@ class FacilitySerializer(serializers.ModelSerializer):
                 )
             })
 
+    def _validate_donor_slot_limit(self, attrs):
+        """A per-time-slot limit above the day's own capacity could never be
+        reached -- the day would fill first -- so it is refused rather than
+        saved as a setting that silently does nothing."""
+        def current(field, default):
+            if field in attrs:
+                return attrs[field]
+            return getattr(self.instance, field) if self.instance is not None else default
+
+        if not current("limit_donor_slots", False):
+            return
+        per_slot = current("donor_bookings_per_slot", 3)
+        capacity = current("capacity", 0)
+        if capacity and per_slot > capacity:
+            raise serializers.ValidationError({
+                "donor_bookings_per_slot": (
+                    f"Donor bookings per time slot ({per_slot}) can't be more than "
+                    f"bookings per day ({capacity})."
+                )
+            })
+
     def validate(self, attrs):
         self._validate_request_limits(attrs)
+        self._validate_donor_slot_limit(attrs)
         staff_user_id = attrs.get("staff_user_id")
         new_staff_email = attrs.get("new_staff_email")
         new_staff_password = attrs.get("new_staff_password")

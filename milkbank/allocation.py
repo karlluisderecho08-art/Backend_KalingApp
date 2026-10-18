@@ -55,6 +55,16 @@ class DayFullyBooked(AllocationError):
         self.day = day
 
 
+class TimeSlotFull(AllocationError):
+    """A DONOR request: facilities have room that day, but every one that
+    limits donor slots is full at the time she chose (and none is free)."""
+
+    def __init__(self, day, time):
+        super().__init__(day, time)
+        self.day = day
+        self.time = time
+
+
 class AmountOutsideLimits(AllocationError):
     """Facilities are open, but none accepts a request of this size (or, in
     bottles, none dispenses bottles) -- each facility sets its own limits."""
@@ -116,7 +126,7 @@ def eligibility_filters(request_type, requested_ml=None, bottles=False):
     return filters
 
 
-def claim_slot(facility, request_type, day, requested_ml=None, bottles=False):
+def claim_slot(facility, request_type, day, requested_ml=None, bottles=False, time=None):
     """
     Whether one more booking on `day` can be placed at `facility` right now.
     Returns False if the facility stopped being eligible, or `day` filled up,
@@ -135,7 +145,7 @@ def claim_slot(facility, request_type, day, requested_ml=None, bottles=False):
     20 of 20 and is refused. (SQLite, used by the tests, has no row locks,
     but it serialises every write anyway.)
     """
-    from .capacity import slots_taken
+    from .capacity import has_donor_slot_room, slots_taken
     from .models import Facility
 
     locked = (
@@ -145,10 +155,16 @@ def claim_slot(facility, request_type, day, requested_ml=None, bottles=False):
     )
     if locked is None:
         return False
-    return slots_taken(locked.pk, day) < locked.capacity
+    if slots_taken(locked.pk, day) >= locked.capacity:
+        return False
+    # A donor also needs room in her hour, when the facility limits that --
+    # re-counted under the same lock, for the same reason as the day.
+    if request_type == "DONOR" and time is not None:
+        return has_donor_slot_room(locked, day, time)
+    return True
 
 
-def get_ranked_facilities(user, request_type, requested_ml=None, day=None, bottles=False):
+def get_ranked_facilities(user, request_type, requested_ml=None, day=None, bottles=False, time=None):
     """
     Shared by the standalone /milkbank/allocate/ preview endpoint and
     the real booking-creation endpoint, so "how we pick a facility" only
@@ -161,7 +177,7 @@ def get_ranked_facilities(user, request_type, requested_ml=None, day=None, bottl
     the scheduler then greys out that facility's full days
     (Facility.fully_booked_dates).
     """
-    from .capacity import counts_by_day, today
+    from .capacity import counts_by_day, has_donor_slot_room, today
     from .models import Facility
 
     if user.latitude is None or user.longitude is None:
@@ -221,6 +237,11 @@ def get_ranked_facilities(user, request_type, requested_ml=None, day=None, bottl
         candidates = [f for f in candidates if f.slots_taken < f.capacity]
         if not candidates:
             raise DayFullyBooked(day)
+        # A donor's hour, at facilities that limit donor slots (the lab).
+        if request_type == "DONOR" and time is not None:
+            candidates = [f for f in candidates if has_donor_slot_room(f, day, time)]
+            if not candidates:
+                raise TimeSlotFull(day, time)
 
     return rank_facilities(candidates, request_type, user.latitude, user.longitude)
 
