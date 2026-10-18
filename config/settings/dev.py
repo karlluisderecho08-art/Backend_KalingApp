@@ -7,6 +7,9 @@ DEBUG = True
 # isn't reachable from the internet.
 DEMO_LOGIN_ENABLED = True
 
+# The built-in /admin/ site, handy locally; off in production (see base.py).
+DJANGO_ADMIN_ENABLED = env.bool("DJANGO_ADMIN_ENABLED", default=True)
+
 # 10.0.2.2 is the Android emulator's fixed alias for "the host machine" --
 # a physical phone on the same WiFi needs the machine's real LAN IP
 # instead, which changes if your router reassigns it later. Update it

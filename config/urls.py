@@ -14,12 +14,12 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+from django.conf import settings
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
     path('auth/', include('accounts.urls')),
     path('articles/', include('articles.urls')),
     path('directory/', include('directory.urls')),
@@ -33,3 +33,9 @@ urlpatterns = [
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 ]
+
+# Django's built-in admin site, only where DJANGO_ADMIN_ENABLED is on (dev,
+# by default). Its login sits outside the API's lockout and rate limits, so
+# production leaves it off -- see the setting in config/settings/base.py.
+if settings.DJANGO_ADMIN_ENABLED:
+    urlpatterns.insert(0, path('admin/', admin.site.urls))

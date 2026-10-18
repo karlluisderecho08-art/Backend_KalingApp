@@ -90,3 +90,54 @@ class BrevoApiEmailBackendTests(TestCase):
                 BrevoApiEmailBackend().send_messages([self._message()])
 
         mock_urlopen.assert_not_called()
+
+
+class DjangoAdminSiteToggleTests(TestCase):
+    """
+    The built-in /admin/ site exists only where DJANGO_ADMIN_ENABLED is on.
+    Its login is Django's own and sits outside the API's sign-in lockout and
+    rate limits, so production (where the setting defaults to off) must not
+    serve it at all.
+    """
+
+    def _urls_with(self, enabled):
+        import importlib
+
+        from django.urls import clear_url_caches
+
+        import config.urls
+
+        with self.settings(DJANGO_ADMIN_ENABLED=enabled):
+            module = importlib.reload(config.urls)
+        clear_url_caches()
+        self.addCleanup(lambda: (importlib.reload(config.urls), clear_url_caches()))
+        return module
+
+    # Resolved, not rendered: rendering the admin page needs collected static
+    # files, which only exist on the server. Whether the URL exists is the point.
+    def test_off_means_no_admin_login_page(self):
+        from django.urls import Resolver404, resolve
+
+        urls = self._urls_with(False)
+        with self.assertRaises(Resolver404):
+            resolve("/admin/login/", urlconf=urls)
+
+    def test_on_serves_it(self):
+        from django.urls import resolve
+
+        urls = self._urls_with(True)
+        self.assertEqual(resolve("/admin/login/", urlconf=urls).url_name, "login")
+
+    def test_the_api_sign_in_is_there_either_way(self):
+        from django.urls import resolve
+
+        for enabled in (False, True):
+            urls = self._urls_with(enabled)
+            self.assertEqual(resolve("/auth/login/", urlconf=urls).route, "auth/login/")
+
+    def test_production_settings_default_it_off(self):
+        import re
+        from pathlib import Path
+
+        base = (Path(__file__).resolve().parent.parent / "config" / "settings" / "base.py").read_text(encoding="utf-8")
+        self.assertRegex(base, re.compile(r'DJANGO_ADMIN_ENABLED = env\.bool\("DJANGO_ADMIN_ENABLED", default=False\)'))

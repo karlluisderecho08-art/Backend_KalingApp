@@ -142,6 +142,15 @@ CHAT_RETRIEVAL_SIMILARITY_MARGIN = env.float("CHAT_RETRIEVAL_SIMILARITY_MARGIN",
 # internet. dev.py turns it back on.
 DEMO_LOGIN_ENABLED = env.bool("DEMO_LOGIN_ENABLED", default=False)
 
+# Django's built-in admin site at /admin/. Off unless turned on: its login
+# page is Django's own, so it bypasses the API's sign-in lockout and rate
+# limits (accounts/lockout.py, core/throttling.py) -- unlimited password
+# guessing against exactly the platform-admin accounts. The admin portal
+# (Kalingapp_Admin) covers what it was used for. dev.py turns it on for
+# local work; set DJANGO_ADMIN_ENABLED=True in Render only for as long as
+# it is genuinely needed.
+DJANGO_ADMIN_ENABLED = env.bool("DJANGO_ADMIN_ENABLED", default=False)
+
 # Which account /auth/demo-login/ logs into, and the one seed_demo_user
 # creates. A single constant because it was previously hardcoded in BOTH --
 # the view and the management command -- so renaming the seeded account in
