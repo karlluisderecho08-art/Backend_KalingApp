@@ -19,6 +19,7 @@ from notifications.services import notify, notify_many
 from .allocation import (
     AllocationError,
     DayFullyBooked,
+    AmountOutsideLimits,
     InsufficientStock,
     LocationRequired,
     NoOperationalFacility,
@@ -123,6 +124,13 @@ def _allocation_error_response(exc):
             ),
             "fully_booked_date": exc.day.isoformat(),
         }, status=409)
+    if isinstance(exc, AmountOutsideLimits):
+        return Response({
+            "detail": (
+                f"No milk bank available right now accepts a request of {exc.requested_ml} mL. "
+                "Please check the amounts shown for your milk bank and try again."
+            ),
+        }, status=400)
     if isinstance(exc, InsufficientStock):
         return Response({
             "detail": (
@@ -132,6 +140,14 @@ def _allocation_error_response(exc):
             "max_available_ml": exc.max_available_ml,
         }, status=400)
     raise exc  # pragma: no cover -- only the subclasses above exist today
+
+
+def _amount_label(data):
+    """How she asked: "3 bottles (300 mL)" or "250 mL"."""
+    bottles = data.get("requested_bottles")
+    if bottles:
+        return f"{bottles} bottle{'s' if bottles != 1 else ''} ({data['requested_ml']} mL)"
+    return f"{data['requested_ml']} mL"
 
 
 class SmartAllocationView(APIView):
@@ -152,10 +168,12 @@ class SmartAllocationView(APIView):
         serializer = AllocationRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         request_type = serializer.validated_data["request_type"]
-        requested_ml = serializer.validated_data["requested_ml"] if request_type == "RECIPIENT" else None
+        is_recipient = request_type == "RECIPIENT"
+        requested_ml = serializer.validated_data["requested_ml"] if is_recipient else None
+        bottles = is_recipient and bool(serializer.validated_data["requested_bottles"])
 
         try:
-            ranked = get_ranked_facilities(request.user, request_type, requested_ml)
+            ranked = get_ranked_facilities(request.user, request_type, requested_ml, bottles=bottles)
         except AllocationError as exc:
             return _allocation_error_response(exc)
 
@@ -193,9 +211,11 @@ class MilkBankRequestCreateView(APIView):
         if MilkBankRequest.objects.filter(owner=request.user, current_sub_status__in=open_statuses).exists():
             return Response({"detail": "You already have an open request."}, status=400)
 
+        bottles = bool(data["requested_bottles"])
         try:
             ranked = get_ranked_facilities(
                 request.user, data["request_type"], data["requested_ml"], day=data["preferred_date"],
+                bottles=bottles,
             )
         except AllocationError as exc:
             return _allocation_error_response(exc)
@@ -224,7 +244,9 @@ class MilkBankRequestCreateView(APIView):
             facility = next(
                 (
                     candidate for candidate in ranked
-                    if claim_slot(candidate, data["request_type"], data["preferred_date"], data["requested_ml"])
+                    if claim_slot(
+                        candidate, data["request_type"], data["preferred_date"], data["requested_ml"], bottles,
+                    )
                 ),
                 None,
             )
@@ -258,6 +280,7 @@ class MilkBankRequestCreateView(APIView):
                 has_cooler=data["has_cooler"],
                 has_medical_abstract=data["has_medical_abstract"],
                 requested_ml=data["requested_ml"],
+                requested_bottles=data["requested_bottles"],
             )
             log_action(request.user, "booking.created", f"MilkBankRequest:{req.id}")
             notify(
@@ -275,7 +298,7 @@ class MilkBankRequestCreateView(APIView):
                 "New Booking Request",
                 f"{request.user.mom_name or request.user.email} submitted a "
                 f"{data['request_type'].lower()} request"
-                + (f" for {data['requested_ml']} mL." if data["requested_ml"] else "."),
+                + (f" for {_amount_label(data)}." if data["requested_ml"] else "."),
                 NotificationItem.Category.BOOKINGS,
             )
 

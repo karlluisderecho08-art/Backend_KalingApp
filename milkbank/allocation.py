@@ -1,6 +1,9 @@
 import math
 from datetime import timedelta
 
+from django.db.models import F, Value
+from django.db.models.functions import Greatest
+
 # PLACEHOLDER, not a researched figure. Nobody -- not the partner
 # facilities, not this codebase -- has supplied a real minimum-stock
 # cutoff yet (roadmap's own closing line flags this). This number only
@@ -8,14 +11,17 @@ from datetime import timedelta
 # to replace the moment a real number comes from St. Luke's/PGH/Fabella.
 MINIMUM_STOCK_THRESHOLD_ML = 300
 
-# Bounds on how much milk a mother may ask for in one request. Placeholders in
-# the same sense as the threshold above -- no facility has supplied real
-# figures. 30 mL is one small feed; 1000 mL is a little over two days for a
-# 3 kg neonate at the usual ~150 mL/kg/day, which is as much as one pickup
-# should ever cover. The mobile form and the facility dashboard repeat these
-# two numbers; keep them in step.
+# How much a mother may ask for in one request is set per facility now
+# (Facility.min_request_ml / max_request_ml, chosen by the admin), and
+# allocation only routes a request to a facility whose range holds it. These
+# two are the defaults a facility starts with -- 30 mL is one small feed;
+# 1000 mL is a little over two days for a 3 kg neonate at the usual
+# ~150 mL/kg/day.
 MIN_REQUEST_ML = 30
 MAX_REQUEST_ML = 1000
+# The outer sanity bound on any per-request figure, a facility's limits and a
+# mother's request alike: nothing above it is a plausible single pickup.
+REQUEST_ML_CEILING = 5000
 
 
 class AllocationError(Exception):
@@ -49,6 +55,15 @@ class DayFullyBooked(AllocationError):
         self.day = day
 
 
+class AmountOutsideLimits(AllocationError):
+    """Facilities are open, but none accepts a request of this size (or, in
+    bottles, none dispenses bottles) -- each facility sets its own limits."""
+
+    def __init__(self, requested_ml):
+        super().__init__(requested_ml)
+        self.requested_ml = requested_ml
+
+
 class InsufficientStock(AllocationError):
     """Facilities are open and have room, but none holds the requested volume."""
 
@@ -57,7 +72,7 @@ class InsufficientStock(AllocationError):
         self.max_available_ml = max_available_ml
 
 
-def eligibility_filters(request_type, requested_ml=None):
+def eligibility_filters(request_type, requested_ml=None, bottles=False):
     """
     The binary eligibility gate, as queryset filters: what a facility must
     be for a request of this type to be sent to it at all.
@@ -83,12 +98,25 @@ def eligibility_filters(request_type, requested_ml=None):
     # least that much, so a request is never routed to a bank that cannot
     # fill it. The same dict is the WHERE clause in claim_slot(), so this is
     # re-checked atomically at the instant the slot is taken.
+    #
+    # Each facility also sets how much one request may be. With an amount, it
+    # must fall inside that facility's range -- and a request made in bottles
+    # can only go to a facility that dispenses bottles. Without one (the
+    # preview, before she has said), a facility must at least hold its own
+    # minimum, or she would be matched somewhere she cannot ask for anything.
     if request_type == "RECIPIENT":
-        filters["stock_level_ml__gte"] = max(MINIMUM_STOCK_THRESHOLD_ML, requested_ml or 0)
+        if requested_ml:
+            filters["stock_level_ml__gte"] = max(MINIMUM_STOCK_THRESHOLD_ML, requested_ml)
+            filters["min_request_ml__lte"] = requested_ml
+            filters["max_request_ml__gte"] = requested_ml
+            if bottles:
+                filters["dispenses_bottles"] = True
+        else:
+            filters["stock_level_ml__gte"] = Greatest(Value(MINIMUM_STOCK_THRESHOLD_ML), F("min_request_ml"))
     return filters
 
 
-def claim_slot(facility, request_type, day, requested_ml=None):
+def claim_slot(facility, request_type, day, requested_ml=None, bottles=False):
     """
     Whether one more booking on `day` can be placed at `facility` right now.
     Returns False if the facility stopped being eligible, or `day` filled up,
@@ -112,7 +140,7 @@ def claim_slot(facility, request_type, day, requested_ml=None):
 
     locked = (
         Facility.objects.select_for_update()
-        .filter(pk=facility.pk, **eligibility_filters(request_type, requested_ml))
+        .filter(pk=facility.pk, **eligibility_filters(request_type, requested_ml, bottles))
         .first()
     )
     if locked is None:
@@ -120,7 +148,7 @@ def claim_slot(facility, request_type, day, requested_ml=None):
     return slots_taken(locked.pk, day) < locked.capacity
 
 
-def get_ranked_facilities(user, request_type, requested_ml=None, day=None):
+def get_ranked_facilities(user, request_type, requested_ml=None, day=None, bottles=False):
     """
     Shared by the standalone /milkbank/allocate/ preview endpoint and
     the real booking-creation endpoint, so "how we pick a facility" only
@@ -162,13 +190,21 @@ def get_ranked_facilities(user, request_type, requested_ml=None, day=None):
     # accidental protection is gone for good: a full facility that
     # happens to be nearest would otherwise rank FIRST, not last. This
     # gate is what makes reordering the sort safe.
-    candidates = list(Facility.objects.filter(**eligibility_filters(request_type, requested_ml)))
+    candidates = list(Facility.objects.filter(**eligibility_filters(request_type, requested_ml, bottles)))
     if not candidates:
-        # Distinguish "nobody has that much milk" from the general "nothing
-        # available": the mother can act on the former by asking for less.
+        # Distinguish what the mother can act on from the general "nothing
+        # available": an amount no open facility accepts (she can change it,
+        # or how she asks for it), or one none holds enough milk for (she can
+        # ask for less).
         if request_type == "RECIPIENT" and requested_ml:
-            others = Facility.objects.filter(**eligibility_filters(request_type))
-            best = max((f.stock_level_ml for f in others), default=0)
+            others = list(Facility.objects.filter(**eligibility_filters(request_type)))
+            accepting = [
+                f for f in others
+                if f.min_request_ml <= requested_ml <= f.max_request_ml and (f.dispenses_bottles or not bottles)
+            ]
+            if others and not accepting:
+                raise AmountOutsideLimits(requested_ml)
+            best = max((f.stock_level_ml for f in accepting), default=0)
             if best:
                 raise InsufficientStock(best)
         raise NoOperationalFacility()

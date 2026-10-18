@@ -3,10 +3,36 @@ from rest_framework import serializers
 from accounts.models import User
 from core.audit import log_action
 
-from .allocation import MAX_REQUEST_ML, MIN_REQUEST_ML
+from .allocation import REQUEST_ML_CEILING
 from .capacity import day_summary
 from .results import mother_result
-from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
+from .models import BOTTLE_ML, DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
+
+
+# How a mother's amount is checked on the way in: only that it is a plausible
+# whole number of mL (or bottles). Whether it is within limits depends on the
+# facility, and the facility isn't chosen until allocation runs -- which only
+# picks one whose min_request_ml..max_request_ml holds it (allocation.py).
+_REQUESTED_ML_ERRORS = {
+    "min_value": "Enter an amount greater than 0 mL.",
+    "max_value": f"The most any single request can be is {REQUEST_ML_CEILING} mL.",
+    "invalid": "Enter a whole number of millilitres.",
+}
+_MAX_BOTTLES = REQUEST_ML_CEILING // BOTTLE_ML
+
+
+def _resolve_bottles(attrs):
+    """A request in bottles is stored as bottles x BOTTLE_ML. If both are
+    sent they must agree; the bottle count wins as what she actually chose."""
+    bottles = attrs.get("requested_bottles")
+    if bottles:
+        ml = attrs.get("requested_ml")
+        if ml is not None and ml != bottles * BOTTLE_ML:
+            raise serializers.ValidationError(
+                {"requested_ml": f"{bottles} bottle(s) is {bottles * BOTTLE_ML} mL, not {ml} mL."}
+            )
+        attrs["requested_ml"] = bottles * BOTTLE_ML
+    return attrs
 
 
 class AllocationRequestSerializer(serializers.Serializer):
@@ -15,8 +41,14 @@ class AllocationRequestSerializer(serializers.Serializer):
     # preview only offers facilities that can actually fill it.
     requested_ml = serializers.IntegerField(
         required=False, allow_null=True, default=None,
-        min_value=MIN_REQUEST_ML, max_value=MAX_REQUEST_ML,
+        min_value=1, max_value=REQUEST_ML_CEILING, error_messages=_REQUESTED_ML_ERRORS,
     )
+    requested_bottles = serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=1, max_value=_MAX_BOTTLES,
+    )
+
+    def validate(self, attrs):
+        return _resolve_bottles(attrs)
 
 
 class FacilitySerializer(serializers.ModelSerializer):
@@ -65,8 +97,13 @@ class FacilitySerializer(serializers.ModelSerializer):
             "is_operational", "capacity", "booked_count", "bookings_today",
             "upcoming_bookings", "fully_booked_dates", "stock_level_ml",
             "latitude", "longitude",
+            "min_request_ml", "max_request_ml", "dispenses_bottles",
             "staff_user_id", "new_staff_email", "new_staff_password",
         ]
+        extra_kwargs = {
+            "min_request_ml": {"min_value": 1, "max_value": REQUEST_ML_CEILING},
+            "max_request_ml": {"min_value": 1, "max_value": REQUEST_ML_CEILING},
+        }
 
     def _calendar(self, obj):
         # One query per facility for all three fields, cached on the instance
@@ -89,7 +126,33 @@ class FacilitySerializer(serializers.ModelSerializer):
     def get_fully_booked_dates(self, obj) -> list:
         return self._calendar(obj)["fully_booked_dates"]
 
+    def _validate_request_limits(self, attrs):
+        """The per-request range must make sense on its own, and -- for a
+        facility that dispenses bottles -- leave room for at least one whole
+        bottle, or a mother choosing bottles there could pick no count at all.
+        On an edit, fields not being changed are read from the facility."""
+        def current(field, default):
+            if field in attrs:
+                return attrs[field]
+            return getattr(self.instance, field) if self.instance is not None else default
+
+        low = current("min_request_ml", Facility._meta.get_field("min_request_ml").default)
+        high = current("max_request_ml", Facility._meta.get_field("max_request_ml").default)
+        bottles = current("dispenses_bottles", False)
+        if low > high:
+            raise serializers.ValidationError(
+                {"max_request_ml": "The maximum per request can't be less than the minimum."}
+            )
+        if bottles and (high // BOTTLE_ML) * BOTTLE_ML < low:
+            raise serializers.ValidationError({
+                "dispenses_bottles": (
+                    f"Bottles hold {BOTTLE_ML} mL, so the range {low}-{high} mL has no whole "
+                    f"number of bottles in it. Widen the range to include a multiple of {BOTTLE_ML} mL."
+                )
+            })
+
     def validate(self, attrs):
+        self._validate_request_limits(attrs)
         staff_user_id = attrs.get("staff_user_id")
         new_staff_email = attrs.get("new_staff_email")
         new_staff_password = attrs.get("new_staff_password")
@@ -192,7 +255,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "representative_birthday", "representative_contact_number",
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract",
-            "amount_ml", "completed_at", "requested_ml", "result",
+            "amount_ml", "completed_at", "requested_ml", "requested_bottles", "result",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
@@ -201,7 +264,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "needs_representative", "representative_name",
             "representative_birthday", "representative_contact_number",
             "neonate_name", "clinic_info", "has_prescription_proof",
-            "has_cooler", "has_medical_abstract", "requested_ml",
+            "has_cooler", "has_medical_abstract", "requested_ml", "requested_bottles",
         ]
 
     def get_result(self, obj):
@@ -240,9 +303,10 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
     has_medical_abstract = serializers.BooleanField(required=False, default=False)
 
     # RECIPIENT only, ignored for a DONOR (see validate()). Whole mL, like every
-    # other volume in the system. The bounds are the per-request limits in
-    # allocation.py; "not more than the facility holds" can't be checked here
-    # because the facility isn't chosen yet -- allocation does it.
+    # other volume in the system. Only a plausibility bound is checked here:
+    # the real limits are the facility's own (min_request_ml / max_request_ml)
+    # and "not more than it holds", and the facility isn't chosen yet --
+    # allocation only picks one that satisfies all three.
     #
     # Optional rather than required, same as the requirements fields above: the
     # mobile app always sends it now, but an installed copy that predates it
@@ -250,18 +314,19 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
     # request as "No amount was specified".
     requested_ml = serializers.IntegerField(
         required=False, allow_null=True, default=None,
-        min_value=MIN_REQUEST_ML, max_value=MAX_REQUEST_ML,
-        error_messages={
-            "min_value": f"The minimum request is {MIN_REQUEST_ML} mL.",
-            "max_value": f"The maximum per request is {MAX_REQUEST_ML} mL.",
-            "invalid": "Enter a whole number of millilitres.",
-        },
+        min_value=1, max_value=REQUEST_ML_CEILING, error_messages=_REQUESTED_ML_ERRORS,
+    )
+    # Instead of requested_ml, when she asked in bottles -- only a facility
+    # that dispenses_bottles will be chosen for such a request.
+    requested_bottles = serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=1, max_value=_MAX_BOTTLES,
     )
 
     def validate(self, attrs):
         if attrs["request_type"] != MilkBankRequest.RequestType.RECIPIENT:
             attrs["requested_ml"] = None
-        return attrs
+            attrs["requested_bottles"] = None
+        return _resolve_bottles(attrs)
 
 
 class ProposeCounterOfferSerializer(serializers.Serializer):

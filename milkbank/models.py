@@ -45,8 +45,26 @@ class Facility(models.Model):
     latitude = models.FloatField()
     longitude = models.FloatField()
 
+    # How much one recipient may ask this facility for in a single request,
+    # set by the admin per facility. Allocation only sends a request here if
+    # its amount falls inside this range (allocation.eligibility_filters).
+    # The defaults are the old system-wide limits, so facilities that existed
+    # before these fields behave exactly as they did.
+    min_request_ml = models.PositiveIntegerField(default=30, help_text="Smallest amount per request, in mL")
+    max_request_ml = models.PositiveIntegerField(default=1000, help_text="Largest amount per request, in mL")
+    # Whether this facility dispenses in standard milk bank bottles
+    # (BOTTLE_ML each). When it does, a mother matched here may ask for a
+    # number of bottles instead of a number of mL.
+    dispenses_bottles = models.BooleanField(default=False)
+
     def __str__(self):
         return self.name
+
+
+# Philippine milk banks dispense pasteurized donor milk in standard 100 mL
+# bottles. A request "in bottles" is stored as BOTTLE_ML x the count, so
+# every volume in the system stays in mL (see the note below).
+BOTTLE_ML = 100
 
 
 # Milk volume is millilitres everywhere in this system -- what staff
@@ -168,6 +186,10 @@ class MilkBankRequest(models.Model):
     # only moves at completion, by the amount staff actually dispense
     # (amount_ml below), which may differ.
     requested_ml = models.PositiveIntegerField(null=True, blank=True)
+    # Set when she asked in bottles rather than mL (only possible at a
+    # facility that dispenses_bottles); requested_ml is then this x BOTTLE_ML.
+    # Null when she asked in mL, so staff see her request the way she made it.
+    requested_bottles = models.PositiveIntegerField(null=True, blank=True)
 
     # The 8-business-hour SLA clock (see milkbank/business_hours.py). Null
     # whenever nothing is actively pending on someone -- set the moment a
