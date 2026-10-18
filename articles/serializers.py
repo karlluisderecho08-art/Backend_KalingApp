@@ -87,14 +87,16 @@ class ArticleSerializer(serializers.ModelSerializer):
 class AdminArticleSerializer(serializers.ModelSerializer):
     """Read/write shape for the platform admin's Knowledge Base CRUD --
     no nested comments (unlike ArticleSerializer), since writing an
-    article never touches its comments."""
+    article never touches its comments. `created_at` is read-only (the
+    model sets it), so a client cannot backdate an article."""
 
     class Meta:
         model = Article
         fields = [
             "id", "title", "category", "read_time", "teaser", "content",
-            "author", "rating", "evidence_label", "date",
+            "author", "rating", "evidence_label", "date", "created_at",
         ]
+        read_only_fields = ["created_at"]
 
     def validate_content(self, value):
         # Bold/italic markers split across a line break render as literal

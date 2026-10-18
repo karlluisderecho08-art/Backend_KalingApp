@@ -157,6 +157,44 @@ class AdminArticleSaveRepairsMarkersTests(APITestCase):
         self.assertEqual(fine.content, "Already **fine**.")
 
 
+class AdminArticleDateAddedTests(APITestCase):
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            email="kb-dates@example.com", password="x", is_active=True, is_staff=True,
+        )
+        self.client.force_authenticate(user=self.admin)
+        self.payload = dict(
+            title="New Guide", category=Article.Category.NEWBORN, read_time="3 min read",
+            teaser="Teaser.", content="Body.", author="Dr. Cruz", date="October 2026",
+        )
+
+    def test_a_new_article_records_when_it_was_added(self):
+        response = self.client.post("/articles/admin/", self.payload, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIsNotNone(response.data["created_at"])
+        listed = self.client.get("/articles/admin/").data
+        self.assertEqual(listed[0]["created_at"], response.data["created_at"])
+
+    def test_the_client_cannot_set_or_change_it(self):
+        response = self.client.post(
+            "/articles/admin/", {**self.payload, "created_at": "2001-01-01T00:00:00Z"}, format="json",
+        )
+        self.assertFalse(response.data["created_at"].startswith("2001"))
+
+        added = response.data["created_at"]
+        self.client.patch(
+            f"/articles/admin/{response.data['id']}/", {"created_at": "2001-01-01T00:00:00Z"}, format="json",
+        )
+        self.assertEqual(self.client.get("/articles/admin/").data[0]["created_at"], added)
+
+    def test_articles_from_before_the_field_have_none(self):
+        old = make_article()
+        Article.objects.filter(pk=old.pk).update(created_at=None)
+
+        self.assertIsNone(self.client.get("/articles/admin/").data[0]["created_at"])
+
+
 @override_settings(COMMENT_AUTO_REMOVE_REPORTS=3)
 class CommentAutoRemovalTests(APITestCase):
     """

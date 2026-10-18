@@ -29,6 +29,12 @@ class Article(models.Model):
     # DateField, since the frontend never parses or sorts by it -- it's
     # shown as-is ("May 2026").
     date = models.CharField(max_length=50)
+    # When the article was actually added -- unlike `date` above, a label the
+    # admin types. Shown as "Date added" in the admin's Knowledge Base. Null
+    # for articles that existed before this field (2026-10-19): nothing had
+    # recorded when those were created, and a made-up date would be worse
+    # than none. Ids only ever go up, so id order is still add order for all.
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     def __str__(self):
         return self.title
