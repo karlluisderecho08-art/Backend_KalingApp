@@ -25,6 +25,8 @@ python manage.py seed_support_contacts
 python manage.py seed_facilities
 python manage.py seed_facility_staff
 python manage.py ensure_admin
+python manage.py purge_expired_data
+python manage.py purge_orphaned_serology_files
 
 # Builds Kali's retrieval index over the knowledge base and embeds every
 # passage (see chat/retrieval.py). Must come after seed_articles, since

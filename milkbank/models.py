@@ -167,6 +167,10 @@ class MilkBankRequest(models.Model):
     representative_name = models.CharField(max_length=255, blank=True)
     representative_birthday = models.DateField(null=True, blank=True)
     representative_contact_number = models.CharField(max_length=50, blank=True)
+    # Set when the three fields above were cleared under the retention policy
+    # (core/retention.py), so the facility sees "removed" rather than a
+    # representative with no name.
+    representative_purged_at = models.DateTimeField(null=True, blank=True)
 
     # Recipient requirements checklist -- RECIPIENT-only, same treatment as
     # the representative fields just above (blank/False for a DONOR row,
@@ -231,6 +235,10 @@ class MilkBankRequest(models.Model):
     # booking scheduled for one date can be completed on another.
     amount_ml = models.PositiveIntegerField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    # When the request reached a final status (completed, declined or
+    # expired) -- set by transitions.apply_transition(). The retention clock
+    # for the pickup representative's details starts here.
+    closed_at = models.DateTimeField(null=True, blank=True)
 
     @property
     def stages(self):

@@ -20,6 +20,9 @@ Status = MilkBankRequest.Status
 # nobody is waiting on anyone, so the clock is cleared instead.
 STATUSES_WITH_SLA_CLOCK = {Status.PENDING, Status.AWAITING_ATTENDANCE}
 
+# The statuses a request can never leave (see ALLOWED_TRANSITIONS below).
+FINAL_STATUSES = {Status.COMPLETED, Status.DECLINED, Status.EXPIRED}
+
 # What to tell the mother when her booking reaches each status. This is
 # the server-side replacement for the Kotlin app hand-writing a
 # notification at each call site (e.g. finalizeAppointment()) -- one
@@ -141,7 +144,13 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
 
     req.current_sub_status = new_status
     req.response_deadline = add_business_hours(timezone.now()) if new_status in STATUSES_WITH_SLA_CLOCK else None
-    req.save(update_fields=["current_sub_status", "response_deadline"])
+    update_fields = ["current_sub_status", "response_deadline"]
+    # A final status starts the retention clock for the pickup
+    # representative's details (core/retention.py).
+    if new_status in FINAL_STATUSES:
+        req.closed_at = timezone.now()
+        update_fields.append("closed_at")
+    req.save(update_fields=update_fields)
     log_action(actor, f"booking.{action_name}", f"MilkBankRequest:{req.id}")
 
     message = message_override or STATUS_NOTIFICATIONS.get(new_status)

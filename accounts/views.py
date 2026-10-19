@@ -14,6 +14,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.audit import log_action
+from core.retention import maybe_purge
 from core.throttling import ClientIPScopedRateThrottle
 from directory.models import SupportContact
 from notifications.models import NotificationItem
@@ -501,6 +502,9 @@ class MeView(generics.RetrieveUpdateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
+        # Every app and console loads this on start, so it is where data
+        # retention gets its regular chance to run (at most hourly).
+        maybe_purge()
         return self.request.user
 
     def get_serializer_class(self):
@@ -696,3 +700,81 @@ class LocationConsentView(APIView):
             log_action(user, "location.consent_given", f"User:{user.id}")
 
         return Response(UserSerializer(user).data)
+
+
+class DeleteMyAccountView(APIView):
+    """
+    POST /auth/me/delete/  {password}
+
+    A mother permanently deletes her own account from the app.
+
+    She confirms with her password, under the same lockout as signing in
+    (accounts/lockout.py), so a phone left unlocked can't be used to wipe her
+    account and this can't be used to guess her password either.
+
+    Any booking still open is cancelled: the facility's staff are told which
+    slot was freed (without her name -- she is deleting her data), and the
+    slot frees itself because capacity is counted from the requests that
+    exist. Then the account is deleted, and with it, through CASCADE, her
+    requests and their questionnaires (the serology photo files go too --
+    milkbank/signals.py), pickup representative details, transactions,
+    comments and reports, saved articles, notifications and Kali chat. Audit
+    entries stay (their actor is cleared) until the retention period ends.
+
+    Facility staff and platform admin accounts are removed by a platform admin
+    instead: one of them deleting itself could leave a facility, or the whole
+    platform, with nobody able to sign in.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = "login"
+    throttle_classes = [ClientIPScopedRateThrottle]
+
+    @extend_schema(request=None)
+    def post(self, request):
+        from django.db import transaction
+
+        from milkbank.models import MilkBankRequest
+
+        user = request.user
+        if user.is_staff or user.role != User.Role.MOTHER:
+            return Response(
+                {"detail": "Staff and admin accounts can only be removed by a platform admin."},
+                status=403,
+            )
+        if lockout.is_locked(user):
+            return ThrottledTokenObtainPairView._locked_response(user)
+
+        password = request.data.get("password") or ""
+        if not user.check_password(password):
+            lockout.register_failure(user)
+            if lockout.is_locked(user):
+                return ThrottledTokenObtainPairView._locked_response(user)
+            return Response({"detail": "That password is incorrect.", "code": "wrong_password"}, status=400)
+
+        open_statuses = [
+            MilkBankRequest.Status.PENDING,
+            MilkBankRequest.Status.AWAITING_ATTENDANCE,
+            MilkBankRequest.Status.SCHEDULED,
+            MilkBankRequest.Status.COUNTER_OFFERED,
+        ]
+        with transaction.atomic():
+            for req in MilkBankRequest.objects.filter(owner=user, current_sub_status__in=open_statuses).select_related(
+                "allocated_facility"
+            ):
+                kind = "donation" if req.request_type == MilkBankRequest.RequestType.DONOR else "milk request"
+                when = f"{req.preferred_date:%B} {req.preferred_date.day}, {req.preferred_date.year} at {req.preferred_time}"
+                notify_many(
+                    User.objects.filter(
+                        facility=req.allocated_facility, role=User.Role.FACILITY_STAFF, is_active=True,
+                    ),
+                    "Booking Cancelled",
+                    f"A {kind} booking for {when} was cancelled because the mother deleted her KalingApp "
+                    "account. The slot is free again.",
+                    NotificationItem.Category.BOOKINGS,
+                )
+                log_action(None, "booking.cancelled_account_deleted", f"MilkBankRequest:{req.id}")
+            # Logged without her email: she is deleting her personal data.
+            log_action(None, "user.self_deleted", f"User:{user.id} (mother)")
+            user.delete()
+        return Response(status=204)

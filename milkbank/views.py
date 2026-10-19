@@ -13,6 +13,8 @@ from rest_framework.views import APIView
 
 from accounts.models import User
 from core.audit import log_action
+from core.retention import maybe_purge, purge_expired_data
+from core.versioning import RequiresSupportedApp
 from notifications.models import NotificationItem
 from notifications.services import notify, notify_many
 
@@ -171,7 +173,7 @@ class SmartAllocationView(APIView):
     allocation for real.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RequiresSupportedApp]
     serializer_class = AllocationRequestSerializer
 
     def post(self, request):
@@ -205,7 +207,7 @@ class MilkBankRequestCreateView(APIView):
     the booking in one step.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RequiresSupportedApp]
     serializer_class = MilkBankRequestCreateSerializer
 
     def post(self, request):
@@ -328,6 +330,7 @@ class MyMilkBankRequestsView(generics.ListAPIView):
         # pending/awaiting_attendance status that's actually already overdue
         # just because nothing else happened to sweep it first.
         sweep_expired_requests()
+        maybe_purge()  # data retention, at most hourly -- see core/retention.py
         return MilkBankRequest.objects.filter(owner=self.request.user).order_by("-submitted_at", "-id")
 
 
@@ -721,7 +724,11 @@ class StaffSweepExpiredView(APIView):
             return Response({"detail": "Not found."}, status=404)
 
         expired = sweep_expired_requests()
-        return Response({"expired_count": len(expired), "expired_ids": [req.id for req in expired]})
+        # The same pinger keeps data retention on schedule (core/retention.py).
+        purged = purge_expired_data()
+        return Response({
+            "expired_count": len(expired), "expired_ids": [req.id for req in expired], "purged": purged,
+        })
 
 
 class StaffProposeCounterOfferView(generics.GenericAPIView):
@@ -964,7 +971,7 @@ class DonorQuestionnaireView(APIView):
     documented on the model, not solved here.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RequiresSupportedApp]
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(request=None, responses=DonorQuestionnaireSerializer)

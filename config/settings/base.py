@@ -151,6 +151,38 @@ DEMO_LOGIN_ENABLED = env.bool("DEMO_LOGIN_ENABLED", default=False)
 # it is genuinely needed.
 DJANGO_ADMIN_ENABLED = env.bool("DJANGO_ADMIN_ENABLED", default=False)
 
+# --- Versions ---------------------------------------------------------------
+# One product version for every part of KalingApp (backend, admin portal,
+# facility console, mother app). Bump it here, in both package.json files and
+# in the app's versionName together, and tag each repository v<version>.
+KALINGAPP_VERSION = "1.1.0"
+
+# What the mother app is told by GET /app/version/. An installed app whose
+# versionCode is below APP_MIN_VERSION_CODE is blocked until it updates
+# (forced update), and the API refuses its bookings and chat with a 426 that
+# says where to download the new one (core/versioning.py) -- which is what
+# reaches copies too old to ask. Raise both codes when publishing a release.
+# The app sends its own code in the X-KalingApp-Version-Code header.
+APP_LATEST_VERSION_NAME = env("APP_LATEST_VERSION_NAME", default=KALINGAPP_VERSION)
+APP_LATEST_VERSION_CODE = env.int("APP_LATEST_VERSION_CODE", default=2)
+APP_MIN_VERSION_CODE = env.int("APP_MIN_VERSION_CODE", default=2)
+APP_DOWNLOAD_URL = env("APP_DOWNLOAD_URL", default="https://github.com/karlluisderecho08-art/KalingApp-Releases")
+
+# --- Data retention (RA 10173) -------------------------------------------
+# How long personal data is kept before core/retention.py deletes it. Runs on
+# every deploy, from the expiry pinger, and at most hourly on ordinary use.
+#   pending sign-ups       never verified, counted from the last code sent
+#   representative details a pickup representative's name, birthday and
+#                          number, counted from when the request closed
+#   chat messages          Kali conversations
+#   audit log              who-did-what records
+# Serology photos are deleted together with their request or account
+# (milkbank/signals.py), not on a timer.
+RETENTION_PENDING_SIGNUP_HOURS = env.int("RETENTION_PENDING_SIGNUP_HOURS", default=24)
+RETENTION_REPRESENTATIVE_DAYS = env.int("RETENTION_REPRESENTATIVE_DAYS", default=7)
+RETENTION_CHAT_DAYS = env.int("RETENTION_CHAT_DAYS", default=90)
+RETENTION_AUDIT_DAYS = env.int("RETENTION_AUDIT_DAYS", default=365)
+
 # Which account /auth/demo-login/ logs into, and the one seed_demo_user
 # creates. A single constant because it was previously hardcoded in BOTH --
 # the view and the management command -- so renaming the seeded account in
@@ -549,7 +581,7 @@ REST_FRAMEWORK = {
 SPECTACULAR_SETTINGS = {
     "TITLE": "KalingApp API",
     "DESCRIPTION": "Backend for the KalingApp mobile app -- accounts, articles, and the support directory.",
-    "VERSION": "1.0.0",
+    "VERSION": KALINGAPP_VERSION,
     # Article.category and NotificationItem.category are unrelated
     # choice sets that both happen to be named "category" -- without
     # this, drf-spectacular auto-names the second one something opaque

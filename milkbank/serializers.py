@@ -54,13 +54,12 @@ class AllocationRequestSerializer(serializers.Serializer):
 class FacilitySerializer(serializers.ModelSerializer):
     """
     staff_user_id / new_staff_email / new_staff_password are write-only
-    and not Facility columns -- see create() below, which is the only
-    place they do anything. Accepted (and silently ignored, same as any
-    unknown attribute Django lets you set on an instance without saving
-    it) on an update too, since ModelSerializer.update() isn't
-    overridden here -- FacilityDetailView's PATCH/PUT was never meant to
-    reassign staff, only FacilityListView's POST (a brand-new facility,
-    from the admin dashboard's Add Facility modal).
+    and not Facility columns -- see create() and update() below. Either one
+    ADDS a staff login to the facility (an unassigned staff account, or a
+    brand-new one); nothing ever removes or moves a login already assigned.
+    On create this is the Add Facility modal's staff section; on update it
+    is the same section in Edit Facility, for a facility that lost its only
+    login or needs another.
 
     A facility is created with no staff account at all by default --
     both fields are optional, and leaving them out is the common case
@@ -89,6 +88,9 @@ class FacilitySerializer(serializers.ModelSerializer):
     # are unaffected. Both empty when the facility doesn't limit donor slots.
     full_donor_slots = serializers.SerializerMethodField()
     donor_fully_booked_dates = serializers.SerializerMethodField()
+    # Who can sign in to this facility's console, so the admin can see it
+    # before adding another account.
+    staff_emails = serializers.SerializerMethodField()
 
     staff_user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     new_staff_email = serializers.EmailField(write_only=True, required=False)
@@ -105,7 +107,7 @@ class FacilitySerializer(serializers.ModelSerializer):
             "latitude", "longitude",
             "min_request_ml", "max_request_ml", "dispenses_bottles",
             "limit_donor_slots", "donor_bookings_per_slot",
-            "full_donor_slots", "donor_fully_booked_dates",
+            "full_donor_slots", "donor_fully_booked_dates", "staff_emails",
             "staff_user_id", "new_staff_email", "new_staff_password",
         ]
         extra_kwargs = {
@@ -141,6 +143,11 @@ class FacilitySerializer(serializers.ModelSerializer):
 
     def get_donor_fully_booked_dates(self, obj) -> list:
         return self._calendar(obj)["donor_fully_booked_dates"]
+
+    def get_staff_emails(self, obj) -> list:
+        if not obj.pk:
+            return []
+        return sorted(obj.staff.filter(role=User.Role.FACILITY_STAFF).values_list("email", flat=True))
 
     def _validate_request_limits(self, attrs):
         """The per-request range must make sense on its own, and -- for a
@@ -229,12 +236,29 @@ class FacilitySerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        staff_user_id = validated_data.pop("staff_user_id", None)
-        new_staff_email = validated_data.pop("new_staff_email", None)
-        new_staff_password = validated_data.pop("new_staff_password", None)
-
+        staff = self._pop_staff(validated_data)
         facility = super().create(validated_data)
+        self._assign_staff(facility, *staff)
+        return facility
 
+    def update(self, instance, validated_data):
+        # Adding a staff account to an existing facility works the same way as
+        # at creation (an unassigned staff account, or a brand-new one). It
+        # only ever ADDS a login: nobody already assigned is removed or moved.
+        staff = self._pop_staff(validated_data)
+        facility = super().update(instance, validated_data)
+        self._assign_staff(facility, *staff)
+        return facility
+
+    @staticmethod
+    def _pop_staff(validated_data):
+        return (
+            validated_data.pop("staff_user_id", None),
+            validated_data.pop("new_staff_email", None),
+            validated_data.pop("new_staff_password", None),
+        )
+
+    def _assign_staff(self, facility, staff_user_id, new_staff_email, new_staff_password):
         actor = self.context["request"].user if "request" in self.context else None
         if staff_user_id:
             User.objects.filter(pk=staff_user_id).update(facility=facility)
@@ -248,8 +272,6 @@ class FacilitySerializer(serializers.ModelSerializer):
                 actor, "facility.staff_created",
                 f"User:{new_user.id} ({new_staff_email}) -> Facility:{facility.id}",
             )
-
-        return facility
 
 
 class RankedFacilitySerializer(FacilitySerializer):
@@ -294,6 +316,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract",
             "amount_ml", "completed_at", "requested_ml", "requested_bottles", "result",
+            "closed_at", "representative_purged_at",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
@@ -303,6 +326,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "representative_birthday", "representative_contact_number",
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract", "requested_ml", "requested_bottles",
+            "closed_at", "representative_purged_at",
         ]
 
     def get_result(self, obj):
@@ -462,3 +486,14 @@ class DonorQuestionnaireCreateSerializer(DonorQuestionnaireSerializer):
 
     class Meta(DonorQuestionnaireSerializer.Meta):
         fields = [f for f in DonorQuestionnaireSerializer.Meta.fields if f != "photo_attached"] + ["serology_photo"]
+
+    def validate(self, attrs):
+        # A donor who says she has a recent serology test attaches its photo:
+        # the reminder before the form tells her she will, and staff need it
+        # to review her. Answering No is still allowed -- the facility handles
+        # testing in person. The app enforces the same rule before sending.
+        if attrs.get("has_recent_serology_test") and not attrs.get("serology_photo"):
+            raise serializers.ValidationError(
+                {"serology_photo": "Please attach a photo of your serology test result."}
+            )
+        return attrs

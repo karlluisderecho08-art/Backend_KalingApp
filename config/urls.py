@@ -19,6 +19,8 @@ from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+from core.views import AppVersionView, AuditLogView, SystemStatusView
+
 urlpatterns = [
     path('auth/', include('accounts.urls')),
     path('articles/', include('articles.urls')),
@@ -28,6 +30,9 @@ urlpatterns = [
     path('chat/', include('chat.urls')),
     path('dashboard/', include('dashboard.urls')),
     path('messaging/', include('messaging.urls')),
+    path('app/version/', AppVersionView.as_view(), name='app-version'),
+    path('core/audit-log/', AuditLogView.as_view(), name='audit-log'),
+    path('core/system-status/', SystemStatusView.as_view(), name='system-status'),
     # /api/schema/ -- the raw, machine-readable endpoint list (JSON/YAML).
     # /api/docs/   -- the same thing, but as a clickable page a human can read.
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

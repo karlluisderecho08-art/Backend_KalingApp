@@ -48,6 +48,11 @@ OTHER_DAY = _first_weekday_after(
 )
 
 
+# Where the questionnaire tests store uploaded photos: a throwaway folder,
+# never backend/media.
+_TEST_MEDIA_ROOT = __import__("tempfile").mkdtemp(prefix="kaling-test-media-")
+
+
 def make_facility(slots_taken=None, **overrides):
     """
     `slots_taken` only attaches that day's load as an attribute, for the pure
@@ -1605,6 +1610,7 @@ class CanViewQuestionnaireTests(APITestCase):
         self.assertFalse(_can_view_questionnaire(self.other_facility_staff, self.req))
 
 
+@override_settings(MEDIA_ROOT=_TEST_MEDIA_ROOT)
 class DonorQuestionnaireSubmissionTests(APITestCase):
     """
     Full round trip through DonorQuestionnaireView: the mobile app POSTs
@@ -1656,12 +1662,20 @@ class DonorQuestionnaireSubmissionTests(APITestCase):
         self.assertTrue(data["photo_attached"])
 
     def test_a_second_submission_for_the_same_request_is_rejected(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        def photo():
+            return SimpleUploadedFile("serology.jpg", b"\xff\xd8\xff\xe0fake", content_type="image/jpeg")
+
         self.client.force_authenticate(user=self.mother)
-        self.client.post(
-            f"/milkbank/requests/{self.req.id}/donor-questionnaire/", data=self.answers, format="multipart",
+        first = self.client.post(
+            f"/milkbank/requests/{self.req.id}/donor-questionnaire/",
+            data={**self.answers, "serology_photo": photo()}, format="multipart",
         )
+        self.assertEqual(first.status_code, 201, first.data)
         second = self.client.post(
-            f"/milkbank/requests/{self.req.id}/donor-questionnaire/", data=self.answers, format="multipart",
+            f"/milkbank/requests/{self.req.id}/donor-questionnaire/",
+            data={**self.answers, "serology_photo": photo()}, format="multipart",
         )
         self.assertEqual(second.status_code, 400)
 
@@ -1671,6 +1685,7 @@ class DonorQuestionnaireSubmissionTests(APITestCase):
         self.assertEqual(response.status_code, 404)
 
 
+@override_settings(MEDIA_ROOT=_TEST_MEDIA_ROOT)
 class MyLatestDonorQuestionnaireEndpointTests(APITestCase):
     """
     GET /milkbank/donor-questionnaire/mine/latest/ -- what the app calls
@@ -1695,11 +1710,15 @@ class MyLatestDonorQuestionnaireEndpointTests(APITestCase):
         }
 
     def _submit_questionnaire(self, owner, req, **overrides):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
         self.client.force_authenticate(user=owner)
-        self.client.post(
-            f"/milkbank/requests/{req.id}/donor-questionnaire/",
-            data={**self.answers, **overrides}, format="multipart",
-        )
+        data = {**self.answers, **overrides}
+        # "Yes, I have a recent serology test" must come with its photo.
+        if data.get("has_recent_serology_test") in (True, "true") and "serology_photo" not in data:
+            data["serology_photo"] = SimpleUploadedFile("serology.jpg", b"\xff\xd8\xff\xe0fake", content_type="image/jpeg")
+        response = self.client.post(f"/milkbank/requests/{req.id}/donor-questionnaire/", data=data, format="multipart")
+        self.assertEqual(response.status_code, 201, response.data)
 
     def test_returns_204_when_she_has_never_submitted_one(self):
         self.client.force_authenticate(user=self.mother)

@@ -10,6 +10,11 @@ DEMO_LOGIN_ENABLED = True
 # The built-in /admin/ site, handy locally; off in production (see base.py).
 DJANGO_ADMIN_ENABLED = env.bool("DJANGO_ADMIN_ENABLED", default=True)
 
+# No app-version gate locally: curl, the test suite and a dev build pointed at
+# this server don't all send X-KalingApp-Version-Code. Production gates at the
+# base.py default; the tests that cover the gate turn it on themselves.
+APP_MIN_VERSION_CODE = env.int("APP_MIN_VERSION_CODE", default=0)
+
 # 10.0.2.2 is the Android emulator's fixed alias for "the host machine" --
 # a physical phone on the same WiFi needs the machine's real LAN IP
 # instead, which changes if your router reassigns it later. Update it

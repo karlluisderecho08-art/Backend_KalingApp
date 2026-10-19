@@ -5,6 +5,8 @@ from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.versioning import RequiresSupportedApp
+
 from .gemini_client import HISTORY_TURNS, get_ai_response
 from .guardrail import OFF_TOPIC_RESPONSE, is_breastfeeding_topic
 from .models import ChatMessage, ChatSession
@@ -33,7 +35,7 @@ class SendMessageView(APIView):
     permanently, if either threshold is crossed.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, RequiresSupportedApp]
     serializer_class = SendMessageSerializer
 
     def post(self, request):
