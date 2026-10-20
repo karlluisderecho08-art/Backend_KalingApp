@@ -1,34 +1,993 @@
 --
--- KalingApp backend -- FULL dump (schema + data) of a freshly built
--- development SQLite database, at Backend_KalingApp@256b7a0.
+-- KalingApp backend -- PostgreSQL FULL dump (schema + data) of a freshly built database.
 --
--- Built on 2026-10-02 by running, against an empty database:
---   manage.py migrate
---   manage.py seed_articles
---   manage.py seed_support_contacts
---   manage.py seed_facilities
--- and dumped with Python's sqlite3 Connection.iterdump().
---
--- It is NOT a dump of production. It contains no accounts, bookings,
--- questionnaires, chat messages or notifications -- only the schema
--- and the seed/reference data every deployment starts with:
---   articles_article (6), directory_supportcontact (4), milkbank_facility (4)
+-- Built on 2026-10-20 from Backend_KalingApp@5b510c6 (version 1.1.0), by running
+-- the backend's own migrations against an empty, throwaway PostgreSQL 18
+-- database on the development machine, then dumping it with pg_dump 18:
+--   manage.py migrate            (all 63 migrations, up to milkbank.0018)
+--   manage.py createcachetable   (django_cache_table, as build.sh does in production)
+--   manage.py seed_articles          (6 Knowledge Hub articles)
+--   manage.py seed_support_contacts  (4 Contact Directory entries)
+--   manage.py seed_facilities        (4 milk bank facilities)
 -- plus Django's own bookkeeping rows (permissions, content types,
--- applied migrations). No personal data and no credentials are in it.
+-- applied migrations) and the seed command's one audit-log entry.
+-- Data is written as INSERT statements so any SQL tool can load it.
 --
--- 25 tables. Load into an empty SQLite database with:
---   sqlite3 kalingapp.sqlite3 < db_dump.sql
+-- It is NOT a dump of production. Production was never contacted and no
+-- production credentials were used, so it contains no accounts, bookings,
+-- questionnaires, serology photos, chat messages or notifications.
+-- Every deploy runs these same migrations (build.sh), so production's
+-- schema is this one as long as that deploy has gone out.
 --
--- Production runs PostgreSQL, whose DDL differs (identity columns,
--- timestamptz, boolean): see docs/schema_dump.sql for that schema.
+-- 30 tables in the public schema: Django's own (auth, admin, contenttypes,
+-- sessions, migrations, cache) and KalingApp's (accounts, articles, chat,
+-- core, directory, messaging, milkbank, notifications).
 --
-BEGIN TRANSACTION;
-CREATE TABLE "accounts_pendingregistration" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "email" varchar(254) NOT NULL UNIQUE, "password" varchar(128) NOT NULL, "mom_name" varchar(150) NOT NULL, "baby_name" varchar(150) NOT NULL, "code" varchar(6) NOT NULL, "attempts" smallint unsigned NOT NULL CHECK ("attempts" >= 0), "created_at" datetime NOT NULL, "sent_at" datetime NULL);
-CREATE TABLE "accounts_user" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "password" varchar(128) NOT NULL, "last_login" datetime NULL, "is_superuser" bool NOT NULL, "first_name" varchar(150) NOT NULL, "last_name" varchar(150) NOT NULL, "is_staff" bool NOT NULL, "is_active" bool NOT NULL, "date_joined" datetime NOT NULL, "email" varchar(254) NOT NULL UNIQUE, "role" varchar(20) NOT NULL, "mom_name" varchar(150) NOT NULL, "baby_name" varchar(150) NOT NULL, "baby_age_weeks" integer unsigned NULL CHECK ("baby_age_weeks" >= 0), "breastfeeding_status" varchar(255) NOT NULL, "baby_birth_date" date NULL, "pediatric_clinic" varchar(255) NOT NULL, "tracking_streaks" integer unsigned NOT NULL CHECK ("tracking_streaks" >= 0), "total_drawn_ml" integer unsigned NOT NULL CHECK ("total_drawn_ml" >= 0), "latitude" real NULL, "longitude" real NULL, "location_consent_given" bool NOT NULL, "location_consent_at" datetime NULL, "last_active_date" date NULL, "has_seen_walkthrough" bool NOT NULL, "email_verified" bool NOT NULL, "facility_id" bigint NULL REFERENCES "milkbank_facility" ("id") DEFERRABLE INITIALLY DEFERRED, "password_reset_attempts" smallint unsigned NOT NULL CHECK ("password_reset_attempts" >= 0), "password_reset_code" varchar(6) NOT NULL, "password_reset_sent_at" datetime NULL, "total_received_ml" integer unsigned NOT NULL CHECK ("total_received_ml" >= 0));
-CREATE TABLE "accounts_user_groups" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "user_id" bigint NOT NULL REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED, "group_id" integer NOT NULL REFERENCES "auth_group" ("id") DEFERRABLE INITIALLY DEFERRED);
-CREATE TABLE "accounts_user_user_permissions" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "user_id" bigint NOT NULL REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED, "permission_id" integer NOT NULL REFERENCES "auth_permission" ("id") DEFERRABLE INITIALLY DEFERRED);
-CREATE TABLE "articles_article" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "title" varchar(255) NOT NULL, "category" varchar(50) NOT NULL, "read_time" varchar(50) NOT NULL, "teaser" varchar(500) NOT NULL, "content" text NOT NULL, "author" varchar(150) NOT NULL, "rating" varchar(20) NOT NULL, "evidence_label" varchar(255) NOT NULL, "date" varchar(50) NOT NULL);
-INSERT INTO "articles_article" VALUES(1,'How to Breastfeed Correctly: Positioning and Latch','Latching Techniques','2 min read','The fundamentals of a comfortable, effective latch -- how to position your baby and recognize the signs that feeding is going well.','Good breastfeeding starts with the right position and a good latch. Getting these two things right helps the baby feed effectively and keeps the mother comfortable.
+-- Portability: psql-only \restrict lines, the PostgreSQL 17+ setting
+-- transaction_timeout, and a bare CREATE SCHEMA public were removed or
+-- softened, so it loads into PostgreSQL 15 or later (Supabase included)
+-- through psql or a SQL editor. Load it into an EMPTY database:
+--   psql "<connection string>" -v ON_ERROR_STOP=1 -f db_dump.sql
+--
+
+--
+-- PostgreSQL database dump
+--
+
+
+-- Dumped from database version 18.4
+-- Dumped by pg_dump version 18.4
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- Name: public; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA IF NOT EXISTS public;
+
+
+--
+-- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON SCHEMA public IS 'standard public schema';
+
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: accounts_pendingregistration; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.accounts_pendingregistration (
+    id bigint NOT NULL,
+    email character varying(254) NOT NULL,
+    password character varying(128) NOT NULL,
+    mom_name character varying(150) NOT NULL,
+    baby_name character varying(150) NOT NULL,
+    code character varying(6) NOT NULL,
+    sent_at timestamp with time zone,
+    attempts smallint NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT accounts_pendingregistration_attempts_check CHECK ((attempts >= 0))
+);
+
+
+--
+-- Name: accounts_pendingregistration_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.accounts_pendingregistration ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.accounts_pendingregistration_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: accounts_user; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.accounts_user (
+    id bigint NOT NULL,
+    password character varying(128) NOT NULL,
+    last_login timestamp with time zone,
+    is_superuser boolean NOT NULL,
+    first_name character varying(150) NOT NULL,
+    last_name character varying(150) NOT NULL,
+    is_staff boolean NOT NULL,
+    is_active boolean NOT NULL,
+    date_joined timestamp with time zone NOT NULL,
+    email character varying(254) NOT NULL,
+    role character varying(20) NOT NULL,
+    mom_name character varying(150) NOT NULL,
+    baby_name character varying(150) NOT NULL,
+    baby_age_weeks integer,
+    breastfeeding_status character varying(255) NOT NULL,
+    baby_birth_date date,
+    pediatric_clinic character varying(255) NOT NULL,
+    tracking_streaks integer NOT NULL,
+    total_drawn_ml integer NOT NULL,
+    latitude double precision,
+    longitude double precision,
+    location_consent_given boolean NOT NULL,
+    location_consent_at timestamp with time zone,
+    last_active_date date,
+    has_seen_walkthrough boolean NOT NULL,
+    email_verified boolean NOT NULL,
+    facility_id bigint,
+    password_reset_attempts smallint NOT NULL,
+    password_reset_code character varying(6) NOT NULL,
+    password_reset_sent_at timestamp with time zone,
+    total_received_ml integer NOT NULL,
+    failed_login_attempts smallint NOT NULL,
+    last_failed_login_at timestamp with time zone,
+    locked_until timestamp with time zone,
+    CONSTRAINT accounts_user_baby_age_weeks_check CHECK ((baby_age_weeks >= 0)),
+    CONSTRAINT accounts_user_failed_login_attempts_check CHECK ((failed_login_attempts >= 0)),
+    CONSTRAINT accounts_user_password_reset_attempts_check CHECK ((password_reset_attempts >= 0)),
+    CONSTRAINT accounts_user_total_drawn_ml_check CHECK ((total_drawn_ml >= 0)),
+    CONSTRAINT accounts_user_total_received_ml_check CHECK ((total_received_ml >= 0)),
+    CONSTRAINT accounts_user_tracking_streaks_check CHECK ((tracking_streaks >= 0))
+);
+
+
+--
+-- Name: accounts_user_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.accounts_user_groups (
+    id bigint NOT NULL,
+    user_id bigint NOT NULL,
+    group_id integer NOT NULL
+);
+
+
+--
+-- Name: accounts_user_groups_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.accounts_user_groups ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.accounts_user_groups_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: accounts_user_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.accounts_user ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.accounts_user_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: accounts_user_user_permissions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.accounts_user_user_permissions (
+    id bigint NOT NULL,
+    user_id bigint NOT NULL,
+    permission_id integer NOT NULL
+);
+
+
+--
+-- Name: accounts_user_user_permissions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.accounts_user_user_permissions ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.accounts_user_user_permissions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: articles_article; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.articles_article (
+    id bigint NOT NULL,
+    title character varying(255) NOT NULL,
+    category character varying(50) NOT NULL,
+    read_time character varying(50) NOT NULL,
+    teaser character varying(500) NOT NULL,
+    content text NOT NULL,
+    author character varying(150) NOT NULL,
+    rating character varying(20) NOT NULL,
+    evidence_label character varying(255) NOT NULL,
+    date character varying(50) NOT NULL,
+    created_at timestamp with time zone
+);
+
+
+--
+-- Name: articles_article_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.articles_article ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.articles_article_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: articles_articlecomment; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.articles_articlecomment (
+    id bigint NOT NULL,
+    text text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    is_reported boolean NOT NULL,
+    report_reason character varying(20) NOT NULL,
+    article_id bigint NOT NULL,
+    author_id bigint NOT NULL
+);
+
+
+--
+-- Name: articles_articlecomment_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.articles_articlecomment ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.articles_articlecomment_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: articles_commentreport; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.articles_commentreport (
+    id bigint NOT NULL,
+    reason character varying(20) NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    comment_id bigint NOT NULL,
+    reporter_id bigint NOT NULL
+);
+
+
+--
+-- Name: articles_commentreport_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.articles_commentreport ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.articles_commentreport_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: articles_resourcelink; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.articles_resourcelink (
+    id bigint NOT NULL,
+    title character varying(255) NOT NULL,
+    description character varying(500) NOT NULL,
+    url character varying(200) NOT NULL,
+    type character varying(20) NOT NULL
+);
+
+
+--
+-- Name: articles_resourcelink_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.articles_resourcelink ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.articles_resourcelink_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: articles_savedarticle; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.articles_savedarticle (
+    id bigint NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    article_id bigint NOT NULL,
+    user_id bigint NOT NULL
+);
+
+
+--
+-- Name: articles_savedarticle_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.articles_savedarticle ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.articles_savedarticle_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: auth_group; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_group (
+    id integer NOT NULL,
+    name character varying(150) NOT NULL
+);
+
+
+--
+-- Name: auth_group_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.auth_group ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.auth_group_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: auth_group_permissions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_group_permissions (
+    id bigint NOT NULL,
+    group_id integer NOT NULL,
+    permission_id integer NOT NULL
+);
+
+
+--
+-- Name: auth_group_permissions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.auth_group_permissions ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.auth_group_permissions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: auth_permission; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.auth_permission (
+    id integer NOT NULL,
+    name character varying(255) NOT NULL,
+    content_type_id integer NOT NULL,
+    codename character varying(100) NOT NULL
+);
+
+
+--
+-- Name: auth_permission_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.auth_permission ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.auth_permission_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: chat_chatmessage; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_chatmessage (
+    id bigint NOT NULL,
+    text text NOT NULL,
+    is_user boolean NOT NULL,
+    is_system_notice boolean NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    session_id bigint NOT NULL
+);
+
+
+--
+-- Name: chat_chatmessage_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.chat_chatmessage ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.chat_chatmessage_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: chat_chatsession; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_chatsession (
+    id bigint NOT NULL,
+    prompt_count integer NOT NULL,
+    token_count integer NOT NULL,
+    owner_id bigint NOT NULL,
+    CONSTRAINT chat_chatsession_prompt_count_check CHECK ((prompt_count >= 0)),
+    CONSTRAINT chat_chatsession_token_count_check CHECK ((token_count >= 0))
+);
+
+
+--
+-- Name: chat_chatsession_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.chat_chatsession ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.chat_chatsession_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: chat_knowledgechunk; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_knowledgechunk (
+    id bigint NOT NULL,
+    source_kind character varying(20) NOT NULL,
+    source_id integer NOT NULL,
+    source_title character varying(255) NOT NULL,
+    source_reference character varying(500) NOT NULL,
+    ordinal integer NOT NULL,
+    text text NOT NULL,
+    embedding jsonb NOT NULL,
+    embedding_model character varying(100) NOT NULL,
+    source_revision character varying(64) NOT NULL,
+    indexed_at timestamp with time zone NOT NULL,
+    CONSTRAINT chat_knowledgechunk_ordinal_check CHECK ((ordinal >= 0)),
+    CONSTRAINT chat_knowledgechunk_source_id_check CHECK ((source_id >= 0))
+);
+
+
+--
+-- Name: chat_knowledgechunk_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.chat_knowledgechunk ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.chat_knowledgechunk_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: chat_knowledgedocument; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chat_knowledgedocument (
+    id bigint NOT NULL,
+    title character varying(255) NOT NULL,
+    citation character varying(500) NOT NULL,
+    content text NOT NULL,
+    is_active boolean NOT NULL,
+    added_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: chat_knowledgedocument_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.chat_knowledgedocument ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.chat_knowledgedocument_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: core_auditlogentry; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.core_auditlogentry (
+    id bigint NOT NULL,
+    action character varying(100) NOT NULL,
+    target character varying(255) NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    actor_id bigint
+);
+
+
+--
+-- Name: core_auditlogentry_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.core_auditlogentry ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.core_auditlogentry_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: directory_supportcontact; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.directory_supportcontact (
+    id bigint NOT NULL,
+    name character varying(255) NOT NULL,
+    description text NOT NULL,
+    phone character varying(50) NOT NULL,
+    address character varying(500) NOT NULL,
+    email character varying(254) NOT NULL
+);
+
+
+--
+-- Name: directory_supportcontact_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.directory_supportcontact ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.directory_supportcontact_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: django_admin_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.django_admin_log (
+    id integer NOT NULL,
+    action_time timestamp with time zone NOT NULL,
+    object_id text,
+    object_repr character varying(200) NOT NULL,
+    action_flag smallint NOT NULL,
+    change_message text NOT NULL,
+    content_type_id integer,
+    user_id bigint NOT NULL,
+    CONSTRAINT django_admin_log_action_flag_check CHECK ((action_flag >= 0))
+);
+
+
+--
+-- Name: django_admin_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.django_admin_log ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.django_admin_log_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: django_cache_table; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.django_cache_table (
+    cache_key character varying(255) NOT NULL,
+    value text NOT NULL,
+    expires timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: django_content_type; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.django_content_type (
+    id integer NOT NULL,
+    app_label character varying(100) NOT NULL,
+    model character varying(100) NOT NULL
+);
+
+
+--
+-- Name: django_content_type_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.django_content_type ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.django_content_type_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: django_migrations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.django_migrations (
+    id bigint NOT NULL,
+    app character varying(255) NOT NULL,
+    name character varying(255) NOT NULL,
+    applied timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: django_migrations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.django_migrations ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.django_migrations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: django_session; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.django_session (
+    session_key character varying(40) NOT NULL,
+    session_data text NOT NULL,
+    expire_date timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: messaging_conversation; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.messaging_conversation (
+    id bigint NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    last_message_at timestamp with time zone,
+    admin_last_read_at timestamp with time zone,
+    facility_last_read_at timestamp with time zone,
+    facility_id bigint NOT NULL
+);
+
+
+--
+-- Name: messaging_conversation_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.messaging_conversation ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.messaging_conversation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: messaging_message; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.messaging_message (
+    id bigint NOT NULL,
+    side character varying(10) NOT NULL,
+    body text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    conversation_id bigint NOT NULL,
+    sender_id bigint
+);
+
+
+--
+-- Name: messaging_message_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.messaging_message ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.messaging_message_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: milkbank_donorquestionnaire; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.milkbank_donorquestionnaire (
+    id bigint NOT NULL,
+    good_general_health boolean NOT NULL,
+    serology_photo character varying(100),
+    submitted_at timestamp with time zone NOT NULL,
+    request_id bigint NOT NULL,
+    lactating_with_excess_supply boolean CONSTRAINT milkbank_donorquestionnaire_lactating_with_excess_supp_not_null NOT NULL,
+    free_of_infectious_disease boolean NOT NULL,
+    recent_transfusion_or_transplant boolean CONSTRAINT milkbank_donorquestionnaire_recent_transfusion_or_tran_not_null NOT NULL,
+    uses_tobacco_alcohol_or_drugs boolean CONSTRAINT milkbank_donorquestionnaire_uses_tobacco_alcohol_or_dr_not_null NOT NULL,
+    on_medication_or_supplements boolean CONSTRAINT milkbank_donorquestionnaire_on_medication_or_supplemen_not_null NOT NULL,
+    medication_details character varying(255) NOT NULL,
+    has_recent_serology_test boolean NOT NULL
+);
+
+
+--
+-- Name: milkbank_donorquestionnaire_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.milkbank_donorquestionnaire ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.milkbank_donorquestionnaire_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: milkbank_facility; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.milkbank_facility (
+    id bigint NOT NULL,
+    name character varying(255) NOT NULL,
+    type character varying(100) NOT NULL,
+    contact character varying(50) NOT NULL,
+    address character varying(500) NOT NULL,
+    operating_hours character varying(100) NOT NULL,
+    donor_requirements text NOT NULL,
+    recipient_requirements text NOT NULL,
+    unavailable_donor_dates jsonb NOT NULL,
+    unavailable_recipient_dates jsonb NOT NULL,
+    is_operational boolean NOT NULL,
+    capacity integer NOT NULL,
+    stock_level_ml integer NOT NULL,
+    latitude double precision NOT NULL,
+    longitude double precision NOT NULL,
+    dispenses_bottles boolean NOT NULL,
+    max_request_ml integer NOT NULL,
+    min_request_ml integer NOT NULL,
+    donor_bookings_per_slot integer NOT NULL,
+    limit_donor_slots boolean NOT NULL,
+    CONSTRAINT milkbank_facility_capacity_check CHECK ((capacity >= 0)),
+    CONSTRAINT milkbank_facility_donor_bookings_per_slot_check CHECK ((donor_bookings_per_slot >= 0)),
+    CONSTRAINT milkbank_facility_max_request_ml_check CHECK ((max_request_ml >= 0)),
+    CONSTRAINT milkbank_facility_min_request_ml_check CHECK ((min_request_ml >= 0)),
+    CONSTRAINT milkbank_facility_stock_level_ml_check CHECK ((stock_level_ml >= 0))
+);
+
+
+--
+-- Name: milkbank_facility_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.milkbank_facility ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.milkbank_facility_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: milkbank_milkbankrequest; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.milkbank_milkbankrequest (
+    id bigint NOT NULL,
+    request_type character varying(20) NOT NULL,
+    current_stage_index integer NOT NULL,
+    current_sub_status character varying(30) NOT NULL,
+    staff_message text NOT NULL,
+    submitted_at timestamp with time zone NOT NULL,
+    preferred_date date NOT NULL,
+    preferred_time character varying(20) NOT NULL,
+    attendance_confirmed boolean NOT NULL,
+    counter_offer_date date,
+    counter_offer_time character varying(20) NOT NULL,
+    allocated_facility_id bigint NOT NULL,
+    owner_id bigint NOT NULL,
+    response_deadline timestamp with time zone,
+    needs_representative boolean NOT NULL,
+    representative_birthday date,
+    representative_contact_number character varying(50) NOT NULL,
+    representative_name character varying(255) NOT NULL,
+    amount_ml integer,
+    completed_at timestamp with time zone,
+    clinic_info character varying(500) NOT NULL,
+    has_cooler boolean NOT NULL,
+    has_medical_abstract boolean NOT NULL,
+    has_prescription_proof boolean NOT NULL,
+    neonate_name character varying(255) NOT NULL,
+    decline_reason character varying(100) NOT NULL,
+    requested_ml integer,
+    requested_bottles integer,
+    closed_at timestamp with time zone,
+    representative_purged_at timestamp with time zone,
+    CONSTRAINT milkbank_milkbankrequest_amount_ml_check CHECK ((amount_ml >= 0)),
+    CONSTRAINT milkbank_milkbankrequest_current_stage_index_check CHECK ((current_stage_index >= 0)),
+    CONSTRAINT milkbank_milkbankrequest_requested_bottles_check CHECK ((requested_bottles >= 0)),
+    CONSTRAINT milkbank_milkbankrequest_requested_ml_check CHECK ((requested_ml >= 0))
+);
+
+
+--
+-- Name: milkbank_milkbankrequest_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.milkbank_milkbankrequest ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.milkbank_milkbankrequest_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: milkbank_transactionrecord; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.milkbank_transactionrecord (
+    id bigint NOT NULL,
+    type character varying(20) NOT NULL,
+    facility_name character varying(255) NOT NULL,
+    date date NOT NULL,
+    status character varying(20) NOT NULL,
+    owner_id bigint NOT NULL,
+    amount_ml integer,
+    CONSTRAINT milkbank_transactionrecord_amount_ml_check CHECK ((amount_ml >= 0))
+);
+
+
+--
+-- Name: milkbank_transactionrecord_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.milkbank_transactionrecord ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.milkbank_transactionrecord_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: notifications_notificationitem; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.notifications_notificationitem (
+    id bigint NOT NULL,
+    title character varying(255) NOT NULL,
+    description text NOT NULL,
+    category character varying(20) NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    is_read boolean NOT NULL,
+    owner_id bigint NOT NULL
+);
+
+
+--
+-- Name: notifications_notificationitem_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.notifications_notificationitem ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.notifications_notificationitem_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Data for Name: accounts_pendingregistration; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: accounts_user; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: accounts_user_groups; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: accounts_user_user_permissions; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: articles_article; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.articles_article VALUES (1, 'How to Breastfeed Correctly: Positioning and Latch', 'Latching Techniques', '2 min read', 'The fundamentals of a comfortable, effective latch -- how to position your baby and recognize the signs that feeding is going well.', 'Good breastfeeding starts with the right position and a good latch. Getting these two things right helps the baby feed effectively and keeps the mother comfortable.
 
 Positioning
 
@@ -46,8 +1005,8 @@ General tips
 
 Feed the baby whenever they are hungry, day and night. Night feeds are especially important because they stimulate milk supply. Frequent feeding on demand naturally increases the amount of milk your body makes as it responds to the baby''s needs. If a baby is too weak to suckle, expressing milk and feeding it to them is a safe alternative.
 
-Source: UNICEF India, "How to Breastfeed Correctly." https://www.unicef.org/india/stories/how-breastfeed-correctly','Adapted from UNICEF (unicef.org)','4.9 ★','Organization-Verified & Peer-Reviewed','August 2025');
-INSERT INTO "articles_article" VALUES(2,'5 Common Breastfeeding Problems and How to Handle Them','Latching Techniques','3 min read','From latch trouble to low supply, engorgement, cracked nipples, and blocked ducts -- practical guidance for the most common breastfeeding challenges.','Breastfeeding is not always easy. It takes time and practice for both mother and baby, and many mothers run into challenges along the way. The good news is that most problems can be managed with the right support. If you are struggling, reach out to a midwife, lactation specialist, or health care provider.
+Source: UNICEF India, "How to Breastfeed Correctly." https://www.unicef.org/india/stories/how-breastfeed-correctly', 'Adapted from UNICEF (unicef.org)', '4.9 ★', 'Organization-Verified & Peer-Reviewed', 'August 2025', '2026-10-20 08:13:16.920049+08');
+INSERT INTO public.articles_article VALUES (2, '5 Common Breastfeeding Problems and How to Handle Them', 'Latching Techniques', '3 min read', 'From latch trouble to low supply, engorgement, cracked nipples, and blocked ducts -- practical guidance for the most common breastfeeding challenges.', 'Breastfeeding is not always easy. It takes time and practice for both mother and baby, and many mothers run into challenges along the way. The good news is that most problems can be managed with the right support. If you are struggling, reach out to a midwife, lactation specialist, or health care provider.
 
 1. Getting a good latch
 
@@ -71,8 +1030,8 @@ Milk reaches the baby through a system of ducts, and sometimes part of that syst
 
 Breastfeeding is not a one-woman job. Bumps along the way are normal, so bring any concerns to your health care provider and lean on family and friends for support.
 
-Source: UNICEF Kosovo Programme, "5 common breastfeeding problems." https://www.unicef.org/kosovoprogramme/5-common-breastfeeding-problems','Adapted from UNICEF (unicef.org)','4.9 ★','Organization-Verified & Peer-Reviewed','2026');
-INSERT INTO "articles_article" VALUES(3,'Breastfeeding When You Return to Work','Milk Storage & Safety','4 min read','Practical tips for continuing to breastfeed after returning to work, from planning ahead to safely storing expressed milk.','Balancing work and family is hard at the best of times, and for breastfeeding mothers returning to work after giving birth it can feel overwhelming. Breastfeeding gives children the healthiest start in life: breast milk acts as a baby''s first vaccine, supports brain development, and protects the mother''s health. For this reason, UNICEF and WHO urge governments and employers to adopt family-friendly policies that give mothers the time, space, and support they need to keep breastfeeding. The tips below can make the transition back to work a little easier.
+Source: UNICEF Kosovo Programme, "5 common breastfeeding problems." https://www.unicef.org/kosovoprogramme/5-common-breastfeeding-problems', 'Adapted from UNICEF (unicef.org)', '4.9 ★', 'Organization-Verified & Peer-Reviewed', '2026', '2026-10-20 08:13:16.92657+08');
+INSERT INTO public.articles_article VALUES (3, 'Breastfeeding When You Return to Work', 'Milk Storage & Safety', '4 min read', 'Practical tips for continuing to breastfeed after returning to work, from planning ahead to safely storing expressed milk.', 'Balancing work and family is hard at the best of times, and for breastfeeding mothers returning to work after giving birth it can feel overwhelming. Breastfeeding gives children the healthiest start in life: breast milk acts as a baby''s first vaccine, supports brain development, and protects the mother''s health. For this reason, UNICEF and WHO urge governments and employers to adopt family-friendly policies that give mothers the time, space, and support they need to keep breastfeeding. The tips below can make the transition back to work a little easier.
 
 Plan ahead
 
@@ -114,8 +1073,8 @@ Expressing at work and breastfeeding directly whenever possible helps you keep m
 
 Returning to work after having a baby is not easy, and there may be moments when it all feels like too much. Remember that this period is temporary and adjusting takes time. Breastfeeding is not a one-woman job, so do not hesitate to ask family, friends, and colleagues for help.
 
-Source: UNICEF Parenting, "Breastfeeding when you return to work." https://www.unicef.org/parenting/food-nutrition/breastfeeding-workplace','Adapted from UNICEF (unicef.org)','4.9 ★','Organization-Verified & Peer-Reviewed','2026');
-INSERT INTO "articles_article" VALUES(4,'Nutrition During Pregnancy and Breastfeeding','Maternal Nutrition','3 min read','What to eat before, during, and after pregnancy to stay healthy and support your baby''s growth, from folate-rich foods to daily food group guidelines.','Good eating habits before and during pregnancy help keep a mother healthy and allow her baby to grow and develop properly. A woman''s need for energy and most nutrients rises during pregnancy and breastfeeding, so a healthy, balanced diet that meets those needs is important throughout this time.
+Source: UNICEF Parenting, "Breastfeeding when you return to work." https://www.unicef.org/parenting/food-nutrition/breastfeeding-workplace', 'Adapted from UNICEF (unicef.org)', '4.9 ★', 'Organization-Verified & Peer-Reviewed', '2026', '2026-10-20 08:13:16.929422+08');
+INSERT INTO public.articles_article VALUES (4, 'Nutrition During Pregnancy and Breastfeeding', 'Maternal Nutrition', '3 min read', 'What to eat before, during, and after pregnancy to stay healthy and support your baby''s growth, from folate-rich foods to daily food group guidelines.', 'Good eating habits before and during pregnancy help keep a mother healthy and allow her baby to grow and develop properly. A woman''s need for energy and most nutrients rises during pregnancy and breastfeeding, so a healthy, balanced diet that meets those needs is important throughout this time.
 
 Before pregnancy
 
@@ -135,8 +1094,8 @@ Weight gain during pregnancy
 
 All pregnant women need to gain weight, regardless of their weight before pregnancy, to support the growing baby and the added growth of the uterus, breasts, blood, and other tissues. As a general guide: a woman at a healthy weight should gain roughly 11.5 to 16 kg; an underweight woman, about 12.5 to 18 kg; an overweight woman, about 7 to 11.5 kg; and an obese woman, about 5 to 9 kg. A health professional can give guidance suited to each woman''s situation.
 
-Source: Food and Agriculture Organization of the United Nations (FAO), "Nutrition during pregnancy and breastfeeding," from the FAO nutrition education fact sheets. https://www.fao.org/4/i3261e/i3261e08.pdf','Adapted from the Food and Agriculture Organization of the United Nations (FAO)','4.9 ★','Organization-Verified & Peer-Reviewed','2026');
-INSERT INTO "articles_article" VALUES(5,'Unang Yakap (First Embrace): Encouraging Breastfeeding from the Start','Newborn Health','2 min read','The Philippine DOH''s four-step protocol for the first moments after birth, designed to give breastfeeding the strongest possible start.','Unang Yakap, or "First Embrace," is a campaign of the Philippines'' Department of Health (DOH), in cooperation with the World Health Organization (WHO), to put Essential Intrapartum Newborn Care (EINC) into practice. EINC is a set of simple, evidence-based steps performed right after birth that give both mother and newborn the best possible start. Public and private hospitals in the Philippines have been directed to follow the Unang Yakap protocol since 2009.
+Source: Food and Agriculture Organization of the United Nations (FAO), "Nutrition during pregnancy and breastfeeding," from the FAO nutrition education fact sheets. https://www.fao.org/4/i3261e/i3261e08.pdf', 'Adapted from the Food and Agriculture Organization of the United Nations (FAO)', '4.9 ★', 'Organization-Verified & Peer-Reviewed', '2026', '2026-10-20 08:13:16.931253+08');
+INSERT INTO public.articles_article VALUES (5, 'Unang Yakap (First Embrace): Encouraging Breastfeeding from the Start', 'Newborn Health', '2 min read', 'The Philippine DOH''s four-step protocol for the first moments after birth, designed to give breastfeeding the strongest possible start.', 'Unang Yakap, or "First Embrace," is a campaign of the Philippines'' Department of Health (DOH), in cooperation with the World Health Organization (WHO), to put Essential Intrapartum Newborn Care (EINC) into practice. EINC is a set of simple, evidence-based steps performed right after birth that give both mother and newborn the best possible start. Public and private hospitals in the Philippines have been directed to follow the Unang Yakap protocol since 2009.
 
 The four core steps
 
@@ -159,8 +1118,8 @@ For whom
 
 Unang Yakap is routine for low-risk births, but babies of higher-risk pregnancies can benefit from it just as much. It is intended for all births unless a specific circumstance prevents the full four steps, such as a baby who is not breathing even after immediate and thorough drying.
 
-Source: World Health Organization Philippines, "Unang Yakap: Encouraging Breastfeeding from the Start." https://www.who.int/philippines/news/feature-stories/detail/unang-yakap-encouraging-breastfeeding-from-the-start','Adapted from World Health Organization (who.int)','4.9 ★','Organization-Verified & Peer-Reviewed','2026');
-INSERT INTO "articles_article" VALUES(6,'Why Breastfeeding Matters for Your Newborn','Newborn Health','3 min read','How breast milk protects your baby''s health in the first six months, and what your options are if breastfeeding isn''t possible.','Breast milk gives a newborn everything they need for the first six months of life. Exclusive breastfeeding means feeding a baby only breast milk during this period, with no other food or drink, not even water. It is safe, clean, and always ready, even in places where clean water is hard to find.
+Source: World Health Organization Philippines, "Unang Yakap: Encouraging Breastfeeding from the Start." https://www.who.int/philippines/news/feature-stories/detail/unang-yakap-encouraging-breastfeeding-from-the-start', 'Adapted from World Health Organization (who.int)', '4.9 ★', 'Organization-Verified & Peer-Reviewed', '2026', '2026-10-20 08:13:16.934266+08');
+INSERT INTO public.articles_article VALUES (6, 'Why Breastfeeding Matters for Your Newborn', 'Newborn Health', '3 min read', 'How breast milk protects your baby''s health in the first six months, and what your options are if breastfeeding isn''t possible.', 'Breast milk gives a newborn everything they need for the first six months of life. Exclusive breastfeeding means feeding a baby only breast milk during this period, with no other food or drink, not even water. It is safe, clean, and always ready, even in places where clean water is hard to find.
 
 Beginning breastfeeding right after birth, with skin-to-skin contact, helps keep the baby warm, strengthens their immune system, builds the bond between mother and child, and supports the mother''s milk supply over time. The very first milk, called colostrum, is rich in antibodies that protect the newborn against illness and infection. Because of this, breast milk works almost like a personalized medicine that adjusts to each baby''s needs.
 
@@ -172,224 +1131,1337 @@ Introducing a bottle or formula too early can interfere with the baby''s natural
 
 Mothers should never be shamed or made to feel guilty if they cannot breastfeed, whether by choice or necessity. What matters most is that every baby is fed safely and that every mother has access to accurate information and skilled, non-judgmental support.
 
-Source: UNICEF, "Why breastfeeding is critical for babies." https://www.unicef.org/stories/why-breastfeeding-best-babies','Adapted from UNICEF (unicef.org)','4.9 ★','Organization-Verified & Peer-Reviewed','May 2026');
-CREATE TABLE "articles_articlecomment" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "text" text NOT NULL, "created_at" datetime NOT NULL, "is_reported" bool NOT NULL, "report_reason" varchar(20) NOT NULL, "article_id" bigint NOT NULL REFERENCES "articles_article" ("id") DEFERRABLE INITIALLY DEFERRED, "author_id" bigint NOT NULL REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED);
-CREATE TABLE "articles_resourcelink" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "title" varchar(255) NOT NULL, "description" varchar(500) NOT NULL, "url" varchar(200) NOT NULL, "type" varchar(20) NOT NULL);
-CREATE TABLE "auth_group" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "name" varchar(150) NOT NULL UNIQUE);
-CREATE TABLE "auth_group_permissions" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "group_id" integer NOT NULL REFERENCES "auth_group" ("id") DEFERRABLE INITIALLY DEFERRED, "permission_id" integer NOT NULL REFERENCES "auth_permission" ("id") DEFERRABLE INITIALLY DEFERRED);
-CREATE TABLE "auth_permission" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "content_type_id" integer NOT NULL REFERENCES "django_content_type" ("id") DEFERRABLE INITIALLY DEFERRED, "codename" varchar(100) NOT NULL, "name" varchar(255) NOT NULL);
-INSERT INTO "auth_permission" VALUES(1,1,'add_logentry','Can add log entry');
-INSERT INTO "auth_permission" VALUES(2,1,'change_logentry','Can change log entry');
-INSERT INTO "auth_permission" VALUES(3,1,'delete_logentry','Can delete log entry');
-INSERT INTO "auth_permission" VALUES(4,1,'view_logentry','Can view log entry');
-INSERT INTO "auth_permission" VALUES(5,3,'add_permission','Can add permission');
-INSERT INTO "auth_permission" VALUES(6,3,'change_permission','Can change permission');
-INSERT INTO "auth_permission" VALUES(7,3,'delete_permission','Can delete permission');
-INSERT INTO "auth_permission" VALUES(8,3,'view_permission','Can view permission');
-INSERT INTO "auth_permission" VALUES(9,2,'add_group','Can add group');
-INSERT INTO "auth_permission" VALUES(10,2,'change_group','Can change group');
-INSERT INTO "auth_permission" VALUES(11,2,'delete_group','Can delete group');
-INSERT INTO "auth_permission" VALUES(12,2,'view_group','Can view group');
-INSERT INTO "auth_permission" VALUES(13,4,'add_contenttype','Can add content type');
-INSERT INTO "auth_permission" VALUES(14,4,'change_contenttype','Can change content type');
-INSERT INTO "auth_permission" VALUES(15,4,'delete_contenttype','Can delete content type');
-INSERT INTO "auth_permission" VALUES(16,4,'view_contenttype','Can view content type');
-INSERT INTO "auth_permission" VALUES(17,5,'add_session','Can add session');
-INSERT INTO "auth_permission" VALUES(18,5,'change_session','Can change session');
-INSERT INTO "auth_permission" VALUES(19,5,'delete_session','Can delete session');
-INSERT INTO "auth_permission" VALUES(20,5,'view_session','Can view session');
-INSERT INTO "auth_permission" VALUES(21,6,'add_auditlogentry','Can add audit log entry');
-INSERT INTO "auth_permission" VALUES(22,6,'change_auditlogentry','Can change audit log entry');
-INSERT INTO "auth_permission" VALUES(23,6,'delete_auditlogentry','Can delete audit log entry');
-INSERT INTO "auth_permission" VALUES(24,6,'view_auditlogentry','Can view audit log entry');
-INSERT INTO "auth_permission" VALUES(25,8,'add_user','Can add user');
-INSERT INTO "auth_permission" VALUES(26,8,'change_user','Can change user');
-INSERT INTO "auth_permission" VALUES(27,8,'delete_user','Can delete user');
-INSERT INTO "auth_permission" VALUES(28,8,'view_user','Can view user');
-INSERT INTO "auth_permission" VALUES(29,7,'add_pendingregistration','Can add pending registration');
-INSERT INTO "auth_permission" VALUES(30,7,'change_pendingregistration','Can change pending registration');
-INSERT INTO "auth_permission" VALUES(31,7,'delete_pendingregistration','Can delete pending registration');
-INSERT INTO "auth_permission" VALUES(32,7,'view_pendingregistration','Can view pending registration');
-INSERT INTO "auth_permission" VALUES(33,9,'add_article','Can add article');
-INSERT INTO "auth_permission" VALUES(34,9,'change_article','Can change article');
-INSERT INTO "auth_permission" VALUES(35,9,'delete_article','Can delete article');
-INSERT INTO "auth_permission" VALUES(36,9,'view_article','Can view article');
-INSERT INTO "auth_permission" VALUES(37,10,'add_articlecomment','Can add article comment');
-INSERT INTO "auth_permission" VALUES(38,10,'change_articlecomment','Can change article comment');
-INSERT INTO "auth_permission" VALUES(39,10,'delete_articlecomment','Can delete article comment');
-INSERT INTO "auth_permission" VALUES(40,10,'view_articlecomment','Can view article comment');
-INSERT INTO "auth_permission" VALUES(41,11,'add_resourcelink','Can add resource link');
-INSERT INTO "auth_permission" VALUES(42,11,'change_resourcelink','Can change resource link');
-INSERT INTO "auth_permission" VALUES(43,11,'delete_resourcelink','Can delete resource link');
-INSERT INTO "auth_permission" VALUES(44,11,'view_resourcelink','Can view resource link');
-INSERT INTO "auth_permission" VALUES(45,12,'add_supportcontact','Can add support contact');
-INSERT INTO "auth_permission" VALUES(46,12,'change_supportcontact','Can change support contact');
-INSERT INTO "auth_permission" VALUES(47,12,'delete_supportcontact','Can delete support contact');
-INSERT INTO "auth_permission" VALUES(48,12,'view_supportcontact','Can view support contact');
-INSERT INTO "auth_permission" VALUES(49,14,'add_facility','Can add facility');
-INSERT INTO "auth_permission" VALUES(50,14,'change_facility','Can change facility');
-INSERT INTO "auth_permission" VALUES(51,14,'delete_facility','Can delete facility');
-INSERT INTO "auth_permission" VALUES(52,14,'view_facility','Can view facility');
-INSERT INTO "auth_permission" VALUES(53,15,'add_milkbankrequest','Can add milk bank request');
-INSERT INTO "auth_permission" VALUES(54,15,'change_milkbankrequest','Can change milk bank request');
-INSERT INTO "auth_permission" VALUES(55,15,'delete_milkbankrequest','Can delete milk bank request');
-INSERT INTO "auth_permission" VALUES(56,15,'view_milkbankrequest','Can view milk bank request');
-INSERT INTO "auth_permission" VALUES(57,16,'add_transactionrecord','Can add transaction record');
-INSERT INTO "auth_permission" VALUES(58,16,'change_transactionrecord','Can change transaction record');
-INSERT INTO "auth_permission" VALUES(59,16,'delete_transactionrecord','Can delete transaction record');
-INSERT INTO "auth_permission" VALUES(60,16,'view_transactionrecord','Can view transaction record');
-INSERT INTO "auth_permission" VALUES(61,13,'add_donorquestionnaire','Can add donor questionnaire');
-INSERT INTO "auth_permission" VALUES(62,13,'change_donorquestionnaire','Can change donor questionnaire');
-INSERT INTO "auth_permission" VALUES(63,13,'delete_donorquestionnaire','Can delete donor questionnaire');
-INSERT INTO "auth_permission" VALUES(64,13,'view_donorquestionnaire','Can view donor questionnaire');
-INSERT INTO "auth_permission" VALUES(65,17,'add_notificationitem','Can add notification item');
-INSERT INTO "auth_permission" VALUES(66,17,'change_notificationitem','Can change notification item');
-INSERT INTO "auth_permission" VALUES(67,17,'delete_notificationitem','Can delete notification item');
-INSERT INTO "auth_permission" VALUES(68,17,'view_notificationitem','Can view notification item');
-INSERT INTO "auth_permission" VALUES(69,19,'add_chatsession','Can add chat session');
-INSERT INTO "auth_permission" VALUES(70,19,'change_chatsession','Can change chat session');
-INSERT INTO "auth_permission" VALUES(71,19,'delete_chatsession','Can delete chat session');
-INSERT INTO "auth_permission" VALUES(72,19,'view_chatsession','Can view chat session');
-INSERT INTO "auth_permission" VALUES(73,18,'add_chatmessage','Can add chat message');
-INSERT INTO "auth_permission" VALUES(74,18,'change_chatmessage','Can change chat message');
-INSERT INTO "auth_permission" VALUES(75,18,'delete_chatmessage','Can delete chat message');
-INSERT INTO "auth_permission" VALUES(76,18,'view_chatmessage','Can view chat message');
-INSERT INTO "auth_permission" VALUES(77,21,'add_knowledgedocument','Can add knowledge document');
-INSERT INTO "auth_permission" VALUES(78,21,'change_knowledgedocument','Can change knowledge document');
-INSERT INTO "auth_permission" VALUES(79,21,'delete_knowledgedocument','Can delete knowledge document');
-INSERT INTO "auth_permission" VALUES(80,21,'view_knowledgedocument','Can view knowledge document');
-INSERT INTO "auth_permission" VALUES(81,20,'add_knowledgechunk','Can add knowledge chunk');
-INSERT INTO "auth_permission" VALUES(82,20,'change_knowledgechunk','Can change knowledge chunk');
-INSERT INTO "auth_permission" VALUES(83,20,'delete_knowledgechunk','Can delete knowledge chunk');
-INSERT INTO "auth_permission" VALUES(84,20,'view_knowledgechunk','Can view knowledge chunk');
-CREATE TABLE "chat_chatmessage" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "text" text NOT NULL, "is_user" bool NOT NULL, "is_system_notice" bool NOT NULL, "created_at" datetime NOT NULL, "session_id" bigint NOT NULL REFERENCES "chat_chatsession" ("id") DEFERRABLE INITIALLY DEFERRED);
-CREATE TABLE "chat_chatsession" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "prompt_count" integer unsigned NOT NULL CHECK ("prompt_count" >= 0), "token_count" integer unsigned NOT NULL CHECK ("token_count" >= 0), "owner_id" bigint NOT NULL UNIQUE REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED);
-CREATE TABLE "chat_knowledgechunk" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "source_kind" varchar(20) NOT NULL, "source_id" integer unsigned NOT NULL CHECK ("source_id" >= 0), "source_title" varchar(255) NOT NULL, "source_reference" varchar(500) NOT NULL, "ordinal" integer unsigned NOT NULL CHECK ("ordinal" >= 0), "text" text NOT NULL, "embedding" text NOT NULL CHECK ((JSON_VALID("embedding") OR "embedding" IS NULL)), "embedding_model" varchar(100) NOT NULL, "source_revision" varchar(64) NOT NULL, "indexed_at" datetime NOT NULL, CONSTRAINT "unique_chunk_per_source_position" UNIQUE ("source_kind", "source_id", "ordinal"));
-CREATE TABLE "chat_knowledgedocument" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "title" varchar(255) NOT NULL, "citation" varchar(500) NOT NULL, "content" text NOT NULL, "is_active" bool NOT NULL, "added_at" datetime NOT NULL, "updated_at" datetime NOT NULL);
-CREATE TABLE "core_auditlogentry" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "action" varchar(100) NOT NULL, "target" varchar(255) NOT NULL, "created_at" datetime NOT NULL, "actor_id" bigint NULL REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED);
-CREATE TABLE "directory_supportcontact" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "name" varchar(255) NOT NULL, "description" text NOT NULL, "phone" varchar(50) NOT NULL, "address" varchar(500) NOT NULL, "email" varchar(254) NOT NULL);
-INSERT INTO "directory_supportcontact" VALUES(1,'Quezon City General Hospital','Quezon City government hospital and home of the Quezon City Human Milk Bank (2nd floor). For the milk bank, call the hospital and ask for local 209, or call 0960-363-6492. Milk bank hours: daily 8:00 AM - 5:00 PM, holidays 8:00 AM - 12:00 NN.','(02) 8863-0800','Seminary Road, Brgy. Bahay Toro, Project 8, Quezon City','humanmilkbank.qcgh@gmail.com');
-INSERT INTO "directory_supportcontact" VALUES(2,'St. Luke''s Medical Center - Quezon City','Private hospital with breastfeeding support services and a human milk bank. Call the trunk line and ask for lactation support; customer service is on local 4122.','(02) 8723-0101','279 E. Rodriguez Sr. Ave., Quezon City 1112','customer.qc@stlukes.com.ph');
-INSERT INTO "directory_supportcontact" VALUES(3,'Dr. Jose Fabella Memorial Hospital Human Milk Bank','Government-accredited human milk bank.','(02) 8866-7960','San Lazaro Compound, Tayuman St., Santa Cruz, Manila','mcc@fabella.doh.gov.ph');
-INSERT INTO "directory_supportcontact" VALUES(4,'Arugaan','Volunteer-run breastfeeding and milk-banking advocacy organization.','','2 Starlight Street corner Vista Street, SSS Village, Marikina City, Metro Manila','arugaan.breastfeeding@gmail.com');
-CREATE TABLE "django_admin_log" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "object_id" text NULL, "object_repr" varchar(200) NOT NULL, "action_flag" smallint unsigned NOT NULL CHECK ("action_flag" >= 0), "change_message" text NOT NULL, "content_type_id" integer NULL REFERENCES "django_content_type" ("id") DEFERRABLE INITIALLY DEFERRED, "user_id" bigint NOT NULL REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED, "action_time" datetime NOT NULL);
-CREATE TABLE "django_content_type" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "app_label" varchar(100) NOT NULL, "model" varchar(100) NOT NULL);
-INSERT INTO "django_content_type" VALUES(1,'admin','logentry');
-INSERT INTO "django_content_type" VALUES(2,'auth','group');
-INSERT INTO "django_content_type" VALUES(3,'auth','permission');
-INSERT INTO "django_content_type" VALUES(4,'contenttypes','contenttype');
-INSERT INTO "django_content_type" VALUES(5,'sessions','session');
-INSERT INTO "django_content_type" VALUES(6,'core','auditlogentry');
-INSERT INTO "django_content_type" VALUES(7,'accounts','pendingregistration');
-INSERT INTO "django_content_type" VALUES(8,'accounts','user');
-INSERT INTO "django_content_type" VALUES(9,'articles','article');
-INSERT INTO "django_content_type" VALUES(10,'articles','articlecomment');
-INSERT INTO "django_content_type" VALUES(11,'articles','resourcelink');
-INSERT INTO "django_content_type" VALUES(12,'directory','supportcontact');
-INSERT INTO "django_content_type" VALUES(13,'milkbank','donorquestionnaire');
-INSERT INTO "django_content_type" VALUES(14,'milkbank','facility');
-INSERT INTO "django_content_type" VALUES(15,'milkbank','milkbankrequest');
-INSERT INTO "django_content_type" VALUES(16,'milkbank','transactionrecord');
-INSERT INTO "django_content_type" VALUES(17,'notifications','notificationitem');
-INSERT INTO "django_content_type" VALUES(18,'chat','chatmessage');
-INSERT INTO "django_content_type" VALUES(19,'chat','chatsession');
-INSERT INTO "django_content_type" VALUES(20,'chat','knowledgechunk');
-INSERT INTO "django_content_type" VALUES(21,'chat','knowledgedocument');
-CREATE TABLE "django_migrations" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "app" varchar(255) NOT NULL, "name" varchar(255) NOT NULL, "applied" datetime NOT NULL);
-INSERT INTO "django_migrations" VALUES(1,'milkbank','0001_initial','2026-10-01 18:30:20.341498');
-INSERT INTO "django_migrations" VALUES(2,'contenttypes','0001_initial','2026-10-01 18:30:20.350618');
-INSERT INTO "django_migrations" VALUES(3,'contenttypes','0002_remove_content_type_name','2026-10-01 18:30:20.364556');
-INSERT INTO "django_migrations" VALUES(4,'auth','0001_initial','2026-10-01 18:30:20.381640');
-INSERT INTO "django_migrations" VALUES(5,'auth','0002_alter_permission_name_max_length','2026-10-01 18:30:20.392385');
-INSERT INTO "django_migrations" VALUES(6,'auth','0003_alter_user_email_max_length','2026-10-01 18:30:20.400559');
-INSERT INTO "django_migrations" VALUES(7,'auth','0004_alter_user_username_opts','2026-10-01 18:30:20.408452');
-INSERT INTO "django_migrations" VALUES(8,'auth','0005_alter_user_last_login_null','2026-10-01 18:30:20.416766');
-INSERT INTO "django_migrations" VALUES(9,'auth','0006_require_contenttypes_0002','2026-10-01 18:30:20.422247');
-INSERT INTO "django_migrations" VALUES(10,'auth','0007_alter_validators_add_error_messages','2026-10-01 18:30:20.430642');
-INSERT INTO "django_migrations" VALUES(11,'auth','0008_alter_user_username_max_length','2026-10-01 18:30:20.439652');
-INSERT INTO "django_migrations" VALUES(12,'auth','0009_alter_user_last_name_max_length','2026-10-01 18:30:20.448294');
-INSERT INTO "django_migrations" VALUES(13,'auth','0010_alter_group_name_max_length','2026-10-01 18:30:20.458291');
-INSERT INTO "django_migrations" VALUES(14,'auth','0011_update_proxy_permissions','2026-10-01 18:30:20.467050');
-INSERT INTO "django_migrations" VALUES(15,'auth','0012_alter_user_first_name_max_length','2026-10-01 18:30:20.474694');
-INSERT INTO "django_migrations" VALUES(16,'accounts','0001_initial','2026-10-01 18:30:20.491323');
-INSERT INTO "django_migrations" VALUES(17,'milkbank','0002_milkbankrequest_transactionrecord','2026-10-01 18:30:20.515082');
-INSERT INTO "django_migrations" VALUES(18,'milkbank','0003_alter_facility_booked_count','2026-10-01 18:30:20.523628');
-INSERT INTO "django_migrations" VALUES(19,'milkbank','0004_donorquestionnaire','2026-10-01 18:30:20.537697');
-INSERT INTO "django_migrations" VALUES(20,'accounts','0002_user_last_active_date','2026-10-01 18:30:20.549960');
-INSERT INTO "django_migrations" VALUES(21,'accounts','0003_user_has_seen_walkthrough','2026-10-01 18:30:20.563415');
-INSERT INTO "django_migrations" VALUES(22,'accounts','0004_user_email_verification_attempts_and_more','2026-10-01 18:30:20.599976');
-INSERT INTO "django_migrations" VALUES(23,'accounts','0005_user_facility','2026-10-01 18:30:20.619400');
-INSERT INTO "django_migrations" VALUES(24,'accounts','0006_user_password_reset_attempts_and_more','2026-10-01 18:30:20.653786');
-INSERT INTO "django_migrations" VALUES(25,'accounts','0007_pendingregistration_and_more','2026-10-01 18:30:20.683727');
-INSERT INTO "django_migrations" VALUES(26,'accounts','0008_alter_pendingregistration_code_and_more','2026-10-01 18:30:20.693714');
-INSERT INTO "django_migrations" VALUES(27,'accounts','0009_user_total_received_ml','2026-10-01 18:30:20.709862');
-INSERT INTO "django_migrations" VALUES(28,'admin','0001_initial','2026-10-01 18:30:20.754471');
-INSERT INTO "django_migrations" VALUES(29,'admin','0002_logentry_remove_auto_add','2026-10-01 18:30:20.770954');
-INSERT INTO "django_migrations" VALUES(30,'admin','0003_logentry_add_action_flag_choices','2026-10-01 18:30:20.782412');
-INSERT INTO "django_migrations" VALUES(31,'articles','0001_initial','2026-10-01 18:30:20.804392');
-INSERT INTO "django_migrations" VALUES(32,'articles','0002_resourcelink','2026-10-01 18:30:20.811359');
-INSERT INTO "django_migrations" VALUES(33,'chat','0001_initial','2026-10-01 18:30:20.841802');
-INSERT INTO "django_migrations" VALUES(34,'chat','0002_remove_chatsession_current_model_and_more','2026-10-01 18:30:20.867567');
-INSERT INTO "django_migrations" VALUES(35,'chat','0003_knowledgedocument_knowledgechunk','2026-10-01 18:30:20.880569');
-INSERT INTO "django_migrations" VALUES(36,'core','0001_initial','2026-10-01 18:30:20.902354');
-INSERT INTO "django_migrations" VALUES(37,'directory','0001_initial','2026-10-01 18:30:20.909789');
-INSERT INTO "django_migrations" VALUES(38,'directory','0002_supportcontact_email','2026-10-01 18:30:20.918691');
-INSERT INTO "django_migrations" VALUES(39,'directory','0003_support_contact_details','2026-10-01 18:30:20.941130');
-INSERT INTO "django_migrations" VALUES(40,'milkbank','0005_milkbankrequest_response_deadline','2026-10-01 18:30:20.956319');
-INSERT INTO "django_migrations" VALUES(41,'milkbank','0006_donorquestionnaire_match_mobile_form','2026-10-01 18:30:21.155793');
-INSERT INTO "django_migrations" VALUES(42,'milkbank','0007_milkbankrequest_needs_representative_and_more','2026-10-01 18:30:21.210108');
-INSERT INTO "django_migrations" VALUES(43,'milkbank','0008_milkbankrequest_amount_ml_and_more','2026-10-01 18:30:21.234588');
-INSERT INTO "django_migrations" VALUES(44,'milkbank','0009_transactionrecord_amount_ml','2026-10-01 18:30:21.249752');
-INSERT INTO "django_migrations" VALUES(45,'milkbank','0010_milkbankrequest_clinic_info_and_more','2026-10-01 18:30:21.318607');
-INSERT INTO "django_migrations" VALUES(46,'milkbank','0011_fabella_current_address','2026-10-01 18:30:21.338518');
-INSERT INTO "django_migrations" VALUES(47,'notifications','0001_initial','2026-10-01 18:30:21.360281');
-INSERT INTO "django_migrations" VALUES(48,'sessions','0001_initial','2026-10-01 18:30:21.372469');
-CREATE TABLE "django_session" ("session_key" varchar(40) NOT NULL PRIMARY KEY, "session_data" text NOT NULL, "expire_date" datetime NOT NULL);
-CREATE TABLE "milkbank_donorquestionnaire" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "good_general_health" bool NOT NULL, "serology_photo" varchar(100) NULL, "submitted_at" datetime NOT NULL, "request_id" bigint NOT NULL UNIQUE REFERENCES "milkbank_milkbankrequest" ("id") DEFERRABLE INITIALLY DEFERRED, "lactating_with_excess_supply" bool NOT NULL, "free_of_infectious_disease" bool NOT NULL, "recent_transfusion_or_transplant" bool NOT NULL, "uses_tobacco_alcohol_or_drugs" bool NOT NULL, "on_medication_or_supplements" bool NOT NULL, "medication_details" varchar(255) NOT NULL, "has_recent_serology_test" bool NOT NULL);
-CREATE TABLE "milkbank_facility" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "name" varchar(255) NOT NULL, "type" varchar(100) NOT NULL, "contact" varchar(50) NOT NULL, "address" varchar(500) NOT NULL, "operating_hours" varchar(100) NOT NULL, "donor_requirements" text NOT NULL, "recipient_requirements" text NOT NULL, "unavailable_donor_dates" text NOT NULL CHECK ((JSON_VALID("unavailable_donor_dates") OR "unavailable_donor_dates" IS NULL)), "unavailable_recipient_dates" text NOT NULL CHECK ((JSON_VALID("unavailable_recipient_dates") OR "unavailable_recipient_dates" IS NULL)), "is_operational" bool NOT NULL, "capacity" integer unsigned NOT NULL CHECK ("capacity" >= 0), "booked_count" integer unsigned NOT NULL CHECK ("booked_count" >= 0), "stock_level_ml" integer unsigned NOT NULL CHECK ("stock_level_ml" >= 0), "latitude" real NOT NULL, "longitude" real NOT NULL);
-INSERT INTO "milkbank_facility" VALUES(1,'St. Luke''s Medical Center','Accredited Human Milk Bank','(02) 8723-0101','279 E. Rodriguez Sr. Ave, Quezon City','8:00 AM - 5:00 PM (Mon-Fri)','','','[]','[]',1,18,11,740,14.6091,121.0223);
-INSERT INTO "milkbank_facility" VALUES(2,'Philippine General Hospital','Hospital Depot','(02) 8554-8400','Taft Ave, Ermita, Manila','8:00 AM - 5:00 PM (Mon-Fri)','','','[]','[]',1,36,23,1620,14.5764,120.985);
-INSERT INTO "milkbank_facility" VALUES(3,'St. Martin de Porres','Hospital Depot','','','8:00 AM - 5:00 PM (Mon-Fri)','','','[]','[]',1,12,9,185,14.5794,121.0359);
-INSERT INTO "milkbank_facility" VALUES(4,'Dr. Jose Fabella Memorial Hospital Human Milk Bank','Accredited Human Milk Bank','8866-7960','San Lazaro Compound, Tayuman St., Santa Cruz, Manila','8:00 AM - 5:00 PM (Mon-Fri)','','','[]','[]',1,24,7,910,14.6153,120.9804);
-CREATE TABLE "milkbank_milkbankrequest" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "request_type" varchar(20) NOT NULL, "current_stage_index" integer unsigned NOT NULL CHECK ("current_stage_index" >= 0), "current_sub_status" varchar(30) NOT NULL, "staff_message" text NOT NULL, "submitted_at" datetime NOT NULL, "preferred_date" date NOT NULL, "preferred_time" varchar(20) NOT NULL, "attendance_confirmed" bool NOT NULL, "counter_offer_date" date NULL, "counter_offer_time" varchar(20) NOT NULL, "allocated_facility_id" bigint NOT NULL REFERENCES "milkbank_facility" ("id") DEFERRABLE INITIALLY DEFERRED, "owner_id" bigint NOT NULL REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED, "response_deadline" datetime NULL, "needs_representative" bool NOT NULL, "representative_birthday" date NULL, "representative_contact_number" varchar(50) NOT NULL, "representative_name" varchar(255) NOT NULL, "amount_ml" integer unsigned NULL CHECK ("amount_ml" >= 0), "completed_at" datetime NULL, "clinic_info" varchar(500) NOT NULL, "has_cooler" bool NOT NULL, "has_medical_abstract" bool NOT NULL, "has_prescription_proof" bool NOT NULL, "neonate_name" varchar(255) NOT NULL);
-CREATE TABLE "milkbank_transactionrecord" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "type" varchar(20) NOT NULL, "facility_name" varchar(255) NOT NULL, "date" date NOT NULL, "status" varchar(20) NOT NULL, "owner_id" bigint NOT NULL REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED, "amount_ml" integer unsigned NULL CHECK ("amount_ml" >= 0));
-CREATE TABLE "notifications_notificationitem" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "title" varchar(255) NOT NULL, "description" text NOT NULL, "category" varchar(20) NOT NULL, "created_at" datetime NOT NULL, "is_read" bool NOT NULL, "owner_id" bigint NOT NULL REFERENCES "accounts_user" ("id") DEFERRABLE INITIALLY DEFERRED);
-CREATE UNIQUE INDEX "django_content_type_app_label_model_76bd3d3b_uniq" ON "django_content_type" ("app_label", "model");
-CREATE UNIQUE INDEX "auth_group_permissions_group_id_permission_id_0cd325b0_uniq" ON "auth_group_permissions" ("group_id", "permission_id");
-CREATE INDEX "auth_group_permissions_group_id_b120cbf9" ON "auth_group_permissions" ("group_id");
-CREATE INDEX "auth_group_permissions_permission_id_84c5c92e" ON "auth_group_permissions" ("permission_id");
-CREATE UNIQUE INDEX "auth_permission_content_type_id_codename_01ab375a_uniq" ON "auth_permission" ("content_type_id", "codename");
-CREATE INDEX "auth_permission_content_type_id_2f476e4b" ON "auth_permission" ("content_type_id");
-CREATE UNIQUE INDEX "accounts_user_groups_user_id_group_id_59c0b32f_uniq" ON "accounts_user_groups" ("user_id", "group_id");
-CREATE INDEX "accounts_user_groups_user_id_52b62117" ON "accounts_user_groups" ("user_id");
-CREATE INDEX "accounts_user_groups_group_id_bd11a704" ON "accounts_user_groups" ("group_id");
-CREATE UNIQUE INDEX "accounts_user_user_permissions_user_id_permission_id_2ab516c2_uniq" ON "accounts_user_user_permissions" ("user_id", "permission_id");
-CREATE INDEX "accounts_user_user_permissions_user_id_e4f0a161" ON "accounts_user_user_permissions" ("user_id");
-CREATE INDEX "accounts_user_user_permissions_permission_id_113bb443" ON "accounts_user_user_permissions" ("permission_id");
-CREATE INDEX "milkbank_transactionrecord_owner_id_d67caeea" ON "milkbank_transactionrecord" ("owner_id");
-CREATE INDEX "accounts_user_facility_id_145cb9da" ON "accounts_user" ("facility_id");
-CREATE INDEX "django_admin_log_content_type_id_c4bce8eb" ON "django_admin_log" ("content_type_id");
-CREATE INDEX "django_admin_log_user_id_c564eba6" ON "django_admin_log" ("user_id");
-CREATE INDEX "articles_articlecomment_article_id_3562752c" ON "articles_articlecomment" ("article_id");
-CREATE INDEX "articles_articlecomment_author_id_a8ec0915" ON "articles_articlecomment" ("author_id");
-CREATE INDEX "chat_chatmessage_session_id_4dacb902" ON "chat_chatmessage" ("session_id");
-CREATE INDEX "chat_knowle_source__9cd3c0_idx" ON "chat_knowledgechunk" ("source_kind", "source_id");
-CREATE INDEX "core_auditlogentry_actor_id_fca7de11" ON "core_auditlogentry" ("actor_id");
-CREATE INDEX "milkbank_milkbankrequest_allocated_facility_id_a8d7caef" ON "milkbank_milkbankrequest" ("allocated_facility_id");
-CREATE INDEX "milkbank_milkbankrequest_owner_id_33f076b0" ON "milkbank_milkbankrequest" ("owner_id");
-CREATE INDEX "notifications_notificationitem_owner_id_b75cc032" ON "notifications_notificationitem" ("owner_id");
-CREATE INDEX "django_session_expire_date_a5c62663" ON "django_session" ("expire_date");
-DELETE FROM "sqlite_sequence";
-INSERT INTO "sqlite_sequence" VALUES('django_migrations',48);
-INSERT INTO "sqlite_sequence" VALUES('django_content_type',21);
-INSERT INTO "sqlite_sequence" VALUES('auth_permission',84);
-INSERT INTO "sqlite_sequence" VALUES('auth_group',0);
-INSERT INTO "sqlite_sequence" VALUES('accounts_pendingregistration',0);
-INSERT INTO "sqlite_sequence" VALUES('accounts_user',0);
-INSERT INTO "sqlite_sequence" VALUES('django_admin_log',0);
-INSERT INTO "sqlite_sequence" VALUES('directory_supportcontact',4);
-INSERT INTO "sqlite_sequence" VALUES('milkbank_donorquestionnaire',0);
-INSERT INTO "sqlite_sequence" VALUES('milkbank_milkbankrequest',0);
-INSERT INTO "sqlite_sequence" VALUES('articles_article',6);
-INSERT INTO "sqlite_sequence" VALUES('milkbank_facility',4);
-COMMIT;
+Source: UNICEF, "Why breastfeeding is critical for babies." https://www.unicef.org/stories/why-breastfeeding-best-babies', 'Adapted from UNICEF (unicef.org)', '4.9 ★', 'Organization-Verified & Peer-Reviewed', 'May 2026', '2026-10-20 08:13:16.935568+08');
+
+
+--
+-- Data for Name: articles_articlecomment; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: articles_commentreport; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: articles_resourcelink; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: articles_savedarticle; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: auth_group; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: auth_group_permissions; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: auth_permission; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.auth_permission VALUES (1, 'Can add log entry', 1, 'add_logentry');
+INSERT INTO public.auth_permission VALUES (2, 'Can change log entry', 1, 'change_logentry');
+INSERT INTO public.auth_permission VALUES (3, 'Can delete log entry', 1, 'delete_logentry');
+INSERT INTO public.auth_permission VALUES (4, 'Can view log entry', 1, 'view_logentry');
+INSERT INTO public.auth_permission VALUES (5, 'Can add permission', 3, 'add_permission');
+INSERT INTO public.auth_permission VALUES (6, 'Can change permission', 3, 'change_permission');
+INSERT INTO public.auth_permission VALUES (7, 'Can delete permission', 3, 'delete_permission');
+INSERT INTO public.auth_permission VALUES (8, 'Can view permission', 3, 'view_permission');
+INSERT INTO public.auth_permission VALUES (9, 'Can add group', 2, 'add_group');
+INSERT INTO public.auth_permission VALUES (10, 'Can change group', 2, 'change_group');
+INSERT INTO public.auth_permission VALUES (11, 'Can delete group', 2, 'delete_group');
+INSERT INTO public.auth_permission VALUES (12, 'Can view group', 2, 'view_group');
+INSERT INTO public.auth_permission VALUES (13, 'Can add content type', 4, 'add_contenttype');
+INSERT INTO public.auth_permission VALUES (14, 'Can change content type', 4, 'change_contenttype');
+INSERT INTO public.auth_permission VALUES (15, 'Can delete content type', 4, 'delete_contenttype');
+INSERT INTO public.auth_permission VALUES (16, 'Can view content type', 4, 'view_contenttype');
+INSERT INTO public.auth_permission VALUES (17, 'Can add session', 5, 'add_session');
+INSERT INTO public.auth_permission VALUES (18, 'Can change session', 5, 'change_session');
+INSERT INTO public.auth_permission VALUES (19, 'Can delete session', 5, 'delete_session');
+INSERT INTO public.auth_permission VALUES (20, 'Can view session', 5, 'view_session');
+INSERT INTO public.auth_permission VALUES (21, 'Can add audit log entry', 6, 'add_auditlogentry');
+INSERT INTO public.auth_permission VALUES (22, 'Can change audit log entry', 6, 'change_auditlogentry');
+INSERT INTO public.auth_permission VALUES (23, 'Can delete audit log entry', 6, 'delete_auditlogentry');
+INSERT INTO public.auth_permission VALUES (24, 'Can view audit log entry', 6, 'view_auditlogentry');
+INSERT INTO public.auth_permission VALUES (25, 'Can add user', 8, 'add_user');
+INSERT INTO public.auth_permission VALUES (26, 'Can change user', 8, 'change_user');
+INSERT INTO public.auth_permission VALUES (27, 'Can delete user', 8, 'delete_user');
+INSERT INTO public.auth_permission VALUES (28, 'Can view user', 8, 'view_user');
+INSERT INTO public.auth_permission VALUES (29, 'Can add pending registration', 7, 'add_pendingregistration');
+INSERT INTO public.auth_permission VALUES (30, 'Can change pending registration', 7, 'change_pendingregistration');
+INSERT INTO public.auth_permission VALUES (31, 'Can delete pending registration', 7, 'delete_pendingregistration');
+INSERT INTO public.auth_permission VALUES (32, 'Can view pending registration', 7, 'view_pendingregistration');
+INSERT INTO public.auth_permission VALUES (33, 'Can add article', 9, 'add_article');
+INSERT INTO public.auth_permission VALUES (34, 'Can change article', 9, 'change_article');
+INSERT INTO public.auth_permission VALUES (35, 'Can delete article', 9, 'delete_article');
+INSERT INTO public.auth_permission VALUES (36, 'Can view article', 9, 'view_article');
+INSERT INTO public.auth_permission VALUES (37, 'Can add article comment', 10, 'add_articlecomment');
+INSERT INTO public.auth_permission VALUES (38, 'Can change article comment', 10, 'change_articlecomment');
+INSERT INTO public.auth_permission VALUES (39, 'Can delete article comment', 10, 'delete_articlecomment');
+INSERT INTO public.auth_permission VALUES (40, 'Can view article comment', 10, 'view_articlecomment');
+INSERT INTO public.auth_permission VALUES (41, 'Can add resource link', 12, 'add_resourcelink');
+INSERT INTO public.auth_permission VALUES (42, 'Can change resource link', 12, 'change_resourcelink');
+INSERT INTO public.auth_permission VALUES (43, 'Can delete resource link', 12, 'delete_resourcelink');
+INSERT INTO public.auth_permission VALUES (44, 'Can view resource link', 12, 'view_resourcelink');
+INSERT INTO public.auth_permission VALUES (45, 'Can add comment report', 11, 'add_commentreport');
+INSERT INTO public.auth_permission VALUES (46, 'Can change comment report', 11, 'change_commentreport');
+INSERT INTO public.auth_permission VALUES (47, 'Can delete comment report', 11, 'delete_commentreport');
+INSERT INTO public.auth_permission VALUES (48, 'Can view comment report', 11, 'view_commentreport');
+INSERT INTO public.auth_permission VALUES (49, 'Can add saved article', 13, 'add_savedarticle');
+INSERT INTO public.auth_permission VALUES (50, 'Can change saved article', 13, 'change_savedarticle');
+INSERT INTO public.auth_permission VALUES (51, 'Can delete saved article', 13, 'delete_savedarticle');
+INSERT INTO public.auth_permission VALUES (52, 'Can view saved article', 13, 'view_savedarticle');
+INSERT INTO public.auth_permission VALUES (53, 'Can add support contact', 14, 'add_supportcontact');
+INSERT INTO public.auth_permission VALUES (54, 'Can change support contact', 14, 'change_supportcontact');
+INSERT INTO public.auth_permission VALUES (55, 'Can delete support contact', 14, 'delete_supportcontact');
+INSERT INTO public.auth_permission VALUES (56, 'Can view support contact', 14, 'view_supportcontact');
+INSERT INTO public.auth_permission VALUES (57, 'Can add facility', 16, 'add_facility');
+INSERT INTO public.auth_permission VALUES (58, 'Can change facility', 16, 'change_facility');
+INSERT INTO public.auth_permission VALUES (59, 'Can delete facility', 16, 'delete_facility');
+INSERT INTO public.auth_permission VALUES (60, 'Can view facility', 16, 'view_facility');
+INSERT INTO public.auth_permission VALUES (61, 'Can add milk bank request', 17, 'add_milkbankrequest');
+INSERT INTO public.auth_permission VALUES (62, 'Can change milk bank request', 17, 'change_milkbankrequest');
+INSERT INTO public.auth_permission VALUES (63, 'Can delete milk bank request', 17, 'delete_milkbankrequest');
+INSERT INTO public.auth_permission VALUES (64, 'Can view milk bank request', 17, 'view_milkbankrequest');
+INSERT INTO public.auth_permission VALUES (65, 'Can add transaction record', 18, 'add_transactionrecord');
+INSERT INTO public.auth_permission VALUES (66, 'Can change transaction record', 18, 'change_transactionrecord');
+INSERT INTO public.auth_permission VALUES (67, 'Can delete transaction record', 18, 'delete_transactionrecord');
+INSERT INTO public.auth_permission VALUES (68, 'Can view transaction record', 18, 'view_transactionrecord');
+INSERT INTO public.auth_permission VALUES (69, 'Can add donor questionnaire', 15, 'add_donorquestionnaire');
+INSERT INTO public.auth_permission VALUES (70, 'Can change donor questionnaire', 15, 'change_donorquestionnaire');
+INSERT INTO public.auth_permission VALUES (71, 'Can delete donor questionnaire', 15, 'delete_donorquestionnaire');
+INSERT INTO public.auth_permission VALUES (72, 'Can view donor questionnaire', 15, 'view_donorquestionnaire');
+INSERT INTO public.auth_permission VALUES (73, 'Can add notification item', 19, 'add_notificationitem');
+INSERT INTO public.auth_permission VALUES (74, 'Can change notification item', 19, 'change_notificationitem');
+INSERT INTO public.auth_permission VALUES (75, 'Can delete notification item', 19, 'delete_notificationitem');
+INSERT INTO public.auth_permission VALUES (76, 'Can view notification item', 19, 'view_notificationitem');
+INSERT INTO public.auth_permission VALUES (77, 'Can add chat session', 21, 'add_chatsession');
+INSERT INTO public.auth_permission VALUES (78, 'Can change chat session', 21, 'change_chatsession');
+INSERT INTO public.auth_permission VALUES (79, 'Can delete chat session', 21, 'delete_chatsession');
+INSERT INTO public.auth_permission VALUES (80, 'Can view chat session', 21, 'view_chatsession');
+INSERT INTO public.auth_permission VALUES (81, 'Can add chat message', 20, 'add_chatmessage');
+INSERT INTO public.auth_permission VALUES (82, 'Can change chat message', 20, 'change_chatmessage');
+INSERT INTO public.auth_permission VALUES (83, 'Can delete chat message', 20, 'delete_chatmessage');
+INSERT INTO public.auth_permission VALUES (84, 'Can view chat message', 20, 'view_chatmessage');
+INSERT INTO public.auth_permission VALUES (85, 'Can add knowledge document', 23, 'add_knowledgedocument');
+INSERT INTO public.auth_permission VALUES (86, 'Can change knowledge document', 23, 'change_knowledgedocument');
+INSERT INTO public.auth_permission VALUES (87, 'Can delete knowledge document', 23, 'delete_knowledgedocument');
+INSERT INTO public.auth_permission VALUES (88, 'Can view knowledge document', 23, 'view_knowledgedocument');
+INSERT INTO public.auth_permission VALUES (89, 'Can add knowledge chunk', 22, 'add_knowledgechunk');
+INSERT INTO public.auth_permission VALUES (90, 'Can change knowledge chunk', 22, 'change_knowledgechunk');
+INSERT INTO public.auth_permission VALUES (91, 'Can delete knowledge chunk', 22, 'delete_knowledgechunk');
+INSERT INTO public.auth_permission VALUES (92, 'Can view knowledge chunk', 22, 'view_knowledgechunk');
+INSERT INTO public.auth_permission VALUES (93, 'Can add conversation', 24, 'add_conversation');
+INSERT INTO public.auth_permission VALUES (94, 'Can change conversation', 24, 'change_conversation');
+INSERT INTO public.auth_permission VALUES (95, 'Can delete conversation', 24, 'delete_conversation');
+INSERT INTO public.auth_permission VALUES (96, 'Can view conversation', 24, 'view_conversation');
+INSERT INTO public.auth_permission VALUES (97, 'Can add message', 25, 'add_message');
+INSERT INTO public.auth_permission VALUES (98, 'Can change message', 25, 'change_message');
+INSERT INTO public.auth_permission VALUES (99, 'Can delete message', 25, 'delete_message');
+INSERT INTO public.auth_permission VALUES (100, 'Can view message', 25, 'view_message');
+
+
+--
+-- Data for Name: chat_chatmessage; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: chat_chatsession; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: chat_knowledgechunk; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: chat_knowledgedocument; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: core_auditlogentry; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.core_auditlogentry VALUES (1, 'seed.facilities', 'Facility: demo set', '2026-10-20 08:13:19.075435+08', NULL);
+
+
+--
+-- Data for Name: directory_supportcontact; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.directory_supportcontact VALUES (1, 'Quezon City General Hospital', 'Quezon City government hospital and home of the Quezon City Human Milk Bank (2nd floor). For the milk bank, call the hospital and ask for local 209, or call 0960-363-6492. Milk bank hours: daily 8:00 AM - 5:00 PM, holidays 8:00 AM - 12:00 NN.', '(02) 8863-0800', 'Seminary Road, Brgy. Bahay Toro, Project 8, Quezon City', 'humanmilkbank.qcgh@gmail.com');
+INSERT INTO public.directory_supportcontact VALUES (2, 'St. Luke''s Medical Center - Quezon City', 'Private hospital with breastfeeding support services and a human milk bank. Call the trunk line and ask for lactation support; customer service is on local 4122.', '(02) 8723-0101', '279 E. Rodriguez Sr. Ave., Quezon City 1112', 'customer.qc@stlukes.com.ph');
+INSERT INTO public.directory_supportcontact VALUES (3, 'Dr. Jose Fabella Memorial Hospital Human Milk Bank', 'Government-accredited human milk bank.', '(02) 8866-7960', 'San Lazaro Compound, Tayuman St., Santa Cruz, Manila', 'mcc@fabella.doh.gov.ph');
+INSERT INTO public.directory_supportcontact VALUES (4, 'Arugaan', 'Volunteer-run breastfeeding and milk-banking advocacy organization.', '', '2 Starlight Street corner Vista Street, SSS Village, Marikina City, Metro Manila', 'arugaan.breastfeeding@gmail.com');
+
+
+--
+-- Data for Name: django_admin_log; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: django_cache_table; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: django_content_type; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.django_content_type VALUES (1, 'admin', 'logentry');
+INSERT INTO public.django_content_type VALUES (2, 'auth', 'group');
+INSERT INTO public.django_content_type VALUES (3, 'auth', 'permission');
+INSERT INTO public.django_content_type VALUES (4, 'contenttypes', 'contenttype');
+INSERT INTO public.django_content_type VALUES (5, 'sessions', 'session');
+INSERT INTO public.django_content_type VALUES (6, 'core', 'auditlogentry');
+INSERT INTO public.django_content_type VALUES (7, 'accounts', 'pendingregistration');
+INSERT INTO public.django_content_type VALUES (8, 'accounts', 'user');
+INSERT INTO public.django_content_type VALUES (9, 'articles', 'article');
+INSERT INTO public.django_content_type VALUES (10, 'articles', 'articlecomment');
+INSERT INTO public.django_content_type VALUES (11, 'articles', 'commentreport');
+INSERT INTO public.django_content_type VALUES (12, 'articles', 'resourcelink');
+INSERT INTO public.django_content_type VALUES (13, 'articles', 'savedarticle');
+INSERT INTO public.django_content_type VALUES (14, 'directory', 'supportcontact');
+INSERT INTO public.django_content_type VALUES (15, 'milkbank', 'donorquestionnaire');
+INSERT INTO public.django_content_type VALUES (16, 'milkbank', 'facility');
+INSERT INTO public.django_content_type VALUES (17, 'milkbank', 'milkbankrequest');
+INSERT INTO public.django_content_type VALUES (18, 'milkbank', 'transactionrecord');
+INSERT INTO public.django_content_type VALUES (19, 'notifications', 'notificationitem');
+INSERT INTO public.django_content_type VALUES (20, 'chat', 'chatmessage');
+INSERT INTO public.django_content_type VALUES (21, 'chat', 'chatsession');
+INSERT INTO public.django_content_type VALUES (22, 'chat', 'knowledgechunk');
+INSERT INTO public.django_content_type VALUES (23, 'chat', 'knowledgedocument');
+INSERT INTO public.django_content_type VALUES (24, 'messaging', 'conversation');
+INSERT INTO public.django_content_type VALUES (25, 'messaging', 'message');
+
+
+--
+-- Data for Name: django_migrations; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.django_migrations VALUES (1, 'milkbank', '0001_initial', '2026-10-20 08:13:14.103182+08');
+INSERT INTO public.django_migrations VALUES (2, 'contenttypes', '0001_initial', '2026-10-20 08:13:14.113125+08');
+INSERT INTO public.django_migrations VALUES (3, 'contenttypes', '0002_remove_content_type_name', '2026-10-20 08:13:14.120039+08');
+INSERT INTO public.django_migrations VALUES (4, 'auth', '0001_initial', '2026-10-20 08:13:14.153326+08');
+INSERT INTO public.django_migrations VALUES (5, 'auth', '0002_alter_permission_name_max_length', '2026-10-20 08:13:14.158529+08');
+INSERT INTO public.django_migrations VALUES (6, 'auth', '0003_alter_user_email_max_length', '2026-10-20 08:13:14.162477+08');
+INSERT INTO public.django_migrations VALUES (7, 'auth', '0004_alter_user_username_opts', '2026-10-20 08:13:14.166892+08');
+INSERT INTO public.django_migrations VALUES (8, 'auth', '0005_alter_user_last_login_null', '2026-10-20 08:13:14.1708+08');
+INSERT INTO public.django_migrations VALUES (9, 'auth', '0006_require_contenttypes_0002', '2026-10-20 08:13:14.171933+08');
+INSERT INTO public.django_migrations VALUES (10, 'auth', '0007_alter_validators_add_error_messages', '2026-10-20 08:13:14.17524+08');
+INSERT INTO public.django_migrations VALUES (11, 'auth', '0008_alter_user_username_max_length', '2026-10-20 08:13:14.178806+08');
+INSERT INTO public.django_migrations VALUES (12, 'auth', '0009_alter_user_last_name_max_length', '2026-10-20 08:13:14.182266+08');
+INSERT INTO public.django_migrations VALUES (13, 'auth', '0010_alter_group_name_max_length', '2026-10-20 08:13:14.189757+08');
+INSERT INTO public.django_migrations VALUES (14, 'auth', '0011_update_proxy_permissions', '2026-10-20 08:13:14.193982+08');
+INSERT INTO public.django_migrations VALUES (15, 'auth', '0012_alter_user_first_name_max_length', '2026-10-20 08:13:14.197468+08');
+INSERT INTO public.django_migrations VALUES (16, 'accounts', '0001_initial', '2026-10-20 08:13:14.24027+08');
+INSERT INTO public.django_migrations VALUES (17, 'milkbank', '0002_milkbankrequest_transactionrecord', '2026-10-20 08:13:14.273355+08');
+INSERT INTO public.django_migrations VALUES (18, 'milkbank', '0003_alter_facility_booked_count', '2026-10-20 08:13:14.276291+08');
+INSERT INTO public.django_migrations VALUES (19, 'milkbank', '0004_donorquestionnaire', '2026-10-20 08:13:14.293899+08');
+INSERT INTO public.django_migrations VALUES (20, 'accounts', '0002_user_last_active_date', '2026-10-20 08:13:14.301076+08');
+INSERT INTO public.django_migrations VALUES (21, 'accounts', '0003_user_has_seen_walkthrough', '2026-10-20 08:13:14.311079+08');
+INSERT INTO public.django_migrations VALUES (22, 'accounts', '0004_user_email_verification_attempts_and_more', '2026-10-20 08:13:14.33819+08');
+INSERT INTO public.django_migrations VALUES (23, 'accounts', '0005_user_facility', '2026-10-20 08:13:14.350461+08');
+INSERT INTO public.django_migrations VALUES (24, 'accounts', '0006_user_password_reset_attempts_and_more', '2026-10-20 08:13:14.374579+08');
+INSERT INTO public.django_migrations VALUES (25, 'accounts', '0007_pendingregistration_and_more', '2026-10-20 08:13:14.405099+08');
+INSERT INTO public.django_migrations VALUES (26, 'accounts', '0008_alter_pendingregistration_code_and_more', '2026-10-20 08:13:14.409001+08');
+INSERT INTO public.django_migrations VALUES (27, 'accounts', '0009_user_total_received_ml', '2026-10-20 08:13:14.417997+08');
+INSERT INTO public.django_migrations VALUES (28, 'accounts', '0010_sign_in_lockout', '2026-10-20 08:13:14.440718+08');
+INSERT INTO public.django_migrations VALUES (29, 'admin', '0001_initial', '2026-10-20 08:13:14.464824+08');
+INSERT INTO public.django_migrations VALUES (30, 'admin', '0002_logentry_remove_auto_add', '2026-10-20 08:13:14.473877+08');
+INSERT INTO public.django_migrations VALUES (31, 'admin', '0003_logentry_add_action_flag_choices', '2026-10-20 08:13:14.482713+08');
+INSERT INTO public.django_migrations VALUES (32, 'articles', '0001_initial', '2026-10-20 08:13:14.512457+08');
+INSERT INTO public.django_migrations VALUES (33, 'articles', '0002_resourcelink', '2026-10-20 08:13:14.519807+08');
+INSERT INTO public.django_migrations VALUES (34, 'articles', '0003_repair_split_formatting_markers', '2026-10-20 08:13:14.533869+08');
+INSERT INTO public.django_migrations VALUES (35, 'articles', '0004_comment_reports', '2026-10-20 08:13:14.560495+08');
+INSERT INTO public.django_migrations VALUES (36, 'articles', '0005_saved_articles', '2026-10-20 08:13:14.619574+08');
+INSERT INTO public.django_migrations VALUES (37, 'articles', '0006_article_created_at', '2026-10-20 08:13:14.62421+08');
+INSERT INTO public.django_migrations VALUES (38, 'chat', '0001_initial', '2026-10-20 08:13:14.661506+08');
+INSERT INTO public.django_migrations VALUES (39, 'chat', '0002_remove_chatsession_current_model_and_more', '2026-10-20 08:13:14.680557+08');
+INSERT INTO public.django_migrations VALUES (40, 'chat', '0003_knowledgedocument_knowledgechunk', '2026-10-20 08:13:14.6998+08');
+INSERT INTO public.django_migrations VALUES (41, 'chat', '0004_chatmessage_order_tiebreak', '2026-10-20 08:13:14.704586+08');
+INSERT INTO public.django_migrations VALUES (42, 'core', '0001_initial', '2026-10-20 08:13:14.7244+08');
+INSERT INTO public.django_migrations VALUES (43, 'directory', '0001_initial', '2026-10-20 08:13:14.732277+08');
+INSERT INTO public.django_migrations VALUES (44, 'directory', '0002_supportcontact_email', '2026-10-20 08:13:14.735867+08');
+INSERT INTO public.django_migrations VALUES (45, 'directory', '0003_support_contact_details', '2026-10-20 08:13:14.764974+08');
+INSERT INTO public.django_migrations VALUES (46, 'milkbank', '0005_milkbankrequest_response_deadline', '2026-10-20 08:13:14.779165+08');
+INSERT INTO public.django_migrations VALUES (47, 'milkbank', '0006_donorquestionnaire_match_mobile_form', '2026-10-20 08:13:15.003408+08');
+INSERT INTO public.django_migrations VALUES (48, 'milkbank', '0007_milkbankrequest_needs_representative_and_more', '2026-10-20 08:13:15.047013+08');
+INSERT INTO public.django_migrations VALUES (49, 'milkbank', '0008_milkbankrequest_amount_ml_and_more', '2026-10-20 08:13:15.069451+08');
+INSERT INTO public.django_migrations VALUES (50, 'milkbank', '0009_transactionrecord_amount_ml', '2026-10-20 08:13:15.079772+08');
+INSERT INTO public.django_migrations VALUES (51, 'milkbank', '0010_milkbankrequest_clinic_info_and_more', '2026-10-20 08:13:15.143135+08');
+INSERT INTO public.django_migrations VALUES (52, 'milkbank', '0011_fabella_current_address', '2026-10-20 08:13:15.159314+08');
+INSERT INTO public.django_migrations VALUES (53, 'milkbank', '0012_milkbankrequest_decline_reason', '2026-10-20 08:13:15.185516+08');
+INSERT INTO public.django_migrations VALUES (54, 'milkbank', '0013_mark_facilities_seeded', '2026-10-20 08:13:15.213825+08');
+INSERT INTO public.django_migrations VALUES (55, 'milkbank', '0014_milkbankrequest_requested_ml', '2026-10-20 08:13:15.226548+08');
+INSERT INTO public.django_migrations VALUES (56, 'milkbank', '0015_per_day_capacity', '2026-10-20 08:13:15.23858+08');
+INSERT INTO public.django_migrations VALUES (57, 'messaging', '0001_initial', '2026-10-20 08:13:15.288574+08');
+INSERT INTO public.django_migrations VALUES (58, 'milkbank', '0016_facility_request_limits_and_bottles', '2026-10-20 08:13:15.328135+08');
+INSERT INTO public.django_migrations VALUES (59, 'milkbank', '0017_facility_donor_slot_limit', '2026-10-20 08:13:15.355914+08');
+INSERT INTO public.django_migrations VALUES (60, 'milkbank', '0018_request_closed_at_and_representative_purge', '2026-10-20 08:13:15.421351+08');
+INSERT INTO public.django_migrations VALUES (61, 'notifications', '0001_initial', '2026-10-20 08:13:15.478916+08');
+INSERT INTO public.django_migrations VALUES (62, 'notifications', '0002_sign_in_lockout', '2026-10-20 08:13:15.493835+08');
+INSERT INTO public.django_migrations VALUES (63, 'sessions', '0001_initial', '2026-10-20 08:13:15.508621+08');
+
+
+--
+-- Data for Name: django_session; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: messaging_conversation; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: messaging_message; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: milkbank_donorquestionnaire; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: milkbank_facility; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.milkbank_facility VALUES (1, 'St. Luke''s Medical Center', 'Accredited Human Milk Bank', '(02) 8723-0101', '279 E. Rodriguez Sr. Ave, Quezon City', '8:00 AM - 5:00 PM (Mon-Fri)', '', '', '[]', '[]', true, 18, 740, 14.6091, 121.0223, false, 1000, 30, 3, false);
+INSERT INTO public.milkbank_facility VALUES (2, 'Philippine General Hospital', 'Hospital Depot', '(02) 8554-8400', 'Taft Ave, Ermita, Manila', '8:00 AM - 5:00 PM (Mon-Fri)', '', '', '[]', '[]', true, 36, 1620, 14.5764, 120.985, false, 1000, 30, 3, false);
+INSERT INTO public.milkbank_facility VALUES (3, 'St. Martin de Porres', 'Hospital Depot', '', '', '8:00 AM - 5:00 PM (Mon-Fri)', '', '', '[]', '[]', true, 12, 185, 14.5794, 121.0359, false, 1000, 30, 3, false);
+INSERT INTO public.milkbank_facility VALUES (4, 'Dr. Jose Fabella Memorial Hospital Human Milk Bank', 'Accredited Human Milk Bank', '8866-7960', 'San Lazaro Compound, Tayuman St., Santa Cruz, Manila', '8:00 AM - 5:00 PM (Mon-Fri)', '', '', '[]', '[]', true, 24, 910, 14.6153, 120.9804, false, 1000, 30, 3, false);
+
+
+--
+-- Data for Name: milkbank_milkbankrequest; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: milkbank_transactionrecord; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: notifications_notificationitem; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Name: accounts_pendingregistration_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.accounts_pendingregistration_id_seq', 1, false);
+
+
+--
+-- Name: accounts_user_groups_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.accounts_user_groups_id_seq', 1, false);
+
+
+--
+-- Name: accounts_user_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.accounts_user_id_seq', 1, false);
+
+
+--
+-- Name: accounts_user_user_permissions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.accounts_user_user_permissions_id_seq', 1, false);
+
+
+--
+-- Name: articles_article_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.articles_article_id_seq', 6, true);
+
+
+--
+-- Name: articles_articlecomment_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.articles_articlecomment_id_seq', 1, false);
+
+
+--
+-- Name: articles_commentreport_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.articles_commentreport_id_seq', 1, false);
+
+
+--
+-- Name: articles_resourcelink_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.articles_resourcelink_id_seq', 1, false);
+
+
+--
+-- Name: articles_savedarticle_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.articles_savedarticle_id_seq', 1, false);
+
+
+--
+-- Name: auth_group_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.auth_group_id_seq', 1, false);
+
+
+--
+-- Name: auth_group_permissions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.auth_group_permissions_id_seq', 1, false);
+
+
+--
+-- Name: auth_permission_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.auth_permission_id_seq', 100, true);
+
+
+--
+-- Name: chat_chatmessage_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.chat_chatmessage_id_seq', 1, false);
+
+
+--
+-- Name: chat_chatsession_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.chat_chatsession_id_seq', 1, false);
+
+
+--
+-- Name: chat_knowledgechunk_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.chat_knowledgechunk_id_seq', 1, false);
+
+
+--
+-- Name: chat_knowledgedocument_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.chat_knowledgedocument_id_seq', 1, false);
+
+
+--
+-- Name: core_auditlogentry_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.core_auditlogentry_id_seq', 1, true);
+
+
+--
+-- Name: directory_supportcontact_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.directory_supportcontact_id_seq', 4, true);
+
+
+--
+-- Name: django_admin_log_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.django_admin_log_id_seq', 1, false);
+
+
+--
+-- Name: django_content_type_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.django_content_type_id_seq', 25, true);
+
+
+--
+-- Name: django_migrations_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.django_migrations_id_seq', 63, true);
+
+
+--
+-- Name: messaging_conversation_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.messaging_conversation_id_seq', 1, false);
+
+
+--
+-- Name: messaging_message_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.messaging_message_id_seq', 1, false);
+
+
+--
+-- Name: milkbank_donorquestionnaire_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.milkbank_donorquestionnaire_id_seq', 1, false);
+
+
+--
+-- Name: milkbank_facility_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.milkbank_facility_id_seq', 4, true);
+
+
+--
+-- Name: milkbank_milkbankrequest_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.milkbank_milkbankrequest_id_seq', 1, false);
+
+
+--
+-- Name: milkbank_transactionrecord_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.milkbank_transactionrecord_id_seq', 1, false);
+
+
+--
+-- Name: notifications_notificationitem_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.notifications_notificationitem_id_seq', 1, false);
+
+
+--
+-- Name: accounts_pendingregistration accounts_pendingregistration_email_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_pendingregistration
+    ADD CONSTRAINT accounts_pendingregistration_email_key UNIQUE (email);
+
+
+--
+-- Name: accounts_pendingregistration accounts_pendingregistration_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_pendingregistration
+    ADD CONSTRAINT accounts_pendingregistration_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: accounts_user accounts_user_email_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user
+    ADD CONSTRAINT accounts_user_email_key UNIQUE (email);
+
+
+--
+-- Name: accounts_user_groups accounts_user_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user_groups
+    ADD CONSTRAINT accounts_user_groups_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: accounts_user_groups accounts_user_groups_user_id_group_id_59c0b32f_uniq; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user_groups
+    ADD CONSTRAINT accounts_user_groups_user_id_group_id_59c0b32f_uniq UNIQUE (user_id, group_id);
+
+
+--
+-- Name: accounts_user accounts_user_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user
+    ADD CONSTRAINT accounts_user_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: accounts_user_user_permissions accounts_user_user_permi_user_id_permission_id_2ab516c2_uniq; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user_user_permissions
+    ADD CONSTRAINT accounts_user_user_permi_user_id_permission_id_2ab516c2_uniq UNIQUE (user_id, permission_id);
+
+
+--
+-- Name: accounts_user_user_permissions accounts_user_user_permissions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user_user_permissions
+    ADD CONSTRAINT accounts_user_user_permissions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: articles_article articles_article_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_article
+    ADD CONSTRAINT articles_article_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: articles_articlecomment articles_articlecomment_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_articlecomment
+    ADD CONSTRAINT articles_articlecomment_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: articles_commentreport articles_commentreport_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_commentreport
+    ADD CONSTRAINT articles_commentreport_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: articles_resourcelink articles_resourcelink_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_resourcelink
+    ADD CONSTRAINT articles_resourcelink_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: articles_savedarticle articles_savedarticle_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_savedarticle
+    ADD CONSTRAINT articles_savedarticle_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: auth_group auth_group_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_group
+    ADD CONSTRAINT auth_group_name_key UNIQUE (name);
+
+
+--
+-- Name: auth_group_permissions auth_group_permissions_group_id_permission_id_0cd325b0_uniq; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_group_permissions
+    ADD CONSTRAINT auth_group_permissions_group_id_permission_id_0cd325b0_uniq UNIQUE (group_id, permission_id);
+
+
+--
+-- Name: auth_group_permissions auth_group_permissions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_group_permissions
+    ADD CONSTRAINT auth_group_permissions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: auth_group auth_group_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_group
+    ADD CONSTRAINT auth_group_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: auth_permission auth_permission_content_type_id_codename_01ab375a_uniq; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_permission
+    ADD CONSTRAINT auth_permission_content_type_id_codename_01ab375a_uniq UNIQUE (content_type_id, codename);
+
+
+--
+-- Name: auth_permission auth_permission_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_permission
+    ADD CONSTRAINT auth_permission_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: chat_chatmessage chat_chatmessage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_chatmessage
+    ADD CONSTRAINT chat_chatmessage_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: chat_chatsession chat_chatsession_owner_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_chatsession
+    ADD CONSTRAINT chat_chatsession_owner_id_key UNIQUE (owner_id);
+
+
+--
+-- Name: chat_chatsession chat_chatsession_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_chatsession
+    ADD CONSTRAINT chat_chatsession_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: chat_knowledgechunk chat_knowledgechunk_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_knowledgechunk
+    ADD CONSTRAINT chat_knowledgechunk_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: chat_knowledgedocument chat_knowledgedocument_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_knowledgedocument
+    ADD CONSTRAINT chat_knowledgedocument_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: core_auditlogentry core_auditlogentry_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.core_auditlogentry
+    ADD CONSTRAINT core_auditlogentry_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: directory_supportcontact directory_supportcontact_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_supportcontact
+    ADD CONSTRAINT directory_supportcontact_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: django_admin_log django_admin_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.django_admin_log
+    ADD CONSTRAINT django_admin_log_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: django_cache_table django_cache_table_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.django_cache_table
+    ADD CONSTRAINT django_cache_table_pkey PRIMARY KEY (cache_key);
+
+
+--
+-- Name: django_content_type django_content_type_app_label_model_76bd3d3b_uniq; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.django_content_type
+    ADD CONSTRAINT django_content_type_app_label_model_76bd3d3b_uniq UNIQUE (app_label, model);
+
+
+--
+-- Name: django_content_type django_content_type_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.django_content_type
+    ADD CONSTRAINT django_content_type_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: django_migrations django_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.django_migrations
+    ADD CONSTRAINT django_migrations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: django_session django_session_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.django_session
+    ADD CONSTRAINT django_session_pkey PRIMARY KEY (session_key);
+
+
+--
+-- Name: messaging_conversation messaging_conversation_facility_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messaging_conversation
+    ADD CONSTRAINT messaging_conversation_facility_id_key UNIQUE (facility_id);
+
+
+--
+-- Name: messaging_conversation messaging_conversation_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messaging_conversation
+    ADD CONSTRAINT messaging_conversation_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: messaging_message messaging_message_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messaging_message
+    ADD CONSTRAINT messaging_message_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: milkbank_donorquestionnaire milkbank_donorquestionnaire_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_donorquestionnaire
+    ADD CONSTRAINT milkbank_donorquestionnaire_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: milkbank_donorquestionnaire milkbank_donorquestionnaire_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_donorquestionnaire
+    ADD CONSTRAINT milkbank_donorquestionnaire_request_id_key UNIQUE (request_id);
+
+
+--
+-- Name: milkbank_facility milkbank_facility_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_facility
+    ADD CONSTRAINT milkbank_facility_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: milkbank_milkbankrequest milkbank_milkbankrequest_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_milkbankrequest
+    ADD CONSTRAINT milkbank_milkbankrequest_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: milkbank_transactionrecord milkbank_transactionrecord_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_transactionrecord
+    ADD CONSTRAINT milkbank_transactionrecord_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: notifications_notificationitem notifications_notificationitem_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notifications_notificationitem
+    ADD CONSTRAINT notifications_notificationitem_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: articles_commentreport one_report_per_user_per_comment; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_commentreport
+    ADD CONSTRAINT one_report_per_user_per_comment UNIQUE (comment_id, reporter_id);
+
+
+--
+-- Name: articles_savedarticle one_save_per_user_per_article; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_savedarticle
+    ADD CONSTRAINT one_save_per_user_per_article UNIQUE (user_id, article_id);
+
+
+--
+-- Name: chat_knowledgechunk unique_chunk_per_source_position; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_knowledgechunk
+    ADD CONSTRAINT unique_chunk_per_source_position UNIQUE (source_kind, source_id, ordinal);
+
+
+--
+-- Name: accounts_pendingregistration_email_19fe7124_like; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX accounts_pendingregistration_email_19fe7124_like ON public.accounts_pendingregistration USING btree (email varchar_pattern_ops);
+
+
+--
+-- Name: accounts_user_email_b2644a56_like; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX accounts_user_email_b2644a56_like ON public.accounts_user USING btree (email varchar_pattern_ops);
+
+
+--
+-- Name: accounts_user_facility_id_145cb9da; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX accounts_user_facility_id_145cb9da ON public.accounts_user USING btree (facility_id);
+
+
+--
+-- Name: accounts_user_groups_group_id_bd11a704; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX accounts_user_groups_group_id_bd11a704 ON public.accounts_user_groups USING btree (group_id);
+
+
+--
+-- Name: accounts_user_groups_user_id_52b62117; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX accounts_user_groups_user_id_52b62117 ON public.accounts_user_groups USING btree (user_id);
+
+
+--
+-- Name: accounts_user_user_permissions_permission_id_113bb443; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX accounts_user_user_permissions_permission_id_113bb443 ON public.accounts_user_user_permissions USING btree (permission_id);
+
+
+--
+-- Name: accounts_user_user_permissions_user_id_e4f0a161; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX accounts_user_user_permissions_user_id_e4f0a161 ON public.accounts_user_user_permissions USING btree (user_id);
+
+
+--
+-- Name: articles_articlecomment_article_id_3562752c; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX articles_articlecomment_article_id_3562752c ON public.articles_articlecomment USING btree (article_id);
+
+
+--
+-- Name: articles_articlecomment_author_id_a8ec0915; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX articles_articlecomment_author_id_a8ec0915 ON public.articles_articlecomment USING btree (author_id);
+
+
+--
+-- Name: articles_commentreport_comment_id_3aa72578; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX articles_commentreport_comment_id_3aa72578 ON public.articles_commentreport USING btree (comment_id);
+
+
+--
+-- Name: articles_commentreport_reporter_id_74edd930; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX articles_commentreport_reporter_id_74edd930 ON public.articles_commentreport USING btree (reporter_id);
+
+
+--
+-- Name: articles_savedarticle_article_id_45c14319; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX articles_savedarticle_article_id_45c14319 ON public.articles_savedarticle USING btree (article_id);
+
+
+--
+-- Name: articles_savedarticle_user_id_16e39849; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX articles_savedarticle_user_id_16e39849 ON public.articles_savedarticle USING btree (user_id);
+
+
+--
+-- Name: auth_group_name_a6ea08ec_like; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auth_group_name_a6ea08ec_like ON public.auth_group USING btree (name varchar_pattern_ops);
+
+
+--
+-- Name: auth_group_permissions_group_id_b120cbf9; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auth_group_permissions_group_id_b120cbf9 ON public.auth_group_permissions USING btree (group_id);
+
+
+--
+-- Name: auth_group_permissions_permission_id_84c5c92e; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auth_group_permissions_permission_id_84c5c92e ON public.auth_group_permissions USING btree (permission_id);
+
+
+--
+-- Name: auth_permission_content_type_id_2f476e4b; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX auth_permission_content_type_id_2f476e4b ON public.auth_permission USING btree (content_type_id);
+
+
+--
+-- Name: chat_chatmessage_session_id_4dacb902; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chat_chatmessage_session_id_4dacb902 ON public.chat_chatmessage USING btree (session_id);
+
+
+--
+-- Name: chat_knowle_source__9cd3c0_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chat_knowle_source__9cd3c0_idx ON public.chat_knowledgechunk USING btree (source_kind, source_id);
+
+
+--
+-- Name: core_auditlogentry_actor_id_fca7de11; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX core_auditlogentry_actor_id_fca7de11 ON public.core_auditlogentry USING btree (actor_id);
+
+
+--
+-- Name: django_admin_log_content_type_id_c4bce8eb; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX django_admin_log_content_type_id_c4bce8eb ON public.django_admin_log USING btree (content_type_id);
+
+
+--
+-- Name: django_admin_log_user_id_c564eba6; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX django_admin_log_user_id_c564eba6 ON public.django_admin_log USING btree (user_id);
+
+
+--
+-- Name: django_cache_table_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX django_cache_table_expires ON public.django_cache_table USING btree (expires);
+
+
+--
+-- Name: django_session_expire_date_a5c62663; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX django_session_expire_date_a5c62663 ON public.django_session USING btree (expire_date);
+
+
+--
+-- Name: django_session_session_key_c0390e0f_like; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX django_session_session_key_c0390e0f_like ON public.django_session USING btree (session_key varchar_pattern_ops);
+
+
+--
+-- Name: messaging_message_conversation_id_3db4d3d1; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX messaging_message_conversation_id_3db4d3d1 ON public.messaging_message USING btree (conversation_id);
+
+
+--
+-- Name: messaging_message_sender_id_7a7088e6; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX messaging_message_sender_id_7a7088e6 ON public.messaging_message USING btree (sender_id);
+
+
+--
+-- Name: milkbank_milkbankrequest_allocated_facility_id_a8d7caef; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX milkbank_milkbankrequest_allocated_facility_id_a8d7caef ON public.milkbank_milkbankrequest USING btree (allocated_facility_id);
+
+
+--
+-- Name: milkbank_milkbankrequest_owner_id_33f076b0; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX milkbank_milkbankrequest_owner_id_33f076b0 ON public.milkbank_milkbankrequest USING btree (owner_id);
+
+
+--
+-- Name: milkbank_transactionrecord_owner_id_d67caeea; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX milkbank_transactionrecord_owner_id_d67caeea ON public.milkbank_transactionrecord USING btree (owner_id);
+
+
+--
+-- Name: notifications_notificationitem_owner_id_b75cc032; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX notifications_notificationitem_owner_id_b75cc032 ON public.notifications_notificationitem USING btree (owner_id);
+
+
+--
+-- Name: accounts_user accounts_user_facility_id_145cb9da_fk_milkbank_facility_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user
+    ADD CONSTRAINT accounts_user_facility_id_145cb9da_fk_milkbank_facility_id FOREIGN KEY (facility_id) REFERENCES public.milkbank_facility(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: accounts_user_groups accounts_user_groups_group_id_bd11a704_fk_auth_group_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user_groups
+    ADD CONSTRAINT accounts_user_groups_group_id_bd11a704_fk_auth_group_id FOREIGN KEY (group_id) REFERENCES public.auth_group(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: accounts_user_groups accounts_user_groups_user_id_52b62117_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user_groups
+    ADD CONSTRAINT accounts_user_groups_user_id_52b62117_fk_accounts_user_id FOREIGN KEY (user_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: accounts_user_user_permissions accounts_user_user_p_permission_id_113bb443_fk_auth_perm; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user_user_permissions
+    ADD CONSTRAINT accounts_user_user_p_permission_id_113bb443_fk_auth_perm FOREIGN KEY (permission_id) REFERENCES public.auth_permission(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: accounts_user_user_permissions accounts_user_user_p_user_id_e4f0a161_fk_accounts_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.accounts_user_user_permissions
+    ADD CONSTRAINT accounts_user_user_p_user_id_e4f0a161_fk_accounts_ FOREIGN KEY (user_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: articles_articlecomment articles_articlecomm_article_id_3562752c_fk_articles_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_articlecomment
+    ADD CONSTRAINT articles_articlecomm_article_id_3562752c_fk_articles_ FOREIGN KEY (article_id) REFERENCES public.articles_article(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: articles_articlecomment articles_articlecomment_author_id_a8ec0915_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_articlecomment
+    ADD CONSTRAINT articles_articlecomment_author_id_a8ec0915_fk_accounts_user_id FOREIGN KEY (author_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: articles_commentreport articles_commentrepo_comment_id_3aa72578_fk_articles_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_commentreport
+    ADD CONSTRAINT articles_commentrepo_comment_id_3aa72578_fk_articles_ FOREIGN KEY (comment_id) REFERENCES public.articles_articlecomment(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: articles_commentreport articles_commentreport_reporter_id_74edd930_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_commentreport
+    ADD CONSTRAINT articles_commentreport_reporter_id_74edd930_fk_accounts_user_id FOREIGN KEY (reporter_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: articles_savedarticle articles_savedarticl_article_id_45c14319_fk_articles_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_savedarticle
+    ADD CONSTRAINT articles_savedarticl_article_id_45c14319_fk_articles_ FOREIGN KEY (article_id) REFERENCES public.articles_article(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: articles_savedarticle articles_savedarticle_user_id_16e39849_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.articles_savedarticle
+    ADD CONSTRAINT articles_savedarticle_user_id_16e39849_fk_accounts_user_id FOREIGN KEY (user_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: auth_group_permissions auth_group_permissio_permission_id_84c5c92e_fk_auth_perm; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_group_permissions
+    ADD CONSTRAINT auth_group_permissio_permission_id_84c5c92e_fk_auth_perm FOREIGN KEY (permission_id) REFERENCES public.auth_permission(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: auth_group_permissions auth_group_permissions_group_id_b120cbf9_fk_auth_group_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_group_permissions
+    ADD CONSTRAINT auth_group_permissions_group_id_b120cbf9_fk_auth_group_id FOREIGN KEY (group_id) REFERENCES public.auth_group(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: auth_permission auth_permission_content_type_id_2f476e4b_fk_django_co; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.auth_permission
+    ADD CONSTRAINT auth_permission_content_type_id_2f476e4b_fk_django_co FOREIGN KEY (content_type_id) REFERENCES public.django_content_type(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: chat_chatmessage chat_chatmessage_session_id_4dacb902_fk_chat_chatsession_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_chatmessage
+    ADD CONSTRAINT chat_chatmessage_session_id_4dacb902_fk_chat_chatsession_id FOREIGN KEY (session_id) REFERENCES public.chat_chatsession(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: chat_chatsession chat_chatsession_owner_id_aec267f8_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chat_chatsession
+    ADD CONSTRAINT chat_chatsession_owner_id_aec267f8_fk_accounts_user_id FOREIGN KEY (owner_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: core_auditlogentry core_auditlogentry_actor_id_fca7de11_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.core_auditlogentry
+    ADD CONSTRAINT core_auditlogentry_actor_id_fca7de11_fk_accounts_user_id FOREIGN KEY (actor_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: django_admin_log django_admin_log_content_type_id_c4bce8eb_fk_django_co; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.django_admin_log
+    ADD CONSTRAINT django_admin_log_content_type_id_c4bce8eb_fk_django_co FOREIGN KEY (content_type_id) REFERENCES public.django_content_type(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: django_admin_log django_admin_log_user_id_c564eba6_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.django_admin_log
+    ADD CONSTRAINT django_admin_log_user_id_c564eba6_fk_accounts_user_id FOREIGN KEY (user_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: messaging_conversation messaging_conversati_facility_id_5db00c69_fk_milkbank_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messaging_conversation
+    ADD CONSTRAINT messaging_conversati_facility_id_5db00c69_fk_milkbank_ FOREIGN KEY (facility_id) REFERENCES public.milkbank_facility(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: messaging_message messaging_message_conversation_id_3db4d3d1_fk_messaging; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messaging_message
+    ADD CONSTRAINT messaging_message_conversation_id_3db4d3d1_fk_messaging FOREIGN KEY (conversation_id) REFERENCES public.messaging_conversation(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: messaging_message messaging_message_sender_id_7a7088e6_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.messaging_message
+    ADD CONSTRAINT messaging_message_sender_id_7a7088e6_fk_accounts_user_id FOREIGN KEY (sender_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: milkbank_donorquestionnaire milkbank_donorquesti_request_id_c155d435_fk_milkbank_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_donorquestionnaire
+    ADD CONSTRAINT milkbank_donorquesti_request_id_c155d435_fk_milkbank_ FOREIGN KEY (request_id) REFERENCES public.milkbank_milkbankrequest(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: milkbank_milkbankrequest milkbank_milkbankreq_allocated_facility_i_a8d7caef_fk_milkbank_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_milkbankrequest
+    ADD CONSTRAINT milkbank_milkbankreq_allocated_facility_i_a8d7caef_fk_milkbank_ FOREIGN KEY (allocated_facility_id) REFERENCES public.milkbank_facility(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: milkbank_milkbankrequest milkbank_milkbankrequest_owner_id_33f076b0_fk_accounts_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_milkbankrequest
+    ADD CONSTRAINT milkbank_milkbankrequest_owner_id_33f076b0_fk_accounts_user_id FOREIGN KEY (owner_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: milkbank_transactionrecord milkbank_transaction_owner_id_d67caeea_fk_accounts_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.milkbank_transactionrecord
+    ADD CONSTRAINT milkbank_transaction_owner_id_d67caeea_fk_accounts_ FOREIGN KEY (owner_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: notifications_notificationitem notifications_notifi_owner_id_b75cc032_fk_accounts_; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notifications_notificationitem
+    ADD CONSTRAINT notifications_notifi_owner_id_b75cc032_fk_accounts_ FOREIGN KEY (owner_id) REFERENCES public.accounts_user(id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- PostgreSQL database dump complete
+--
