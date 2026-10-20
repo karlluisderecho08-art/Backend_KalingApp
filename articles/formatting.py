@@ -37,6 +37,19 @@ _CANDIDATE = re.compile(
 
 _BULLET = re.compile(r"^([ \t]*[*-] )")
 
+# The alignment tag a line may start with -- `[center] `, `[right] ` or
+# `[justify] ` -- written by the admin editor's alignment buttons. The app and
+# the editor show it as alignment; anything that reads an article as plain text
+# (Kali's retrieval and citation matching) should not see it at all.
+_ALIGN_TAG = re.compile(r"^\[(?:center|right|justify)\] ?", re.MULTILINE)
+
+
+def strip_alignment_tags(text: str) -> str:
+    """`text` with every line's alignment tag removed; everything else untouched."""
+    if not text or "[" not in text:
+        return text
+    return _ALIGN_TAG.sub("", text)
+
 
 def _line_start(text: str, i: int) -> bool:
     """Only whitespace (or a bullet) between the previous line break and i."""

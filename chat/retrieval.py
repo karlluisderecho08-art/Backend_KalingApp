@@ -98,6 +98,7 @@ def _source_documents():
     would make merely importing this module depend on the articles app
     being loaded -- which bites in tests and management commands.
     """
+    from articles.formatting import strip_alignment_tags
     from articles.models import Article
 
     documents = []
@@ -107,7 +108,8 @@ def _source_documents():
             article.id,
             article.title,
             article.category,
-            article.content,
+            # Alignment tags are layout, not words -- Kali shouldn't search on them or quote them.
+            strip_alignment_tags(article.content),
         ))
     for document in KnowledgeDocument.objects.filter(is_active=True).order_by("id"):
         documents.append((

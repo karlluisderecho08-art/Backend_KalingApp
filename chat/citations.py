@@ -21,6 +21,8 @@ is exactly what cannot be recovered after the fact.
 
 import re
 
+from articles.formatting import strip_alignment_tags
+
 # A line that starts with "Source:" / "Sources:", tolerating the bullet
 # or markdown emphasis a model sometimes wraps it in (`*Source: ...*`).
 # Anchored to a line start on purpose: "the source of the problem" in the
@@ -171,7 +173,7 @@ def cited_articles(reply, articles):
     if not reply:
         return []
     indexed = [
-        (article, set(_tokens(article.title)), " ".join(_tokens(article.content or "")))
+        (article, set(_tokens(article.title)), " ".join(_tokens(strip_alignment_tags(article.content or ""))))
         for article in articles
     ]
 

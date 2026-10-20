@@ -8,7 +8,7 @@ from accounts.models import User
 from core.models import AuditLogEntry
 from notifications.models import NotificationItem
 
-from .formatting import normalize_markers
+from .formatting import normalize_markers, strip_alignment_tags
 from .models import Article, ArticleComment, CommentReport, ResourceLink, SavedArticle
 
 
@@ -499,3 +499,33 @@ class AdminResourceLinkTests(APITestCase):
 
         actions = list(AuditLogEntry.objects.filter(actor=self.admin).order_by("id").values_list("action", flat=True))
         self.assertEqual(actions, ["resource_link.created", "resource_link.updated", "resource_link.deleted"])
+
+
+class AlignmentTagTests(SimpleTestCase):
+    """
+    The admin editor writes `[center] ` / `[right] ` / `[justify] ` at the
+    start of a line to align it. Plain-text readers of an article (Kali's
+    retrieval and citation matching) drop the tags.
+    """
+
+    def test_tags_are_removed_from_each_line(self):
+        self.assertEqual(
+            strip_alignment_tags("[center] Title\nBody\n[justify] More\n[right] Signed"),
+            "Title\nBody\nMore\nSigned",
+        )
+
+    def test_other_brackets_are_left_alone(self):
+        text = "[1] WHO guideline\nSee [center of the latch] below"
+        self.assertEqual(strip_alignment_tags(text), text)
+
+    def test_a_tag_mid_line_is_text(self):
+        self.assertEqual(strip_alignment_tags("Use [center] here"), "Use [center] here")
+
+    def test_untagged_text_is_returned_unchanged(self):
+        text = "**Bold** and *italic*\n* bullet"
+        self.assertIs(strip_alignment_tags(text), text)
+
+    def test_saving_keeps_the_tags(self):
+        # normalize_markers runs on every save; it must not disturb alignment.
+        text = "[center] **Getting a good latch**\n[justify] Body text."
+        self.assertEqual(normalize_markers(text), text)
