@@ -29,6 +29,16 @@ TOPIC_KEYWORDS = [
     # accident. These used to match only because "feed"/"pump"/"let-down"
     # happened to be a substring of them.
     "bottlefeed", "breastpump", "breastfed", "breast fed", "letdown", "hunger cue",
+    # Tagalog, for the app's Tagalog mode (its suggested questions included).
+    # Whole words, and the English endings below don't apply to Tagalog
+    # affixes, so each common form is listed. Every one of these is about
+    # milk or feeding a baby; plain "baby"/"sanggol" alone stays off the list,
+    # same as "baby" in English.
+    "gatas", "gatas ng ina", "pasuso", "magpasuso", "nagpapasuso", "pagpapasuso",
+    "magpapasuso", "pinapasuso", "pinasuso", "ipasuso", "ipinapasuso", "sumuso", "sumususo",
+    "pagsuso", "padede", "magpadede", "nagpapadede", "pagpapadede", "pinapadede",
+    "ipadede", "dumede", "dumedede", "dede", "utong", "pag pump", "magpump", "nagpa pump",
+    "mag pump", "pina pump", "bagong silang",
 ]
 
 

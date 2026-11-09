@@ -112,7 +112,25 @@ def _get_client():
     return _client
 
 
-def get_ai_response(prompt, model=None, history=None):
+# Appended after the passages when the app is in Tagalog -- last, where the
+# English passages are least likely to pull the reply back into English.
+# "Source:" and "in the Knowledge Hub" stay literal so chat/citations.py and
+# the app still recognise the citation line.
+TAGALOG_REPLY_INSTRUCTION = (
+    "=== LANGUAGE ===\n"
+    "The mother is using the app in Tagalog. Reply in Tagalog (Filipino), even though the "
+    "knowledge base passages are in English: carry their content over faithfully, without "
+    "adding, dropping or changing any medical fact, number, amount or storage time. Write "
+    "natural, grammatical Tagalog -- not word-for-word translation -- in a warm, friendly "
+    "voice like an older sister, calling her 'ka', 'mo', 'iyo' (not 'kayo'/'ninyo', no 'po'). "
+    "Keep these in English: app, account, email, password, code, Kali, appointment, HIV, "
+    "Hepatitis, Syphilis, serology, ID, mL, milk bank, IBCLC, lactation consultant; say "
+    "'baby' for her infant. Keep article titles exactly as written. If you cite, write the "
+    "line exactly in this English form: Source: \"<title>\" in the Knowledge Hub"
+)
+
+
+def get_ai_response(prompt, model=None, history=None, tagalog=False):
     """
     Returns (reply_text, token_count, used_fallback: bool). Never
     raises -- any failure just means used_fallback=True.
@@ -164,7 +182,7 @@ def get_ai_response(prompt, model=None, history=None):
                     question=prompt,
                     strict=settings.CHAT_STRICT_KNOWLEDGE_ONLY,
                     passages=passages,
-                ),
+                ) + ("\n\n" + TAGALOG_REPLY_INSTRUCTION if tagalog else ""),
                 max_output_tokens=MAX_TOKENS,
                 temperature=0.4,
                 http_options=types.HttpOptions(timeout=HTTP_TIMEOUT_MS),

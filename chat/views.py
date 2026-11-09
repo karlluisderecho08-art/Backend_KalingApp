@@ -7,6 +7,8 @@ from rest_framework.views import APIView
 
 from core.versioning import RequiresSupportedApp
 
+from core.i18n import wants_tagalog
+
 from .gemini_client import HISTORY_TURNS, get_ai_response
 from .guardrail import OFF_TOPIC_RESPONSE, is_breastfeeding_topic
 from .models import ChatMessage, ChatSession
@@ -71,7 +73,7 @@ class SendMessageView(APIView):
         session.prompt_count += 1
 
         history = [(message.is_user, message.text) for message in prior]
-        reply_text, tokens, used_fallback = get_ai_response(text, history=history)
+        reply_text, tokens, used_fallback = get_ai_response(text, history=history, tagalog=wants_tagalog(request))
         session.token_count += tokens
         session.save(update_fields=["prompt_count", "token_count"])
 

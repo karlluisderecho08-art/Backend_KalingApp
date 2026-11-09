@@ -358,6 +358,10 @@ MIDDLEWARE = [
     # call this API from a different origin (e.g. localhost:5173) at all.
     # The Android app doesn't need this: CORS is a browser-only rule.
     "corsheaders.middleware.CorsMiddleware",
+    # Serves the server's own messages in Tagalog to the mother app when it
+    # asks with Accept-Language: tl (core/i18n.py). The web consoles never
+    # send it and keep getting English.
+    "core.i18n.TagalogResponseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

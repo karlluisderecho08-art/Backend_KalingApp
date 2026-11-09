@@ -18,6 +18,7 @@ from core.retention import maybe_purge
 from core.throttling import ClientIPScopedRateThrottle
 from directory.models import SupportContact
 from notifications.models import NotificationItem
+from core.i18n import wants_tagalog
 from notifications.services import notify_many
 
 from . import lockout
@@ -41,7 +42,7 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
-def _send_verification_email_in_background(pending):
+def _send_verification_email_in_background(pending, tagalog=False):
     """
     Fire-and-forget wrapper around send_verification_email(), run on a
     background thread so a slow or hung SMTP connection can never make
@@ -63,15 +64,15 @@ def _send_verification_email_in_background(pending):
     project's current scale, not a claim that this is the fully robust
     long-term answer.
     """
-    _send_in_background(send_verification_email, pending, "verification")
+    _send_in_background(send_verification_email, pending, "verification", tagalog)
 
 
-def _send_password_reset_email_in_background(user):
+def _send_password_reset_email_in_background(user, tagalog=False):
     """Same fire-and-forget reasoning as _send_verification_email_in_background above."""
-    _send_in_background(send_password_reset_email, user, "password_reset")
+    _send_in_background(send_password_reset_email, user, "password_reset", tagalog)
 
 
-def _send_in_background(send_func, recipient, kind):
+def _send_in_background(send_func, recipient, kind, tagalog=False):
     """
     Runs one of the send_*_email() functions and records the outcome in
     the audit log, not just the Python logger.
@@ -104,7 +105,7 @@ def _send_in_background(send_func, recipient, kind):
     who = f" for {recipient.email}" if actor is None else ""
 
     try:
-        send_func(recipient)
+        send_func(recipient, tagalog=tagalog)
     except Exception as exc:
         logger.exception("Failed to send %s email to %s", kind, recipient.email)
         detail = f"{type(exc).__name__}: {exc}"
@@ -236,7 +237,7 @@ class RegisterView(generics.CreateAPIView):
         # so the response below is accurate regardless of how the send
         # itself turns out. See _send_verification_email_in_background's
         # docstring for why this can't just be a try/except here.
-        threading.Thread(target=_send_verification_email_in_background, args=(pending,), daemon=True).start()
+        threading.Thread(target=_send_verification_email_in_background, args=(pending, wants_tagalog(request)), daemon=True).start()
 
         return Response({
             "detail": "Account created. Check your email for a 6-digit verification code.",
@@ -349,7 +350,7 @@ class ResendVerificationView(APIView):
         if pending.sent_at and timezone.now() - pending.sent_at < timedelta(seconds=RESEND_COOLDOWN_SECONDS):
             return generic_response
 
-        threading.Thread(target=_send_verification_email_in_background, args=(pending,), daemon=True).start()
+        threading.Thread(target=_send_verification_email_in_background, args=(pending, wants_tagalog(request)), daemon=True).start()
         return generic_response
 
 
@@ -385,7 +386,7 @@ class ForgotPasswordView(APIView):
         ):
             return generic_response
 
-        threading.Thread(target=_send_password_reset_email_in_background, args=(user,), daemon=True).start()
+        threading.Thread(target=_send_password_reset_email_in_background, args=(user, wants_tagalog(request)), daemon=True).start()
         return generic_response
 
 
