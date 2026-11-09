@@ -745,7 +745,7 @@ DONOR stages (current_stage_index -> name):
   0 = Status
   1 = Booking Confirmation
   2 = Counseling and Testing
-  3 = Breastmilk Analysis
+  3 = Breastmilk Collection
   4 = Results
 
 RECIPIENT stages (current_stage_index -> name):

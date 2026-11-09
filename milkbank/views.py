@@ -637,7 +637,7 @@ class StaffDeclineView(generics.GenericAPIView):
 
     Declines a request from the Booking Request desk (pending) or from any
     in-person phase (scheduled) -- a failed blood test, a failed breastmilk
-    analysis, documents that don't check out. Either way the request ends
+    collection, documents that don't check out. Either way the request ends
     here: DECLINED is terminal, so it can't be advanced or completed, and
     apply_transition releases the facility's slot. Declining from any other
     status (awaiting attendance, counter-offered, already closed) is
@@ -798,7 +798,7 @@ class StaffAdvanceStageView(generics.GenericAPIView):
     Moves current_stage_index one step forward for the offline-only
     phases staff tick off as they finish them in person:
 
-        DONOR      Counseling and Testing -> Breastmilk Analysis -> Results
+        DONOR      Counseling and Testing -> Breastmilk Collection -> Results
         RECIPIENT  Status -> Booking Confirmation
 
     Nothing about these phases happens in this app -- staff just record

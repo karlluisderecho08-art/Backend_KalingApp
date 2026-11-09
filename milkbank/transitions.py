@@ -82,7 +82,7 @@ STATUS_NOTIFICATIONS = {
 #
 #   SCHEDULED -> DECLINED
 #     A booking can fail partway through, not only at the Booking Request
-#     desk: a donor's blood test or breastmilk analysis comes back bad, a
+#     desk: a donor's blood test or breastmilk collection comes back bad, a
 #     recipient's documents don't check out. Staff decline from whichever
 #     in-person phase it happened in, and the request ends there -- DECLINED
 #     is terminal, so it can't be advanced or completed afterwards, and

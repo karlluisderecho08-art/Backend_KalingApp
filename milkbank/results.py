@@ -2,7 +2,7 @@
 What a mother is told about how her request ended -- in plain words.
 
 Staff decline a request with a short reason label ("Failed breastmilk
-analysis") and, optionally, notes. Those notes are written for the facility's
+collection") and, optionally, notes. Those notes are written for the facility's
 own records and can carry lab findings (bacterial counts, serology values)
 that mean nothing to a mother, or alarm her without explaining anything. She
 used to be shown "reason -- notes" verbatim. Now she is shown, for each reason
@@ -46,7 +46,7 @@ DECLINE_RESULTS = {
         "before you can donate. " + SEE_YOUR_DOCTOR,
         True,
     ),
-    "failed breastmilk analysis": (
+    "failed breastmilk collection": (
         "Milk sample not accepted",
         "Your milk sample didn't pass the safety checks needed for donation. This can "
         "happen for many reasons, including how the milk was expressed or stored, and it "

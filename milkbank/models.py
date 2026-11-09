@@ -128,7 +128,7 @@ class MilkBankRequest(models.Model):
         # of the three. Matches the manuscript's "Counseling and Testing"
         # wording throughout.
         "Status", "Booking Confirmation", "Counseling and Testing",
-        "Breastmilk Analysis", "Results",
+        "Breastmilk Collection", "Results",
     ]
     RECIPIENT_STAGES = ["Requirements", "Status", "Booking Confirmation", "Results"]
 
@@ -142,7 +142,7 @@ class MilkBankRequest(models.Model):
     current_sub_status = models.CharField(max_length=30, choices=Status.choices, default=Status.PENDING)
     staff_message = models.TextField(blank=True)
     # Why a DECLINED request was declined, as a short label the statistics can
-    # group by ("Failed breastmilk analysis"). staff_message carries the same
+    # group by ("Failed breastmilk collection"). staff_message carries the same
     # reason plus any notes, as free text for the mother to read -- that can't
     # be counted, which is why this is its own field. Blank for every request
     # that was never declined.

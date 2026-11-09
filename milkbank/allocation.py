@@ -303,7 +303,7 @@ def rank_facilities(facilities, request_type, mother_lat, mother_lon):
 
     Distance is also not a symmetric cost here. A recipient makes one
     pickup trip; a DONOR is called in repeatedly (Counseling and
-    Testing, then Breastmilk Analysis, then Results -- see
+    Testing, then Breastmilk Collection, then Results -- see
     MilkBankRequest.DONOR_STAGES), so every extra kilometre is paid
     several times over, by someone who just gave birth.
 

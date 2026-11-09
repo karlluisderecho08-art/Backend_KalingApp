@@ -28,7 +28,7 @@ def declined(reason, notes="", request_type=MilkBankRequest.RequestType.DONOR):
 
 class MotherResultTests(SimpleTestCase):
     def test_health_related_declines_suggest_a_doctor_and_hide_the_notes(self):
-        for reason in ("Failed blood test", "Failed physical examination", "Failed breastmilk analysis"):
+        for reason in ("Failed blood test", "Failed physical examination", "Failed breastmilk collection"):
             with self.subTest(reason=reason):
                 result = mother_result(declined(reason, LAB_NOTES))
                 self.assertTrue(result["health_followup"])
@@ -58,7 +58,7 @@ class MotherResultTests(SimpleTestCase):
     def test_every_dashboard_reason_has_an_explanation(self):
         dashboard_reasons = [
             "Failed blood test", "Failed physical examination", "Did not pass counseling",
-            "Failed breastmilk analysis", "Milk did not meet quality standards",
+            "Failed breastmilk collection", "Milk did not meet quality standards",
             "Incomplete or invalid requirements", "Not enough milk available", "Outdated Serological Test",
         ]
         for reason in dashboard_reasons:
@@ -98,7 +98,7 @@ class DeclineReachesTheMotherInPlainWordsTests(APITestCase):
         )
 
     def test_her_notification_explains_without_the_lab_notes(self):
-        self.decline("Failed breastmilk analysis", LAB_NOTES)
+        self.decline("Failed breastmilk collection", LAB_NOTES)
 
         notice = NotificationItem.objects.filter(owner=self.mother).latest("id")
         self.assertIn("Milk sample not accepted", notice.description)

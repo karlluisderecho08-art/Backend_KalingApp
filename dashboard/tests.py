@@ -133,13 +133,13 @@ class DashboardStatsViewTests(APITestCase):
         return booking
 
     def test_decline_reasons_are_grouped_and_ordered_most_common_first(self):
-        self.decline("Failed breastmilk analysis")
-        self.decline("Failed breastmilk analysis")
+        self.decline("Failed breastmilk collection")
+        self.decline("Failed breastmilk collection")
         self.decline("Outdated Serological Test")
         self.assertEqual(
             self.get_stats()["decline_reasons"],
             [
-                {"reason": "Failed breastmilk analysis", "count": 2},
+                {"reason": "Failed breastmilk collection", "count": 2},
                 {"reason": "Outdated Serological Test", "count": 1},
             ],
         )
@@ -150,11 +150,11 @@ class DashboardStatsViewTests(APITestCase):
 
     def test_expired_and_open_bookings_are_not_decline_reasons(self):
         expired = self.book(months_ago=0, status=MilkBankRequest.Status.EXPIRED)
-        MilkBankRequest.objects.filter(pk=expired.pk).update(decline_reason="Failed breastmilk analysis")
+        MilkBankRequest.objects.filter(pk=expired.pk).update(decline_reason="Failed breastmilk collection")
         self.book(months_ago=0, status=MilkBankRequest.Status.PENDING)
         self.assertEqual(self.get_stats()["decline_reasons"], [])
 
     def test_declined_bookings_appear_in_the_status_summary_too(self):
-        self.decline("Failed breastmilk analysis")
+        self.decline("Failed breastmilk collection")
         summary = {row["status"]: row["count"] for row in self.get_stats()["donor_status_summary"]}
         self.assertEqual(summary["Declined"], 1)
