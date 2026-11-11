@@ -2,7 +2,7 @@ import re
 
 from rest_framework import serializers
 
-from .models import Message
+from .models import BookingMessage, Message
 
 MAX_BODY = 2000
 
@@ -42,3 +42,26 @@ class SendMessageSerializer(serializers.Serializer):
         if not cleaned:
             raise serializers.ValidationError("A message can't be empty.")
         return cleaned
+
+
+class BookingMessageSerializer(serializers.ModelSerializer):
+    """
+    `sender_name` depends on who is reading. The mother sees the facility's
+    name for anything the facility side wrote, never a staff member's own
+    account. Facility staff see the mother's name, and which colleague wrote
+    each facility message.
+    """
+
+    sender_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BookingMessage
+        fields = ["id", "side", "body", "created_at", "sender_name"]
+
+    def get_sender_name(self, obj):
+        req = self.context["request_obj"]
+        if obj.side == BookingMessage.Side.MOTHER:
+            return req.owner.mom_name or "Mother"
+        if self.context.get("viewer_side") == BookingMessage.Side.MOTHER:
+            return req.allocated_facility.name
+        return obj.sender.email if obj.sender else "Former staff member"

@@ -127,6 +127,27 @@ MESSAGES = {
         "Walang milk bank na may ganoon karaming gatas sa ngayon. {max_available_ml} mL ang pinakamaraming available -- humiling ng ganitong dami o mas kaunti.",
     "You already have an open request.":
         "May bukas ka pang kahilingan.",
+    # Breastmilk Collection method (donor form) and the booking chat.
+    "Paste the delivery booking link so the facility can track your courier.":
+        "I-paste ang link ng iyong delivery booking para masubaybayan ng pasilidad ang iyong courier.",
+    "Enter a full web link that starts with https://":
+        "Maglagay ng buong link na nagsisimula sa https://",
+    "Choose how your milk will reach the facility.":
+        "Piliin kung paano makakarating sa pasilidad ang iyong gatas.",
+    "Only a donation has a collection method.":
+        "Ang donasyon lang ang may paraan ng pagkolekta.",
+    "This booking has already ended.":
+        "Tapos na ang reserbasyong ito.",
+    "Your milk has already been collected.":
+        "Nakolekta na ang iyong gatas.",
+    "This booking has ended, so its chat is closed.":
+        "Tapos na ang reserbasyong ito, kaya sarado na ang chat nito.",
+    "A message can't be empty.":
+        "Hindi puwedeng walang laman ang mensahe.",
+    "New message from {facility}":
+        "Bagong mensahe mula sa {facility}",
+    "{facility} sent you a message about your booking. Open Booking Status to reply.":
+        "Nagpadala ang {facility} ng mensahe tungkol sa iyong reserbasyon. Buksan ang Booking Status para sumagot.",
     "Milk Bank Request Submitted":
         "Naipasa na ang Kahilingan sa Milk Bank",
     "Your donor request was submitted to {facility_name}.":

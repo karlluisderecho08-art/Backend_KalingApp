@@ -114,6 +114,24 @@ class InvalidTransition(Exception):
     pass
 
 
+def delete_booking_chat(req):
+    """
+    Permanently deletes the mother-facility chat of a booking that has ended
+    -- every message, for both sides. Booking chats exist only while a
+    booking is in progress, and keeping them afterwards would only take up
+    space. The audit log keeps that it happened and how many messages went,
+    never what they said.
+    """
+    from messaging.models import BookingChat  # messaging imports this module
+
+    chat = BookingChat.objects.filter(request=req).first()
+    if chat is None:
+        return
+    count = chat.messages.count()
+    chat.delete()
+    log_action(None, "messaging.booking_chat_deleted", f"MilkBankRequest:{req.id} ({count} messages)")
+
+
 def apply_transition(req, new_status, actor, action_name, message_override=None, amount_ml=None):
     """
     The one place a MilkBankRequest's status is ever allowed to change.
@@ -151,6 +169,8 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
         req.closed_at = timezone.now()
         update_fields.append("closed_at")
     req.save(update_fields=update_fields)
+    if new_status in FINAL_STATUSES:
+        delete_booking_chat(req)
     log_action(actor, f"booking.{action_name}", f"MilkBankRequest:{req.id}")
 
     message = message_override or STATUS_NOTIFICATIONS.get(new_status)

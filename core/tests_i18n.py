@@ -95,6 +95,22 @@ class EveryMotherMessageIsTranslatedTests(TestCase):
             text = translate(f'Your request has moved to the "{stage}" phase.')
             self.assertIn(f'"{LABELS[stage]}"', text)
 
+    def test_collection_and_booking_chat_messages(self):
+        from messaging.views import CHAT_CLOSED
+        from milkbank.serializers import DELIVERY_LINK_INVALID, DELIVERY_LINK_REQUIRED
+
+        for message in (
+            DELIVERY_LINK_REQUIRED, DELIVERY_LINK_INVALID, CHAT_CLOSED,
+            "Choose how your milk will reach the facility.",
+            "Only a donation has a collection method.",
+            "This booking has already ended.",
+            "Your milk has already been collected.",
+            "A message can't be empty.",
+            "New message from PGH Human Milk Bank",
+            "PGH Human Milk Bank sent you a message about your booking. Open Booking Status to reply.",
+        ):
+            self.assertTranslated(message)
+
     def test_kali_fixed_replies(self):
         self.assertTranslated(OFF_TOPIC_RESPONSE)
         for prompt in ("latch", "milk supply", "storage", "donate", "hello", "something else"):

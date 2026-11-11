@@ -206,6 +206,23 @@ class MilkBankRequest(models.Model):
     # Null when she asked in mL, so staff see her request the way she made it.
     requested_bottles = models.PositiveIntegerField(null=True, blank=True)
 
+    # How a DONOR's milk reaches the facility at the Breastmilk Collection
+    # stage, chosen on the donor form. Blank for a RECIPIENT, and for a donor
+    # request made from an app version that didn't ask yet (the facility
+    # dashboard shows that as "Not specified").
+    #
+    #   pickup    the facility collects the milk from her
+    #   walk_in   she brings the milk to the facility herself
+    #   drop_off  she sends it by courier -- delivery_link is then required,
+    #             so staff can track the courier booking (Lalamove, Grab, ...)
+    class CollectionMethod(models.TextChoices):
+        PICKUP = "pickup", "Pick up"
+        WALK_IN = "walk_in", "Walk-in"
+        DROP_OFF = "drop_off", "Drop off"
+
+    collection_method = models.CharField(max_length=20, choices=CollectionMethod.choices, blank=True)
+    delivery_link = models.URLField(max_length=500, blank=True)
+
     # The 8-business-hour SLA clock (see milkbank/business_hours.py). Null
     # whenever nothing is actively pending on someone -- set the moment a
     # request starts waiting on the facility (pending) or on the mother

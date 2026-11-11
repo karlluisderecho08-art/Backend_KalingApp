@@ -1,3 +1,5 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator
 from rest_framework import serializers
 
 from accounts.models import User
@@ -32,6 +34,40 @@ def _resolve_bottles(attrs):
                 {"requested_ml": f"{bottles} bottle(s) is {bottles * BOTTLE_ML} mL, not {ml} mL."}
             )
         attrs["requested_ml"] = bottles * BOTTLE_ML
+    return attrs
+
+
+DELIVERY_LINK_REQUIRED = "Paste the delivery booking link so the facility can track your courier."
+DELIVERY_LINK_INVALID = "Enter a full web link that starts with https://"
+
+
+def _collection_fields():
+    """The two Breastmilk Collection fields, shared by the create and update shapes."""
+    return (
+        serializers.ChoiceField(
+            choices=MilkBankRequest.CollectionMethod.choices, required=False, allow_blank=True, default="",
+        ),
+        serializers.CharField(max_length=500, required=False, allow_blank=True, default="", trim_whitespace=True),
+    )
+
+
+def _check_collection(attrs):
+    """
+    A Drop Off goes by courier, so it needs the courier's booking link; any
+    other method carries no link (one left over from switching away from Drop
+    Off is cleared rather than kept). Only http(s) links are accepted -- the
+    facility dashboard opens this in a browser.
+    """
+    if attrs.get("collection_method") != MilkBankRequest.CollectionMethod.DROP_OFF:
+        attrs["delivery_link"] = ""
+        return attrs
+    link = attrs.get("delivery_link", "")
+    if not link:
+        raise serializers.ValidationError({"delivery_link": DELIVERY_LINK_REQUIRED})
+    try:
+        URLValidator(schemes=["http", "https"])(link)
+    except DjangoValidationError:
+        raise serializers.ValidationError({"delivery_link": DELIVERY_LINK_INVALID})
     return attrs
 
 
@@ -316,7 +352,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract",
             "amount_ml", "completed_at", "requested_ml", "requested_bottles", "result",
-            "closed_at", "representative_purged_at",
+            "closed_at", "representative_purged_at", "collection_method", "delivery_link",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
@@ -326,7 +362,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "representative_birthday", "representative_contact_number",
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract", "requested_ml", "requested_bottles",
-            "closed_at", "representative_purged_at",
+            "closed_at", "representative_purged_at", "collection_method", "delivery_link",
         ]
 
     def get_result(self, obj):
@@ -384,11 +420,31 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
         required=False, allow_null=True, default=None, min_value=1, max_value=_MAX_BOTTLES,
     )
 
+    # DONOR only, ignored for a RECIPIENT. Optional here so an installed app
+    # that predates the question can still book (the app itself requires a
+    # choice); a Drop Off always needs its delivery link -- see _check_collection.
+    collection_method, delivery_link = _collection_fields()
+
     def validate(self, attrs):
         if attrs["request_type"] != MilkBankRequest.RequestType.RECIPIENT:
             attrs["requested_ml"] = None
             attrs["requested_bottles"] = None
+        if attrs["request_type"] != MilkBankRequest.RequestType.DONOR:
+            attrs["collection_method"] = ""
+        _check_collection(attrs)
         return _resolve_bottles(attrs)
+
+
+class CollectionMethodSerializer(serializers.Serializer):
+    """What a donor sends to change how her milk reaches the facility while
+    her booking is still open. Unlike on the form, a method is required."""
+
+    collection_method, delivery_link = _collection_fields()
+
+    def validate(self, attrs):
+        if not attrs.get("collection_method"):
+            raise serializers.ValidationError({"collection_method": "Choose how your milk will reach the facility."})
+        return _check_collection(attrs)
 
 
 class ProposeCounterOfferSerializer(serializers.Serializer):

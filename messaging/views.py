@@ -20,6 +20,7 @@ never the messages themselves.
 
 from django.db import transaction
 from django.db.models import Count, F, Q
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -30,10 +31,13 @@ from rest_framework.views import APIView
 
 from accounts.models import User
 from core.audit import log_action
-from milkbank.models import Facility
+from milkbank.models import Facility, MilkBankRequest
+from milkbank.transitions import FINAL_STATUSES
+from notifications.models import NotificationItem
+from notifications.services import notify
 
-from .models import Conversation, Message
-from .serializers import MessageSerializer, SendMessageSerializer
+from .models import BookingChat, BookingMessage, Conversation, Message
+from .serializers import BookingMessageSerializer, MessageSerializer, SendMessageSerializer
 
 # How much history one request returns. Enough for any real thread between
 # a facility and the admins; a cap so one request can't pull an unbounded
@@ -259,3 +263,141 @@ class AdminUnreadView(_MessagingView):
     def get(self, request):
         total = Conversation.objects.aggregate(unread=Count("messages", filter=_admin_unread_filter()))["unread"]
         return Response({"unread": total or 0})
+
+
+# --- Booking chat: a mother and her booking's facility ----------------------
+#
+# A chat only exists while its booking is open. Who is on which side is worked
+# out from the account and the booking: the booking's owner is the mother
+# side, staff assigned to the booking's facility are the facility side, and
+# anyone else is told the booking doesn't exist (404), so a booking id can't
+# be probed. When the booking ends, apply_transition deletes the chat.
+
+CHAT_CLOSED = "This booking has ended, so its chat is closed."
+
+
+def _booking_side(user, req):
+    if req.owner_id == user.id:
+        return BookingMessage.Side.MOTHER
+    if user.role == User.Role.FACILITY_STAFF and user.facility_id and user.facility_id == req.allocated_facility_id:
+        return BookingMessage.Side.FACILITY
+    return None
+
+
+def _open_bookings_for(user):
+    qs = MilkBankRequest.objects.exclude(current_sub_status__in=FINAL_STATUSES)
+    if user.role == User.Role.FACILITY_STAFF:
+        if not user.facility_id:
+            return qs.none(), BookingMessage.Side.FACILITY
+        return qs.filter(allocated_facility_id=user.facility_id), BookingMessage.Side.FACILITY
+    return qs.filter(owner=user), BookingMessage.Side.MOTHER
+
+
+def _unread_in(chat, viewer_side):
+    """Messages from the other side newer than this side last read the chat."""
+    if viewer_side == BookingMessage.Side.MOTHER:
+        other, last_read = BookingMessage.Side.FACILITY, chat.mother_last_read_at
+    else:
+        other, last_read = BookingMessage.Side.MOTHER, chat.facility_last_read_at
+    qs = chat.messages.filter(side=other)
+    if last_read:
+        qs = qs.filter(created_at__gt=last_read)
+    return qs.count()
+
+
+class BookingChatView(_MessagingView):
+    """
+    GET  /messaging/bookings/<request_id>/messages/ -- the chat (marks it read)
+    POST /messaging/bookings/<request_id>/messages/ {body} -- send a message
+
+    There is deliberately no DELETE: the chat is cleared for both sides
+    automatically when the booking ends.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _booking(self, request_id):
+        req = get_object_or_404(
+            MilkBankRequest.objects.select_related("owner", "allocated_facility"), pk=request_id,
+        )
+        side = _booking_side(self.request.user, req)
+        if side is None:
+            raise Http404
+        return req, side
+
+    def get(self, request, request_id):
+        req, side = self._booking(request_id)
+        is_open = req.current_sub_status not in FINAL_STATUSES
+        chat = BookingChat.objects.filter(request=req).first() if is_open else None
+        messages = []
+        if chat is not None:
+            recent = list(chat.messages.select_related("sender").order_by("-created_at", "-id")[:HISTORY_LIMIT])
+            recent.reverse()
+            messages = BookingMessageSerializer(
+                recent, many=True, context={"viewer_side": side, "request_obj": req},
+            ).data
+            read_field = "mother_last_read_at" if side == BookingMessage.Side.MOTHER else "facility_last_read_at"
+            BookingChat.objects.filter(pk=chat.pk).update(**{read_field: timezone.now()})
+        return Response({
+            "request_id": req.id,
+            "open": is_open,
+            "facility_name": req.allocated_facility.name,
+            "mother_name": req.owner.mom_name or req.owner.email,
+            "messages": messages,
+        })
+
+    @extend_schema(request=SendMessageSerializer, responses={201: BookingMessageSerializer})
+    def post(self, request, request_id):
+        req, side = self._booking(request_id)
+        serializer = SendMessageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            # Locked so a booking that ends at this same moment can't end up
+            # with a fresh chat created after its old one was deleted.
+            req = MilkBankRequest.objects.select_for_update().get(pk=req.pk)
+            if req.current_sub_status in FINAL_STATUSES:
+                return Response({"detail": CHAT_CLOSED}, status=400)
+            chat = BookingChat.objects.get_or_create(request=req)[0]
+            # A facility message she hasn't read yet means she has already
+            # been notified -- she isn't sent another for each message.
+            mother_had_unread = _unread_in(chat, BookingMessage.Side.MOTHER) > 0
+            message = BookingMessage.objects.create(
+                chat=chat, side=side, sender=request.user, body=serializer.validated_data["body"],
+            )
+            read_field = "mother_last_read_at" if side == BookingMessage.Side.MOTHER else "facility_last_read_at"
+            BookingChat.objects.filter(pk=chat.pk).update(
+                last_message_at=message.created_at, **{read_field: message.created_at},
+            )
+        req = MilkBankRequest.objects.select_related("owner", "allocated_facility").get(pk=req.pk)
+        if side == BookingMessage.Side.FACILITY and not mother_had_unread:
+            facility = req.allocated_facility.name
+            notify(
+                req.owner,
+                f"New message from {facility}",
+                f"{facility} sent you a message about your booking. Open Booking Status to reply.",
+                NotificationItem.Category.BOOKINGS,
+            )
+        return Response(
+            BookingMessageSerializer(message, context={"viewer_side": side, "request_obj": req}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class BookingChatUnreadView(_MessagingView):
+    """
+    GET /messaging/bookings/unread/ -> {"unread": total, "by_request": {"<id>": n}}
+
+    Unread messages across the viewer's open bookings: her own for a mother,
+    the facility's for staff. Polled for the badges.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        bookings, side = _open_bookings_for(request.user)
+        by_request = {}
+        for chat in BookingChat.objects.filter(request__in=bookings, last_message_at__isnull=False):
+            count = _unread_in(chat, side)
+            if count:
+                by_request[str(chat.request_id)] = count
+        return Response({"unread": sum(by_request.values()), "by_request": by_request})

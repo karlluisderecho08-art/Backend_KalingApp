@@ -49,3 +49,45 @@ class Message(models.Model):
 
     def __str__(self):
         return f"{self.side} message in {self.conversation_id}"
+
+
+class BookingChat(models.Model):
+    """
+    The chat between a mother and the facility her booking is allocated to.
+
+    One per booking, and it only exists while the booking is open. The
+    moment the booking reaches a final status (completed, declined or
+    expired) the whole chat is deleted for both sides --
+    milkbank.transitions.apply_transition does that -- so finished
+    bookings carry no chat history at all.
+
+    Like Conversation, the facility side is the facility, not one staff
+    account: whoever is on shift sees what the others said.
+    """
+
+    request = models.OneToOneField("milkbank.MilkBankRequest", on_delete=models.CASCADE, related_name="chat")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_message_at = models.DateTimeField(null=True, blank=True)
+    mother_last_read_at = models.DateTimeField(null=True, blank=True)
+    facility_last_read_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Chat for booking #{self.request_id}"
+
+
+class BookingMessage(models.Model):
+    class Side(models.TextChoices):
+        MOTHER = "mother", "Mother"
+        FACILITY = "facility", "Facility"
+
+    chat = models.ForeignKey(BookingChat, on_delete=models.CASCADE, related_name="messages")
+    side = models.CharField(max_length=10, choices=Side.choices)
+    sender = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    body = models.TextField(max_length=2000)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self):
+        return f"{self.side} message in booking chat {self.chat_id}"

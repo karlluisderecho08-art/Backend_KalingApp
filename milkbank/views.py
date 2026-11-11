@@ -37,6 +37,7 @@ from .results import decline_notification
 from .scheduling import counter_offer_errors
 from .serializers import (
     AllocationRequestSerializer,
+    CollectionMethodSerializer,
     ConfirmCompletionSerializer,
     DeclineSerializer,
     DonorQuestionnaireCreateSerializer,
@@ -50,7 +51,7 @@ from .serializers import (
     StaffMessageSerializer,
     TransactionRecordSerializer,
 )
-from .transitions import InvalidTransition, apply_transition, sweep_expired_requests
+from .transitions import FINAL_STATUSES, InvalidTransition, apply_transition, sweep_expired_requests
 
 Status = MilkBankRequest.Status
 
@@ -294,6 +295,8 @@ class MilkBankRequestCreateView(APIView):
                 has_medical_abstract=data["has_medical_abstract"],
                 requested_ml=data["requested_ml"],
                 requested_bottles=data["requested_bottles"],
+                collection_method=data["collection_method"],
+                delivery_link=data["delivery_link"],
             )
             log_action(request.user, "booking.created", f"MilkBankRequest:{req.id}")
             notify(
@@ -391,6 +394,38 @@ class MilkBankRequestDetailView(generics.RetrieveAPIView):
 
 
 # --- Mother-side actions ---
+
+class CollectionMethodView(generics.GenericAPIView):
+    """
+    POST /milkbank/requests/<id>/collection-method/  {collection_method, delivery_link}
+
+    Lets a donor change how her milk reaches the facility -- or paste a new
+    courier link -- while her booking is open and the milk has not been
+    collected yet. Past Breastmilk Collection the answer is history, so it
+    is locked. The facility sees the change on its next refresh.
+    """
+
+    queryset = MilkBankRequest.objects.all()
+    serializer_class = CollectionMethodSerializer
+    permission_classes = [permissions.IsAuthenticated, IsRequestOwner]
+
+    def post(self, request, pk):
+        req = self.get_object()
+        if req.request_type != MilkBankRequest.RequestType.DONOR:
+            return Response({"detail": "Only a donation has a collection method."}, status=400)
+        if req.current_sub_status in FINAL_STATUSES:
+            return Response({"detail": "This booking has already ended."}, status=400)
+        collection_stage = req.stages.index("Breastmilk Collection")
+        if req.current_stage_index > collection_stage:
+            return Response({"detail": "Your milk has already been collected."}, status=400)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        req.collection_method = serializer.validated_data["collection_method"]
+        req.delivery_link = serializer.validated_data["delivery_link"]
+        req.save(update_fields=["collection_method", "delivery_link"])
+        log_action(request.user, "booking.collection_method_changed", f"MilkBankRequest:{req.id}")
+        return Response(MilkBankRequestSerializer(req).data)
+
 
 class ConfirmAttendanceView(generics.GenericAPIView):
     """POST /milkbank/requests/<id>/confirm-attendance/ -- mother confirms an accepted slot."""

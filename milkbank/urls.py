@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     AcceptCounterOfferView,
     AllMilkBankRequestsView,
+    CollectionMethodView,
     ConfirmAttendanceView,
     DonorQuestionnaireView,
     FacilityDetailView,
@@ -35,6 +36,7 @@ urlpatterns = [
     path("requests/<int:pk>/", MilkBankRequestDetailView.as_view(), name="request-detail"),
 
     path("requests/<int:pk>/confirm-attendance/", ConfirmAttendanceView.as_view(), name="request-confirm-attendance"),
+    path("requests/<int:pk>/collection-method/", CollectionMethodView.as_view(), name="request-collection-method"),
     path("requests/<int:pk>/accept-counter-offer/", AcceptCounterOfferView.as_view(), name="request-accept-counter-offer"),
     path("requests/<int:pk>/reject-counter-offer/", RejectCounterOfferView.as_view(), name="request-reject-counter-offer"),
 
