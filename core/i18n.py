@@ -4,8 +4,10 @@ Tagalog for the server's own mother-facing text.
 The Android app sends ``Accept-Language: tl`` while it is set to Tagalog
 (KalingApiClient.kt). For those requests the server's messages -- error
 ``detail``s and field errors, notification titles and descriptions, the
-verification/reset emails, Kali's fixed replies -- go out in Tagalog. The
-staff/admin web consoles never send it, so they keep getting English.
+verification/reset emails, Kali's fixed replies -- go out in Tagalog. Only
+requests that also carry the app's own X-KalingApp-Version-Code header count:
+a browser adds Accept-Language by itself, so a staff member whose browser is
+set to Filipino would otherwise get the web consoles in Tagalog.
 
 How it works
 ------------
@@ -46,7 +48,8 @@ def is_tagalog(accept_language):
 
 
 def wants_tagalog(request):
-    if request is None:
+    """The mother app (never a browser) asking for Tagalog -- see the module doc."""
+    if request is None or "HTTP_X_KALINGAPP_VERSION_CODE" not in request.META:
         return False
     return is_tagalog(request.META.get("HTTP_ACCEPT_LANGUAGE", ""))
 
@@ -114,11 +117,18 @@ def translate(text):
         if not m:
             continue
         raw = m.groupdict()
-        values = {k: _translate_value(v) for k, v in raw.items()}
-        # A join applies once one of its parts is a known message; a part she
-        # or the staff wrote themselves (an unknown sentence) is kept as is.
-        if join_only and all(values[k] == raw[k] for k in raw):
-            continue
+        if join_only:
+            # "{title}. {message}": only when its title is one of the server's
+            # own messages. The other parts are translated only if they are
+            # whole known messages too -- anything else is what the staff wrote
+            # ("Scheduled. Please arrive at 8 AM.") and is kept word for word.
+            if raw.get("title") not in exact:
+                continue
+            values = {k: exact.get(v, v) for k, v in raw.items()}
+        else:
+            values = {k: _translate_value(v) for k, v in raw.items()}
+        for name in _VERBATIM_SLOTS & values.keys():
+            values[name] = raw[name]
         return _PLACEHOLDER.sub(lambda p: values[p.group(1)], tagalog)
     return text
 
@@ -130,13 +140,18 @@ def tr(text, request=None, tagalog=None):
     return translate(text) if tagalog else text
 
 
+# Fields and template slots that hold the facility staff's own words.
+_VERBATIM_SLOTS = {"facility_note"}
+_VERBATIM_KEYS = {"facility_note", "staff_message"}
+
+
 def _translate_all(data):
     if isinstance(data, str):
         return translate(data)
     if isinstance(data, list):
         return [_translate_all(v) for v in data]
     if isinstance(data, dict):
-        return {k: _translate_all(v) for k, v in data.items()}
+        return {k: (v if k in _VERBATIM_KEYS else _translate_all(v)) for k, v in data.items()}
     return data
 
 

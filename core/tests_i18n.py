@@ -28,6 +28,8 @@ from .i18n import is_tagalog, translate
 from .tagalog_catalog import LABELS, MESSAGES
 
 Status = MilkBankRequest.Status
+# What the Android app sends while set to Tagalog (KalingApiClient.kt).
+APP_TL = {"HTTP_ACCEPT_LANGUAGE": "tl", "HTTP_X_KALINGAPP_VERSION_CODE": "4"}
 SLOT = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
 
@@ -79,7 +81,7 @@ class EveryMotherMessageIsTranslatedTests(TestCase):
         # A staff note is her facility's own words: kept, the rest translated.
         non_health = next(r for r, (_, _, health) in results.DECLINE_RESULTS.items() if not health)
         text = results.decline_notification(non_health, "Please bring your ID.")
-        self.assertIn("Paalala mula sa pasilidad: Please bring your ID.", translate(text))
+        self.assertIn("Mensahe mula sa pasilidad: Please bring your ID.", translate(text))
         # An unknown reason: the staff note is the explanation, kept as written.
         text = translate(results.decline_notification("Others", "Please bring your ID."))
         self.assertEqual(text, "Hindi tinanggap ang kahilingan. Please bring your ID.")
@@ -122,6 +124,13 @@ class EveryMotherMessageIsTranslatedTests(TestCase):
             "Puno na ang lahat ng milk bank sa Nobyembre 12, 2026. Pumili ng ibang petsa.",
         )
 
+    def test_staff_words_are_never_rewritten(self):
+        # A staff note that starts with a status word stays exactly as typed.
+        for note in ("Scheduled. Please arrive at 8 AM.", "Pending. We will call you tomorrow."):
+            self.assertEqual(translate(note), note)
+        text = results.decline_notification("Others", "Completed. Thanks!")
+        self.assertTrue(translate(text).endswith("Completed. Thanks!"))
+
     def test_unknown_text_is_left_alone(self):
         for text in ("Results", "Completed but different", "Some sentence. Another one.", ""):
             if text not in MESSAGES:
@@ -136,14 +145,14 @@ class ResponseLanguageTests(TestCase):
     def test_errors_follow_the_header(self):
         body = {"email": "mother@example.com", "password": "wrong"}
         english = self.client.post("/auth/login/", body, format="json")
-        tagalog = self.client.post("/auth/login/", body, format="json", HTTP_ACCEPT_LANGUAGE="tl")
+        tagalog = self.client.post("/auth/login/", body, format="json", **APP_TL)
         self.assertEqual(english.json()["detail"], "No active account found with the given credentials")
         self.assertEqual(tagalog.json()["detail"], MESSAGES["No active account found with the given credentials"])
 
     def test_notifications_translated_with_english_kept_for_matching(self):
         notify(self.user, "Milk Bank Request: Declined", "The facility declined your request.", NotificationItem.Category.BOOKINGS)
         self.client.force_authenticate(self.user)
-        item = self.client.get("/notifications/mine/", HTTP_ACCEPT_LANGUAGE="tl").json()[0]
+        item = self.client.get("/notifications/mine/", **APP_TL).json()[0]
         self.assertEqual(item["title"], "Kahilingan sa Milk Bank: Tinanggihan")
         self.assertEqual(item["title_en"], "Milk Bank Request: Declined")
         self.assertEqual(item["description_en"], "The facility declined your request.")
@@ -153,13 +162,41 @@ class ResponseLanguageTests(TestCase):
 
     def test_chat_keeps_her_words_and_translates_kalis_fixed_reply(self):
         self.client.force_authenticate(self.user)
-        response = self.client.post("/chat/message/", {"text": "Results"}, format="json", HTTP_ACCEPT_LANGUAGE="tl")
+        response = self.client.post("/chat/message/", {"text": "Results"}, format="json", **APP_TL)
         self.assertEqual(response.json()["reply"]["text"], MESSAGES[OFF_TOPIC_RESPONSE])
-        history = self.client.get("/chat/history/", HTTP_ACCEPT_LANGUAGE="tl").json()
+        history = self.client.get("/chat/history/", **APP_TL).json()
         messages = history if isinstance(history, list) else history.get("messages", history.get("results", []))
         self.assertIn("Results", [m["text"] for m in messages if m["is_user"]])
         # Stored in English, so the guardrail's own comparisons still work.
         self.assertTrue(self.user.chat_session.messages.filter(text=OFF_TOPIC_RESPONSE).exists())
+
+
+class BrowserLanguageTests(TestCase):
+    def test_a_browser_set_to_filipino_still_gets_english(self):
+        # The web consoles run in a browser, which sends Accept-Language by
+        # itself; without the app's own header the server answers in English.
+        body = {"email": "nobody@example.com", "password": "wrong"}
+        response = APIClient().post("/auth/login/", body, format="json", HTTP_ACCEPT_LANGUAGE="fil-PH,fil;q=0.9,en;q=0.8")
+        self.assertEqual(response.json()["detail"], "No active account found with the given credentials")
+
+
+class OfflineKaliTests(TestCase):
+    def test_tagalog_questions_get_the_right_offline_answer(self):
+        from chat.local_fallback import FALLBACK_RESPONSES, GENERIC_FALLBACK_RESPONSE
+
+        latch, supply, storage, donation, greeting = (response for _, response in FALLBACK_RESPONSES)
+        cases = {
+            "Bakit hindi dumadami ang gatas ko?": supply,  # "hi" inside "hindi" is not a greeting
+            "Puwede ko bang ipainom ang formula?": GENERIC_FALLBACK_RESPONSE,  # "pain" inside "ipainom"
+            "Masakit ang utong ko": latch,
+            "Paano ko maitatabi ang gatas?": storage,
+            "Gusto kong mag-donate ng gatas": donation,
+            "Kumusta, Kali!": greeting,
+            "My nipple is sore": latch,
+            "How should I store milk?": storage,
+        }
+        for question, expected in cases.items():
+            self.assertEqual(get_local_clinical_response(question), expected, question)
 
 
 class EmailLanguageTests(TestCase):
@@ -197,9 +234,11 @@ class TagalogTopicTests(TestCase):
         for question in (
             "Gaano kadalas ako dapat magpasuso?", "Sapat ba ang gatas na nakukuha ng baby ko?",
             "Bakit masakit ang pagpapasuso?", "Masakit ang utong ko", "Paano magpadede nang tama?",
+            "Paano ko pasusuhin si baby?", "Kailan ko siya padedehin?", "Nagdedede pa ba siya sa gabi?",
         ):
             self.assertTrue(is_breastfeeding_topic(question), question)
 
     def test_tagalog_off_topic_questions_still_refused(self):
-        for question in ("Ano ang lagay ng panahon bukas?", "Sino ang presidente?", "Magluto tayo ng adobo"):
+        for question in ("Ano ang lagay ng panahon bukas?", "Sino ang presidente?", "Magluto tayo ng adobo",
+                         "Paano pumunta sa Bagong Silang?"):
             self.assertFalse(is_breastfeeding_topic(question), question)

@@ -38,7 +38,13 @@ TOPIC_KEYWORDS = [
     "magpapasuso", "pinapasuso", "pinasuso", "ipasuso", "ipinapasuso", "sumuso", "sumususo",
     "pagsuso", "padede", "magpadede", "nagpapadede", "pagpapadede", "pinapadede",
     "ipadede", "dumede", "dumedede", "dede", "utong", "pag pump", "magpump", "nagpa pump",
-    "mag pump", "pina pump", "bagong silang",
+    "mag pump", "pina pump",
+    # Object-focus and repeated-syllable forms ("Paano ko pasusuhin si baby?",
+    # "Kailan ko siya padedehin?", "Nagdedede pa ba siya?").
+    "pasusuhin", "pinasususo", "pinapasusuhin", "sinususo", "susuhin", "padedehin",
+    "pinadede", "pinadedede", "nagdedede", "magdede", "magdedede", "dedehin", "pagkapit",
+    # Not "bagong silang": it is also a large barangay in Caloocan, and
+    # "newborn" alone is already listed above.
 ]
 
 
