@@ -113,6 +113,16 @@ class EveryMotherMessageIsTranslatedTests(TestCase):
         ):
             self.assertTranslated(message)
 
+    def test_collection_steps_and_reminder(self):
+        from milkbank.collection import REMINDER_BODY, REMINDER_TITLE, STEPS, STEPS_TITLE
+
+        self.assertTranslated(STEPS_TITLE)
+        self.assertTranslated(REMINDER_TITLE)
+        self.assertIn("Disyembre 1, 2026", translate(next(iter(STEPS.values())).format(date="December 1, 2026", time="10:00 AM")))
+        for body in STEPS.values():
+            self.assertTranslated(body.format(date="December 1, 2026", time="10:00 AM"))
+        self.assertTranslated(REMINDER_BODY.format(time="10:00 AM"))
+
     def test_kali_fixed_replies(self):
         self.assertTranslated(OFF_TOPIC_RESPONSE)
         for prompt in ("latch", "milk supply", "storage", "donate", "hello", "something else"):

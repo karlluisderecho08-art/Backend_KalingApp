@@ -222,6 +222,9 @@ class MilkBankRequest(models.Model):
 
     collection_method = models.CharField(max_length=20, choices=CollectionMethod.choices, blank=True)
     delivery_link = models.URLField(max_length=500, blank=True)
+    # The appointment ("<date> <time>") the Drop off reminder was last sent
+    # for, so it goes out once per appointment (milkbank/collection.py).
+    delivery_reminder_for = models.CharField(max_length=40, blank=True)
 
     # The 8-business-hour SLA clock (see milkbank/business_hours.py). Null
     # whenever nothing is actively pending on someone -- set the moment a

@@ -33,6 +33,7 @@ from .business_hours import add_business_hours
 from .capacity import has_donor_slot_room, has_room
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
+from .collection import delivery_link_due, notify_collection_steps
 from .results import decline_notification
 from .scheduling import counter_offer_errors
 from .serializers import (
@@ -418,12 +419,17 @@ class CollectionMethodView(generics.GenericAPIView):
         collection_stage = req.stages.index("Breastmilk Collection")
         if req.current_stage_index > collection_stage:
             return Response({"detail": "Your milk has already been collected."}, status=400)
-        serializer = self.get_serializer(data=request.data)
+        req.collection_method = request.data.get("collection_method", "")
+        serializer = self.get_serializer(data=request.data, context={"link_due": delivery_link_due(req)})
         serializer.is_valid(raise_exception=True)
+        before = MilkBankRequest.objects.values_list("collection_method", flat=True).get(pk=req.pk)
         req.collection_method = serializer.validated_data["collection_method"]
         req.delivery_link = serializer.validated_data["delivery_link"]
         req.save(update_fields=["collection_method", "delivery_link"])
         log_action(request.user, "booking.collection_method_changed", f"MilkBankRequest:{req.id}")
+        # A new way: tell her its steps (pasting the link alone needs no message).
+        if req.collection_method != before:
+            notify_collection_steps(req)
         return Response(MilkBankRequestSerializer(req).data)
 
 

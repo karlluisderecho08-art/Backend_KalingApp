@@ -7,6 +7,7 @@ from core.audit import log_action
 
 from .allocation import REQUEST_ML_CEILING
 from .capacity import day_summary
+from .collection import appointment_start, delivery_link_due
 from .results import mother_result
 from .models import BOTTLE_ML, DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 
@@ -51,19 +52,23 @@ def _collection_fields():
     )
 
 
-def _check_collection(attrs):
+def _check_collection(attrs, link_due=False):
     """
-    A Drop Off goes by courier, so it needs the courier's booking link; any
-    other method carries no link (one left over from switching away from Drop
-    Off is cleared rather than kept). Only http(s) links are accepted -- the
-    facility dashboard opens this in a browser.
+    A Drop Off goes by courier, so it needs the courier's booking link -- but
+    only from the appointment's hour onward (`link_due`, milkbank/collection.py):
+    a courier can't be booked before the milk is ready to leave. Any other
+    method carries no link (one left over from switching away from Drop Off is
+    cleared rather than kept). Only http(s) links are accepted -- the facility
+    dashboard opens this in a browser.
     """
     if attrs.get("collection_method") != MilkBankRequest.CollectionMethod.DROP_OFF:
         attrs["delivery_link"] = ""
         return attrs
     link = attrs.get("delivery_link", "")
     if not link:
-        raise serializers.ValidationError({"delivery_link": DELIVERY_LINK_REQUIRED})
+        if link_due:
+            raise serializers.ValidationError({"delivery_link": DELIVERY_LINK_REQUIRED})
+        return attrs
     try:
         URLValidator(schemes=["http", "https"])(link)
     except DjangoValidationError:
@@ -353,6 +358,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "has_cooler", "has_medical_abstract",
             "amount_ml", "completed_at", "requested_ml", "requested_bottles", "result",
             "closed_at", "representative_purged_at", "collection_method", "delivery_link",
+            "appointment_start_ms", "delivery_link_due",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
@@ -364,6 +370,19 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "has_cooler", "has_medical_abstract", "requested_ml", "requested_bottles",
             "closed_at", "representative_purged_at", "collection_method", "delivery_link",
         ]
+
+    # When her appointment begins (epoch ms; null when its time can't be read),
+    # and whether a Drop off's delivery link is wanted now -- the app shows the
+    # link field from that hour on (milkbank/collection.py).
+    appointment_start_ms = serializers.SerializerMethodField()
+    delivery_link_due = serializers.SerializerMethodField()
+
+    def get_appointment_start_ms(self, obj) -> int | None:
+        start = appointment_start(obj)
+        return int(start.timestamp() * 1000) if start else None
+
+    def get_delivery_link_due(self, obj) -> bool:
+        return delivery_link_due(obj)
 
     def get_result(self, obj):
         return mother_result(obj)
@@ -444,7 +463,7 @@ class CollectionMethodSerializer(serializers.Serializer):
     def validate(self, attrs):
         if not attrs.get("collection_method"):
             raise serializers.ValidationError({"collection_method": "Choose how your milk will reach the facility."})
-        return _check_collection(attrs)
+        return _check_collection(attrs, link_due=self.context.get("link_due", False))
 
 
 class ProposeCounterOfferSerializer(serializers.Serializer):

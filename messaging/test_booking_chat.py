@@ -149,10 +149,13 @@ class CollectionMethodTests(APITestCase):
                 self.assertEqual(response.data["collection_method"], method)
                 self.assertEqual(response.data["delivery_link"], "")
 
-    def test_drop_off_requires_a_delivery_link(self):
+    def test_drop_off_is_booked_before_its_link(self):
+        # The courier is booked on the appointment day, so the link comes later.
         response = self.book(collection_method="drop_off")
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("delivery_link", response.data)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["delivery_link"], "")
+        self.assertFalse(response.data["delivery_link_due"])
+        MilkBankRequest.objects.all().delete()
 
         for bad in ("not a link", "javascript:alert(1)", "ftp://example.com/x"):
             with self.subTest(bad=bad):
@@ -185,8 +188,9 @@ class CollectionMethodTests(APITestCase):
         req = make_request(self.mother, self.facility, collection_method="walk_in")
         url = f"/milkbank/requests/{req.id}/collection-method/"
 
+        # Before the appointment hour a Drop off needs no link yet...
         response = self.client.post(url, {"collection_method": "drop_off"})
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200, response.data)
         response = self.client.post(url, {"collection_method": "drop_off", "delivery_link": "https://grab.com/t/1"})
         self.assertEqual(response.status_code, 200, response.data)
         req.refresh_from_db()

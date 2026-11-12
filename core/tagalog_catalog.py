@@ -313,6 +313,18 @@ MESSAGES = {
         "Bagong mensahe mula sa {facility}",
     "{facility} sent you a message about your booking. Open Booking Status to reply.":
         "Nagpadala ang {facility} ng mensahe tungkol sa iyong reserbasyon. Buksan ang Katayuan ng Reserbasyon para sumagot.",
+    "How your milk will reach the facility":
+        "Paano makakarating sa pasilidad ang iyong gatas",
+    "Pick up: the facility will collect your milk from you on {date} at {time}. Have your milk ready by then. You can change this in Booking Status until your milk is collected.":
+        "Pick up: kukunin ng pasilidad ang iyong gatas mula sa iyo sa {date}, {time}. Ihanda na ang iyong gatas bago ang oras na iyon. Puwede mo itong palitan sa Katayuan ng Reserbasyon hangga't hindi pa nakokolekta ang iyong gatas.",
+    "Walk-in: bring your milk to the facility yourself on {date} at {time}. Keep it cold on the way, in a cooler or insulated bag. You can change this in Booking Status until your milk is collected.":
+        "Walk-in: ikaw mismo ang magdadala ng iyong gatas sa pasilidad sa {date}, {time}. Panatilihin itong malamig habang nasa biyahe, sa cooler o insulated bag. Puwede mo itong palitan sa Katayuan ng Reserbasyon hangga't hindi pa nakokolekta ang iyong gatas.",
+    "Drop off: on {date}, at {time}, book a courier (for example Lalamove or Grab) to bring your milk to the facility. Then open Booking Status and paste the courier's delivery link so the facility can track it. You can change this in Booking Status until your milk is collected.":
+        "Drop off: sa {date}, pagsapit ng {time}, mag-book ng courier (halimbawa, Lalamove o Grab) para dalhin ang iyong gatas sa pasilidad. Pagkatapos, buksan ang Katayuan ng Reserbasyon at i-paste ang delivery link ng courier para masubaybayan ito ng pasilidad. Puwede mo itong palitan sa Katayuan ng Reserbasyon hangga't hindi pa nakokolekta ang iyong gatas.",
+    "Time to send your milk":
+        "Oras na para ipadala ang iyong gatas",
+    "It's time for your {time} drop off. Book your courier now, then open Booking Status and paste the delivery link so the facility can track your milk.":
+        "Oras na ng iyong drop off sa {time}. Mag-book na ng courier, saka buksan ang Katayuan ng Reserbasyon at i-paste ang delivery link para masubaybayan ng pasilidad ang iyong gatas.",
 }
 
 # Values that are inserted into a message's {slot}: translated there, but

@@ -7,6 +7,7 @@ from notifications.models import NotificationItem
 from notifications.services import notify
 
 from .business_hours import add_business_hours
+from .collection import notify_collection_steps, send_delivery_link_reminders
 from .models import Facility, MilkBankRequest, TransactionRecord
 
 Status = MilkBankRequest.Status
@@ -176,6 +177,9 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
     message = message_override or STATUS_NOTIFICATIONS.get(new_status)
     if message:
         notify(req.owner, f"Milk Bank Request: {req.get_current_sub_status_display()}", message, NotificationItem.Category.BOOKINGS)
+    # Her appointment is now fixed: the steps for how her milk reaches the facility.
+    if new_status == Status.SCHEDULED:
+        notify_collection_steps(req)
 
     # No slot bookkeeping here any more: a day's bookings are counted from
     # the requests themselves (capacity.py), so declining or expiring a
@@ -272,4 +276,6 @@ def sweep_expired_requests(now=None):
             # nothing to do, it's no longer overdue in whatever it became.
             continue
         expired.append(req)
+    # Same timer, same callers: the Drop off reminders due at their hour.
+    send_delivery_link_reminders(now)
     return expired
