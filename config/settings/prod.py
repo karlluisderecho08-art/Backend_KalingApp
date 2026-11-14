@@ -41,11 +41,18 @@ SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 
-# HSTS deliberately NOT enabled yet -- Django's own check warns it can
-# cause serious, hard-to-undo problems if turned on before HTTPS is
-# confirmed solid (a browser will refuse plain HTTP for the HSTS window
-# even if something's misconfigured). Add SECURE_HSTS_SECONDS once
-# you've verified HTTPS works cleanly on the real deployed URL.
+# HSTS: browsers that have seen this API once refuse to talk to it over
+# plain HTTP for a year, so a network attacker can't downgrade the first
+# request. Turned on once HTTPS was confirmed on the live URL (2026-11-14:
+# https serves 200, http answers 301 to https). includeSubDomains covers
+# only names UNDER this API's own host (it has none), never the rest of
+# onrender.com. Not preloaded: that is a manual submission to the
+# browsers' built-in list which is slow to undo, so Django's reminder
+# about it (security.W021) is silenced on purpose.
+SECURE_HSTS_SECONDS = 31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_HSTS_PRELOAD = False
+SILENCED_SYSTEM_CHECKS = ["security.W021"]
 
 # This project's own deployed dashboards, trusted no matter what the
 # environment says. They lived in CORS_ALLOWED_ORIGINS alone at first,
@@ -58,7 +65,7 @@ CSRF_COOKIE_SECURE = True
 # down. Pinning the canonical origins in code means a stale or
 # forgotten dashboard edit can't take first-party login offline again.
 FIRST_PARTY_DASHBOARD_ORIGINS = [
-    "https://kalingapp-admin.vercel.app",
+    "https://kalingapp-admin-portal.vercel.app",
     "https://kalingapp-facility.vercel.app",
 ]
 
@@ -71,15 +78,12 @@ CORS_ALLOWED_ORIGINS = list(
     dict.fromkeys(env.list("CORS_ALLOWED_ORIGINS", default=[]) + FIRST_PARTY_DASHBOARD_ORIGINS)
 )
 
-# Vercel gives every single deployment its own permanent URL alongside
-# the stable alias above -- e.g.
-# kalingapp-admin-8aj8p700r-<org>.vercel.app -- and that per-deployment
-# URL is exactly what the "Visit" button in Vercel's own dashboard
-# opens. Without this, opening a build the normal way from Vercel would
-# hit the same CORS wall the aliases were just fixed for, which is a
-# confusing thing to debug twice. Deliberately scoped to this project's
-# two names instead of all of *.vercel.app, which would let any Vercel
-# site on the internet make browser calls to this API.
-CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^https://kalingapp-(admin|facility)-[a-z0-9-]+\.vercel\.app$",
-]
+# No pattern-matched origins. This used to also allow any
+# kalingapp-(admin|facility)-<anything>.vercel.app, for Vercel's
+# per-deployment preview URLs -- but anyone can create a Vercel project
+# with a name that fits that pattern, so it admitted sites this project
+# doesn't own. A preview that needs the live API can be added by exact
+# URL through CORS_ALLOWED_ORIGINS above.
+# (kalingapp-admin.vercel.app was also dropped: it is an old, stale admin
+# deployment; the admin console lives at kalingapp-admin-portal.)
+CORS_ALLOWED_ORIGIN_REGEXES = []

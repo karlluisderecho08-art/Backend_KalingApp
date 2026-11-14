@@ -33,11 +33,18 @@ urlpatterns = [
     path('app/version/', AppVersionView.as_view(), name='app-version'),
     path('core/audit-log/', AuditLogView.as_view(), name='audit-log'),
     path('core/system-status/', SystemStatusView.as_view(), name='system-status'),
-    # /api/schema/ -- the raw, machine-readable endpoint list (JSON/YAML).
-    # /api/docs/   -- the same thing, but as a clickable page a human can read.
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 ]
+
+# The API's full map (every endpoint and field) is for development only.
+# On the live server it would hand anyone probing the API a complete
+# list of what to try.
+if settings.DEBUG:
+    urlpatterns += [
+        # /api/schema/ -- the raw, machine-readable endpoint list (JSON/YAML).
+        # /api/docs/   -- the same thing, as a clickable page a human can read.
+        path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+        path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    ]
 
 # Django's built-in admin site, only where DJANGO_ADMIN_ENABLED is on (dev,
 # by default). Its login sits outside the API's lockout and rate limits, so

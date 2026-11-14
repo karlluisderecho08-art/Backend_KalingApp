@@ -1,6 +1,7 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
@@ -600,6 +601,10 @@ class GeminiClientFallbackTests(APITestCase):
 
 class SendMessageViewTests(APITestCase):
     def setUp(self):
+        # Fresh rate-limit counters (Kali has its own limit): test ids repeat,
+        # so counts from an earlier test would otherwise carry over.
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.user = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
         self.client.force_authenticate(user=self.user)
 
@@ -641,6 +646,10 @@ class ConversationContinuityTests(APITestCase):
     """
 
     def setUp(self):
+        # Fresh rate-limit counters (Kali has its own limit): test ids repeat,
+        # so counts from an earlier test would otherwise carry over.
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.user = User.objects.create_user(email="mother@example.com", password="x", is_active=True)
         self.client.force_authenticate(user=self.user)
 

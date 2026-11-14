@@ -17,28 +17,45 @@ produced 14 counters of one. Unit tests passed throughout, because the
 test client sends no X-Forwarded-For at all and falls through to a
 stable REMOTE_ADDR.
 
-Keying on the leftmost entry instead -- the address the edge first saw
--- gives one bucket per client again.
+Keying on the leftmost entry fixed that, but the leftmost entry is
+whatever the CALLER wrote: the edge appends to an X-Forwarded-For the
+client sent, it does not replace it. So rotating a fake first entry gave
+every request a fresh bucket again, and the login limit could be skipped
+at will.
 
-Known limitation, deliberately accepted: a caller can put anything in
-X-Forwarded-For, so someone determined can rotate that header and slip
-past this. It still stops the realistic threat, which is an unattended
-script hammering one endpoint, and it is not the only thing standing
-in the way: verification and reset codes have their own per-account
-attempt caps and cooldowns that no amount of header spoofing touches.
-Pinning this to a header the edge is trusted to overwrite would be the
-stronger fix if that ever becomes worth it.
+So the client is now counted from the RIGHT. Each proxy in front of this
+app appends the address it received the request from, and nothing a
+caller sends can change those entries. With TRUSTED_PROXY_HOPS proxies
+(Render's edge, then its internal router -- the two hops seen in the
+production chains above), the client is the entry that many places in
+from the end:
+
+    <anything the caller made up>, <client>, <edge>, <internal>
+                                    ^ -(hops + 1)
+
+Fewer entries than that means there were fewer proxies than expected
+(local development, tests), and the leftmost entry is then the best
+there is.
 """
 
-from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle
+from django.conf import settings
+from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle, UserRateThrottle
+
+
+def client_ip(request):
+    """The caller's address, read so that a forged X-Forwarded-For can't change it."""
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded:
+        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if parts:
+            hops = max(int(getattr(settings, "TRUSTED_PROXY_HOPS", 2)), 0)
+            return parts[max(len(parts) - (hops + 1), 0)]
+    return request.META.get("REMOTE_ADDR")
 
 
 class _ClientIPIdentMixin:
     def get_ident(self, request):
-        forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.META.get("REMOTE_ADDR")
+        return client_ip(request)
 
 
 class ClientIPScopedRateThrottle(_ClientIPIdentMixin, ScopedRateThrottle):
@@ -47,3 +64,15 @@ class ClientIPScopedRateThrottle(_ClientIPIdentMixin, ScopedRateThrottle):
 
 class ClientIPAnonRateThrottle(_ClientIPIdentMixin, AnonRateThrottle):
     """AnonRateThrottle with the same correction, for the global default."""
+
+
+class ChatBurstThrottle(UserRateThrottle):
+    """Kali messages per minute, per account (settings: chat_burst)."""
+
+    scope = "chat_burst"
+
+
+class ChatDailyThrottle(UserRateThrottle):
+    """Kali messages per day, per account (settings: chat_daily)."""
+
+    scope = "chat_daily"

@@ -2,6 +2,7 @@ from django.contrib.auth.hashers import make_password
 from rest_framework import serializers
 
 from . import lockout
+from .legacy_signups import email_is_taken
 from .models import PendingRegistration, User
 
 
@@ -71,15 +72,13 @@ class RegisterSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         value = value.strip().lower()
-        # is_active=True specifically, not just "a row exists". Under
-        # this flow every account is created verified and active, so for
-        # new data the two are the same -- but signups made before it
-        # existed were stored as inactive User rows that can never be
-        # verified now (nothing looks at them any more). Rejecting on
-        # those would permanently lock their owners out of their own
-        # addresses; VerifyEmailView clears them instead when the
-        # replacement account is created.
-        if User.objects.filter(email__iexact=value, is_active=True).exists():
+        # Any existing account blocks the address -- active or deactivated.
+        # A deactivated mother signing up again must not get a fresh account
+        # (that would undo the deactivation and erase her history). The one
+        # exception is an abandoned signup from before verification existed,
+        # which nothing can verify any more; VerifyEmailView clears it when
+        # the replacement account is created. See accounts/legacy_signups.py.
+        if email_is_taken(value):
             raise serializers.ValidationError("An account with this email already exists.")
         return value
 
@@ -112,29 +111,26 @@ class RegisterSerializer(serializers.Serializer):
 
 
 class StaffUserListSerializer(serializers.ModelSerializer):
-    """Read shape for the facility dashboard's User Management table --
-    only the fields that actually exist on a mother's account (no phone,
-    no city -- the model never captured either; see UserSerializer).
+    """Read shape for the facility dashboard's User Management table and
+    reports -- only what those screens show (data minimisation, RA 10173):
+    no baby details, clinic, streaks or location consent.
 
-    total_drawn_ml / total_received_ml are each a mother's lifetime total
-    across EVERY facility, not just the one viewing this table -- they are
-    running counters on the User row itself (see accounts.models.User),
-    credited by milkbank.transitions.apply_transition regardless of which
-    facility completed the booking. StaffUserListView's queryset is not
-    scoped to "mothers who interacted with this facility" (see its own
-    docstring), so there is no facility to scope these totals to even if
-    a future change narrows that queryset -- both figures should stay
-    global on purpose, the same lifetime total a mother sees of herself
-    in the app.
+    total_drawn_ml / total_received_ml are what she donated and received
+    at THIS facility only, from the annotations on
+    accounts.views._mothers_of_my_facility -- never her lifetime totals,
+    which would tell one hospital what she did at another. Only use this
+    serializer on that queryset.
     """
+
+    total_drawn_ml = serializers.IntegerField(source="facility_drawn_ml", read_only=True)
+    total_received_ml = serializers.IntegerField(source="facility_received_ml", read_only=True)
 
     class Meta:
         model = User
         fields = [
-            "id", "email", "mom_name", "baby_name", "baby_age_weeks",
-            "breastfeeding_status", "baby_birth_date", "pediatric_clinic",
-            "tracking_streaks", "total_drawn_ml", "total_received_ml",
-            "location_consent_given", "is_active", "date_joined",
+            "id", "email", "mom_name",
+            "total_drawn_ml", "total_received_ml",
+            "is_active", "date_joined",
         ]
 
 

@@ -15,6 +15,7 @@ claims it.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.core.cache import cache
 from django.core.management import call_command
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
@@ -229,6 +230,10 @@ class CitationsInTheLiveReplyPathTests(APITestCase):
     QUESTION = "How should I hold my baby when breastfeeding?"
 
     def setUp(self):
+        # Fresh rate-limit counters (Kali has its own limit): test ids repeat,
+        # so counts from an earlier test would otherwise carry over.
+        cache.clear()
+        self.addCleanup(cache.clear)
         call_command("seed_articles", stdout=StringIO())
 
     def ask(self, reply, question=None):

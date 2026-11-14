@@ -1,5 +1,7 @@
 import os
 
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand
 
 from accounts.models import User
@@ -10,67 +12,114 @@ from milkbank.models import Facility
 LEGACY_DEMO_EMAIL = "staff@kalingapp.demo"
 LEGACY_DEMO_FACILITY_NAME = "St. Luke's Medical Center"
 
+# Each account has its own variable. There is no shared password any more.
+PASSWORD_VAR = "FACILITY_STAFF_PASSWORD_{facility_id}"
+LEGACY_PASSWORD_VAR = "FACILITY_STAFF_PASSWORD_LEGACY"
+# The old single password for every account. No longer read.
+RETIRED_SHARED_VAR = "FACILITY_STAFF_DEMO_PASSWORD"
+
+# Published in this public repository's history, so never acceptable.
+KNOWN_PUBLIC_PASSWORDS = {"demo-only-not-a-real-password"}
+MIN_LENGTH = 12
+
 
 class Command(BaseCommand):
     """
     manage.py seed_facility_staff
 
-    Creates (or resets) one facility_staff account per facility -- the
-    Facility web dashboard has no self-registration flow (staff accounts
-    are handed out, not signed up for), so this is how credentials to log
-    in with come into existence.
+    Creates one facility_staff account per facility (staff<id>@kalingapp.demo,
+    plus the older staff@kalingapp.demo), each from ITS OWN environment
+    variable -- FACILITY_STAFF_PASSWORD_<facility id> and
+    FACILITY_STAFF_PASSWORD_LEGACY. The Facility dashboard has no
+    self-registration, so this is how those logins come into existence.
+    (Platform admins can also create a staff account with its own password
+    from the admin dashboard's facility form.)
 
-    One account per facility, not one overall. Smart Allocation sends a
-    booking to whichever facility ranks best for that mother's location
-    (milkbank/allocation.py), while the dashboard shows a staff member
-    strictly their own facility's bookings -- so a single St. Luke's
-    account, which is all this command used to create, simply could not
-    see a booking allocated to Fabella or PGH. It looked like bookings
-    weren't arriving at all; they were arriving somewhere nobody had a
-    login for. The scoping is right (one hospital's staff must not read
-    another's mothers' bookings, donor questionnaires or serology
-    photos); the gap was that three of the four facilities had no staff
-    account at all.
+    Why one variable per account. These accounts read real mothers'
+    bookings, donor questionnaires and serology photos -- health information
+    under RA 10173 -- and only for their own facility. They used to share
+    ONE password (FACILITY_STAFF_DEMO_PASSWORD), so a single leak opened
+    every facility at once. That variable is now ignored.
 
-    The password comes from FACILITY_STAFF_DEMO_PASSWORD and there is no
-    default. It used to be a literal in this file, which was a genuine
-    breach rather than an untidiness: this repository is public, and
-    build.sh runs this command on every deploy, so anyone reading the
-    source had working facility-staff credentials against production --
-    and that role can read real mothers' bookings, accept or decline
-    them, and open donor questionnaires and serology photos. Health
-    information under RA 10173, reachable by anyone who found the repo.
+    What a run does, per account:
 
-    With the variable unset this command now does nothing rather than
-    falling back to anything guessable. That is the safer failure: a
-    dashboard nobody can log into is a much smaller problem than one
-    everybody can.
+      * variable unset      -> nothing. An existing account keeps working
+                               with whatever password it has; a missing one
+                               is not created. Nobody is locked out by a
+                               deploy, and nothing guessable is ever set.
+      * variable too weak   -> nothing, with a warning. At least 12
+                               characters, Django's password validators,
+                               never a password published in this repo's
+                               history, and never the same value as another
+                               account's variable.
+      * variable set        -> the account is created, or brought back to
+                               the facility_staff role at its facility; its
+                               password is set only when it differs. (This
+                               runs on every deploy, and setting a password
+                               signs the account out everywhere --
+                               settings.SIMPLE_JWT -- so re-setting an
+                               unchanged one would sign staff out on every
+                               deploy.)
+
+    To rotate a password: change the variable on the host and redeploy.
     """
 
-    help = "Create or reset one facility staff account per facility from FACILITY_STAFF_DEMO_PASSWORD"
+    help = "Create or update each facility staff account from its own FACILITY_STAFF_PASSWORD_<id> variable"
+
+    def _password_problem(self, password, email):
+        if password in KNOWN_PUBLIC_PASSWORDS:
+            return "it is published in this repository's history"
+        if len(password) < MIN_LENGTH:
+            return f"it is shorter than {MIN_LENGTH} characters"
+        try:
+            validate_password(password, User(email=email))
+        except ValidationError as exc:
+            return " ".join(exc.messages)
+        return None
 
     def _upsert_staff(self, email, facility, password):
-        """get_or_create then overwrite, so re-running on every deploy
-        re-syncs role/facility/password instead of duplicating anyone."""
-        user, created = User.objects.get_or_create(
-            email=email,
-            defaults={"role": User.Role.FACILITY_STAFF, "facility": facility},
-        )
+        user = User.objects.filter(email__iexact=email).first()
+        created = user is None
+        if created:
+            user = User(email=email)
         user.role = User.Role.FACILITY_STAFF
         user.facility = facility
         user.is_active = True
-        user.set_password(password)
+        password_changed = created or not user.check_password(password)
+        if password_changed:
+            user.set_password(password)
         user.save()
-        return user, created
+        return created, password_changed
 
-    def handle(self, *args, **options):
-        password = os.environ.get("FACILITY_STAFF_DEMO_PASSWORD")
+    def _sync(self, email, facility, var, password, duplicates):
         if not password:
+            self.stdout.write(f"{var} not set -- {email} left as it is.")
+            return
+        if password in duplicates:
             self.stdout.write(self.style.WARNING(
-                "FACILITY_STAFF_DEMO_PASSWORD not set -- skipping facility staff accounts. "
-                "Set it in the host's environment to (re)create them."
+                f"{var} is the same as another staff account's password -- {email} left as it is. "
+                "Give every account its own password."
             ))
             return
+        problem = self._password_problem(password, email)
+        if problem:
+            self.stdout.write(self.style.WARNING(f"{var} was not used for {email}: {problem}."))
+            return
+        created, password_changed = self._upsert_staff(email, facility, password)
+        if created:
+            verb = "Created"
+        elif password_changed:
+            verb = "Password updated for"
+        else:
+            verb = "Up to date:"
+        self.stdout.write(self.style.SUCCESS(f"{verb} {email} -> {facility.name}"))
+
+    def handle(self, *args, **options):
+        if os.environ.get(RETIRED_SHARED_VAR):
+            self.stdout.write(self.style.WARNING(
+                f"{RETIRED_SHARED_VAR} is no longer used (one password for every facility). "
+                f"Set {PASSWORD_VAR.format(facility_id='<id>')} for each facility instead, then remove it."
+            ))
 
         facilities = list(Facility.objects.order_by("id"))
         if not facilities:
@@ -79,20 +128,18 @@ class Command(BaseCommand):
             ))
             return
 
-        # Addressed by id rather than a slug of the name: short enough to
-        # actually type at a login screen, and it can't produce a
-        # 60-character address out of "Dr. Jose Fabella Memorial Hospital
-        # Human Milk Bank". The mapping is printed below precisely
-        # because an id on its own isn't self-describing.
-        for facility in facilities:
-            email = f"staff{facility.id}@kalingapp.demo"
-            _user, created = self._upsert_staff(email, facility, password)
-            verb = "Created" if created else "Reset  "
-            self.stdout.write(self.style.SUCCESS(f"{verb} {email} -> {facility.name}"))
-
         legacy_facility = Facility.objects.filter(name=LEGACY_DEMO_FACILITY_NAME).first() or facilities[0]
-        _user, created = self._upsert_staff(LEGACY_DEMO_EMAIL, legacy_facility, password)
-        verb = "Created" if created else "Reset  "
-        self.stdout.write(self.style.SUCCESS(
-            f"{verb} {LEGACY_DEMO_EMAIL} -> {legacy_facility.name} (kept for existing logins)"
-        ))
+        accounts = [
+            # Addressed by id rather than a slug of the name: short enough to
+            # type at a login screen, and it can't produce a 60-character
+            # address out of a long hospital name.
+            (f"staff{facility.id}@kalingapp.demo", facility, PASSWORD_VAR.format(facility_id=facility.id))
+            for facility in facilities
+        ] + [(LEGACY_DEMO_EMAIL, legacy_facility, LEGACY_PASSWORD_VAR)]
+
+        passwords = [os.environ.get(var, "") for _email, _facility, var in accounts]
+        set_values = [password for password in passwords if password]
+        duplicates = {password for password in set_values if set_values.count(password) > 1}
+
+        for (email, facility, var), password in zip(accounts, passwords):
+            self._sync(email, facility, var, password, duplicates)

@@ -579,7 +579,29 @@ REST_FRAMEWORK = {
         # Facility <-> admin messages. Generous for a person typing, low
         # enough that a runaway script can't flood the other side's inbox.
         "messaging_send": "30/min",
+        # Kali: every message is a paid Gemini call. Plenty for a mother
+        # chatting (a reply takes seconds), but one account can no longer
+        # run up the bill -- see core/throttling.py's Chat*Throttle.
+        "chat_burst": "10/min",
+        "chat_daily": "200/day",
     },
+}
+
+# How many proxies sit in front of this app and append to X-Forwarded-For
+# (Render's edge, then its internal router). The rate limits read the
+# client's address that many entries from the END of the header, where a
+# caller can't forge it -- see core/throttling.py. Change this only if the
+# host's proxy chain changes.
+TRUSTED_PROXY_HOPS = env.int("TRUSTED_PROXY_HOPS", default=2)
+
+SIMPLE_JWT = {
+    # Every token carries a fingerprint of the account's password, and a
+    # token whose fingerprint no longer matches is refused. So changing or
+    # resetting a password signs that account out everywhere else -- a
+    # stolen login stops working the moment she resets. The refresh
+    # endpoint checks the same thing (accounts.views.CheckedTokenRefreshView),
+    # so a signed-out device goes straight back to the login screen.
+    "CHECK_REVOKE_TOKEN": True,
 }
 
 SPECTACULAR_SETTINGS = {

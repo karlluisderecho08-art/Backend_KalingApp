@@ -1,3 +1,4 @@
+from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator
 from rest_framework import serializers
@@ -10,6 +11,7 @@ from .capacity import day_summary
 from .collection import appointment_start, delivery_link_due
 from .results import mother_result
 from .models import BOTTLE_ML, DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
+from .photo_checks import MAX_PHOTO_BYTES, detect_image, random_photo_name, read_head
 
 
 # How a mother's amount is checked on the way in: only that it is a plausible
@@ -185,10 +187,27 @@ class FacilitySerializer(serializers.ModelSerializer):
     def get_donor_fully_booked_dates(self, obj) -> list:
         return self._calendar(obj)["donor_fully_booked_dates"]
 
+    def _viewer_is_platform_admin(self):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        return bool(user and user.is_authenticated and user.is_staff)
+
     def get_staff_emails(self, obj) -> list:
-        if not obj.pk:
+        if not obj.pk or not self._viewer_is_platform_admin():
             return []
         return sorted(obj.staff.filter(role=User.Role.FACILITY_STAFF).values_list("email", flat=True))
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Staff login addresses are for the platform admin's facility form
+        # only. The facility list is public (the app's directory and matching
+        # read it without signing in), and it used to hand everyone the
+        # usernames of the accounts that open mothers' health records. Anyone
+        # but an admin -- including a serializer used without a request --
+        # gets no such key at all.
+        if not self._viewer_is_platform_admin():
+            data.pop("staff_emails", None)
+        return data
 
     def _validate_request_limits(self, attrs):
         """The per-request range must make sense on its own, and -- for a
@@ -268,6 +287,15 @@ class FacilitySerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"staff_user_id": "That staff account is already assigned to a facility."}
                 )
+
+        if new_staff_password:
+            # A staff login opens mothers' health records, so it gets Django's
+            # full password rules (length, common, numeric, too like the email),
+            # not just a minimum length.
+            try:
+                validate_password(new_staff_password, User(email=new_staff_email or ""))
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"new_staff_password": list(exc.messages)})
 
         if new_staff_email and User.objects.filter(email__iexact=new_staff_email).exists():
             raise serializers.ValidationError(
@@ -551,8 +579,18 @@ class DonorQuestionnaireSerializer(serializers.ModelSerializer):
         return bool(obj.serology_photo)
 
     def validate_serology_photo(self, value):
-        if value and not value.content_type.startswith("image/"):
+        # Judged by the file's own bytes, never by the type or name the phone
+        # declared (see milkbank/photo_checks.py), then renamed at random so
+        # what is stored -- and later served to staff -- is exactly that image.
+        if not value:
+            return value
+        if value.size > MAX_PHOTO_BYTES:
+            raise serializers.ValidationError("Serology photo must be 10 MB or smaller.")
+        kind = detect_image(read_head(value))
+        if kind is None:
             raise serializers.ValidationError("Serology photo must be an image file.")
+        value.content_type, extension = kind
+        value.name = random_photo_name(extension)
         return value
 
 

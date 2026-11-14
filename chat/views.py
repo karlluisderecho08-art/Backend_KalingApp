@@ -5,6 +5,7 @@ from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.throttling import ChatBurstThrottle, ChatDailyThrottle
 from core.versioning import RequiresSupportedApp
 
 from core.i18n import wants_tagalog
@@ -39,6 +40,9 @@ class SendMessageView(APIView):
 
     permission_classes = [permissions.IsAuthenticated, RequiresSupportedApp]
     serializer_class = SendMessageSerializer
+    # Each message is a paid model call, so it has its own per-minute and
+    # per-day limit per account (settings: chat_burst / chat_daily).
+    throttle_classes = [ChatBurstThrottle, ChatDailyThrottle]
 
     def post(self, request):
         serializer = SendMessageSerializer(data=request.data)

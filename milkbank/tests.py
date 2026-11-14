@@ -1925,7 +1925,7 @@ class FacilityCreationStaffAssignmentTests(APITestCase):
     def test_creates_a_brand_new_staff_account(self):
         self.client.force_authenticate(user=self.admin)
         response = self.client.post("/milkbank/facilities/", {
-            **self.payload, "new_staff_email": "newstaff@example.com", "new_staff_password": "password123",
+            **self.payload, "new_staff_email": "newstaff@example.com", "new_staff_password": "Gatas-ng-Ina-2026!",
         })
 
         self.assertEqual(response.status_code, 201)
@@ -1933,14 +1933,14 @@ class FacilityCreationStaffAssignmentTests(APITestCase):
         self.assertEqual(new_staff.role, User.Role.FACILITY_STAFF)
         self.assertEqual(new_staff.facility_id, response.data["id"])
         self.assertTrue(new_staff.is_active)
-        self.assertTrue(new_staff.check_password("password123"))
+        self.assertTrue(new_staff.check_password("Gatas-ng-Ina-2026!"))
         self.assertTrue(AuditLogEntry.objects.filter(action="facility.staff_created").exists())
 
     def test_refuses_a_new_staff_email_already_in_use(self):
         User.objects.create_user(email="taken@example.com", password="x")
         self.client.force_authenticate(user=self.admin)
         response = self.client.post("/milkbank/facilities/", {
-            **self.payload, "new_staff_email": "taken@example.com", "new_staff_password": "password123",
+            **self.payload, "new_staff_email": "taken@example.com", "new_staff_password": "Gatas-ng-Ina-2026!",
         })
         self.assertEqual(response.status_code, 400)
 
@@ -1959,7 +1959,7 @@ class FacilityCreationStaffAssignmentTests(APITestCase):
         self.client.force_authenticate(user=self.admin)
         response = self.client.post("/milkbank/facilities/", {
             **self.payload, "staff_user_id": staff.id,
-            "new_staff_email": "newstaff@example.com", "new_staff_password": "password123",
+            "new_staff_email": "newstaff@example.com", "new_staff_password": "Gatas-ng-Ina-2026!",
         })
         self.assertEqual(response.status_code, 400)
 

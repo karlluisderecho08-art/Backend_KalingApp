@@ -33,6 +33,7 @@ from .business_hours import add_business_hours
 from .capacity import has_donor_slot_room, has_room
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
+from .photo_checks import MAX_PHOTO_BYTES, detect_image, read_head
 from .collection import delivery_link_due, notify_collection_steps
 from .results import decline_notification
 from .scheduling import counter_offer_errors
@@ -55,6 +56,9 @@ from .serializers import (
 from .transitions import FINAL_STATUSES, InvalidTransition, apply_transition, sweep_expired_requests
 
 Status = MilkBankRequest.Status
+
+# Room for the questionnaire's other form fields around the photo itself.
+UPLOAD_FORM_OVERHEAD_BYTES = 256 * 1024
 
 
 class FacilityListView(generics.ListCreateAPIView):
@@ -1026,6 +1030,16 @@ class DonorQuestionnaireView(APIView):
 
     @extend_schema(request=DonorQuestionnaireCreateSerializer, responses=DonorQuestionnaireSerializer)
     def post(self, request, pk):
+        # Refused before the body is read, so an oversized upload never lands
+        # on the server's disk. (The photo itself is limited to the same size
+        # again once parsed -- DonorQuestionnaireSerializer.)
+        try:
+            declared_length = int(request.META.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            declared_length = 0
+        if declared_length > MAX_PHOTO_BYTES + UPLOAD_FORM_OVERHEAD_BYTES:
+            return Response({"detail": "Serology photo must be 10 MB or smaller."}, status=413)
+
         req = generics.get_object_or_404(MilkBankRequest, pk=pk)
         if req.owner_id != request.user.id:
             self.permission_denied(request)
@@ -1061,5 +1075,22 @@ class SerologyPhotoView(APIView):
         questionnaire = getattr(req, "donor_questionnaire", None)
         if not questionnaire or not questionnaire.serology_photo:
             raise Http404
+        photo = questionnaire.serology_photo.open("rb")
+        # Checked again here, from the bytes: photos stored before uploads
+        # were checked this way are served only if they really are images,
+        # and always under their real type -- never under the type the name
+        # suggests, so no stored file can be rendered as a web page.
+        kind = detect_image(read_head(photo))
+        if kind is None:
+            photo.close()
+            log_action(request.user, "serology_photo.refused_not_an_image", f"MilkBankRequest:{req.id}")
+            raise Http404
+        content_type, extension = kind
         log_action(request.user, "serology_photo.viewed", f"MilkBankRequest:{req.id}")
-        return FileResponse(questionnaire.serology_photo.open("rb"))
+        response = FileResponse(photo, content_type=content_type, filename=f"serology-photo.{extension}")
+        # Health information: never kept in a browser or proxy cache, and
+        # nothing in it may run even if the file is opened on its own.
+        response["Cache-Control"] = "no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"
+        return response

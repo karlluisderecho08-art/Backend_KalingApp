@@ -114,7 +114,7 @@ class ArticleCommentCreateView(generics.CreateAPIView):
         # Respond with the full read shape (incl. author_name), not the
         # bare {"text": ...} the create serializer would echo back.
         return Response(
-            ArticleCommentSerializer(serializer.instance).data,
+            ArticleCommentSerializer(serializer.instance, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -183,7 +183,10 @@ class ArticleCommentReportView(APIView):
             comment.report_reason = reason if newly_reported else (comment.report_reason or reason)
             comment.save(update_fields=["is_reported", "report_reason"])
             report_count = comment.reports.count()
-            data = dict(ArticleCommentSerializer(comment).data, report_count=report_count, removed=False)
+            data = dict(
+                ArticleCommentSerializer(comment, context={"request": request}).data,
+                report_count=report_count, removed=False,
+            )
 
             if newly_reported:
                 log_action(request.user, "comment.reported", f"ArticleComment:{comment.id} ({reason})")
@@ -281,7 +284,7 @@ class ArticleCommentResolveView(APIView):
         # toward automatic removal -- it would take that many fresh reports.
         comment.reports.all().delete()
         log_action(request.user, "comment.dismissed_report", f"ArticleComment:{comment.id}")
-        return Response(ArticleCommentSerializer(comment).data)
+        return Response(ArticleCommentSerializer(comment, context={"request": request}).data)
 
 
 class ResourceLinkListView(generics.ListAPIView):

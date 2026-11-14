@@ -9,6 +9,7 @@ reaching a Tagalog-reading mother in English.
 
 import re
 
+from django.core.cache import cache
 from django.core import mail
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
@@ -149,6 +150,10 @@ class EveryMotherMessageIsTranslatedTests(TestCase):
 
 class ResponseLanguageTests(TestCase):
     def setUp(self):
+        # Fresh rate-limit counters (Kali has its own limit): test ids repeat,
+        # so counts from an earlier test would otherwise carry over.
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.user = User.objects.create_user(email="mother@example.com", password="the-password", is_active=True)
         self.client = APIClient()
 

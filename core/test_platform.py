@@ -46,6 +46,10 @@ class AppVersionGateTests(APITestCase):
     """Below the minimum version, the mother-only writes answer 426 with where to update."""
 
     def setUp(self):
+        # Fresh rate-limit counters (Kali has its own limit): test ids repeat,
+        # so counts from an earlier test would otherwise carry over.
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.mother = User.objects.create_user(
             email="gate@example.com", password="x", is_active=True, latitude=14.6, longitude=121.0,
         )

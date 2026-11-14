@@ -71,6 +71,10 @@ MESSAGES = {
         "Hindi wasto ang iyong pag-log in. Mag-log in ulit.",
     "No active account found for the given token.":
         "Walang aktibong account para sa pag-log in na ito.",
+    "The user's password has been changed.":
+        "Napalitan na ang password ng account na ito. Mag-log in ulit gamit ang bagong password.",
+    "This session has ended. Please sign in again.":
+        "Natapos na ang sesyon na ito. Mag-log in ulit.",
     "This field is required.":
         "Kailangang punan ito.",
     "This field may not be blank.":
@@ -159,6 +163,8 @@ MESSAGES = {
         "Ang {bottles} bote ay {total_ml} mL, hindi {ml} mL.",
     "Serology photo must be an image file.":
         "Larawan (image file) lang ang puwedeng ilakip para sa serology test.",
+    "Serology photo must be 10 MB or smaller.":
+        "Dapat 10 MB o mas maliit ang larawan ng serology test.",
     "Please attach a photo of your serology test result.":
         "Ilakip ang larawan ng resulta ng iyong serology test.",
     "Milk Bank Request: Awaiting Attendance":

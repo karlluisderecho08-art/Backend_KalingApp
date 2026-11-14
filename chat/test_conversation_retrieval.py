@@ -15,6 +15,7 @@ from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.core.cache import cache
 from django.core.management import call_command
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
@@ -214,6 +215,10 @@ class FollowUpReachesTheModelTests(APITestCase):
     """The same behaviour, observed at what is actually sent to Gemini."""
 
     def setUp(self):
+        # Fresh rate-limit counters (Kali has its own limit): test ids repeat,
+        # so counts from an earlier test would otherwise carry over.
+        cache.clear()
+        self.addCleanup(cache.clear)
         seed_articles()
 
     def test_the_prompt_carries_the_topics_passages_for_a_bare_yes(self):

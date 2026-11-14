@@ -145,7 +145,7 @@ class AddStaffToExistingFacilityTests(APITestCase):
         return self.client.patch(f"/milkbank/facilities/{self.facility.id}/", data, format="json")
 
     def test_a_new_login_is_added_and_the_old_one_kept(self):
-        response = self.patch(new_staff_email="second-staff@example.com", new_staff_password="longpassword")
+        response = self.patch(new_staff_email="second-staff@example.com", new_staff_password="Gatas-ng-Ina-2026!")
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(
@@ -176,7 +176,7 @@ class AddStaffToExistingFacilityTests(APITestCase):
 
     def test_an_email_already_in_use_is_refused(self):
         self.assertEqual(
-            self.patch(new_staff_email="first-staff@example.com", new_staff_password="longpassword").status_code, 400,
+            self.patch(new_staff_email="first-staff@example.com", new_staff_password="Gatas-ng-Ina-2026!").status_code, 400,
         )
 
     def test_an_ordinary_edit_changes_no_staff(self):

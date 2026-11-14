@@ -1,7 +1,7 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
+    CheckedTokenRefreshView,
     AdminUserDeleteView,
     AdminUserListView,
     AdminUserUnlockView,
@@ -33,7 +33,7 @@ urlpatterns = [
     # Also doubles as the is_active gate: ModelBackend refuses to
     # authenticate an unverified (is_active=False) account here.
     path("login/", ThrottledTokenObtainPairView.as_view(), name="login"),
-    path("refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("refresh/", CheckedTokenRefreshView.as_view(), name="token_refresh"),
     path("demo-login/", DemoLoginView.as_view(), name="demo_login"),
     path("me/", MeView.as_view(), name="me"),
     path("me/delete/", DeleteMyAccountView.as_view(), name="me-delete"),

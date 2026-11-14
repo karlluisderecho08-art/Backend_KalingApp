@@ -153,9 +153,9 @@ services:
       # backend (Next.js auto-picks 3001 if 3000 is already taken),
       # without needing to also run Django locally. Add each app's real
       # deployed URL here once it exists, e.g.:
-      #   http://localhost:3000,http://localhost:3001,https://kalingapp-admin.vercel.app,https://kalingapp-facility.vercel.app
+      #   http://localhost:3000,http://localhost:3001,https://kalingapp-admin-portal.vercel.app,https://kalingapp-facility.vercel.app
       # NOTE: the two deployed dashboards
-      # (kalingapp-admin/kalingapp-facility.vercel.app) do NOT depend on
+      # (kalingapp-admin-portal/kalingapp-facility.vercel.app) do NOT depend on
       # this any more -- they're pinned in config/settings/prod.py, after
       # this list sat stale at localhost-only while they were live and
       # silently blocked login on both. This is only for origins not

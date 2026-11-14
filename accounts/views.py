@@ -11,7 +11,10 @@ from rest_framework.exceptions import AuthenticationFailed, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.utils import get_md5_hash_password
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from core.audit import log_action
 from core.retention import maybe_purge
@@ -22,6 +25,7 @@ from core.i18n import wants_tagalog
 from notifications.services import notify_many
 
 from . import lockout
+from .legacy_signups import email_is_taken, is_abandoned_legacy_signup
 from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
     RESEND_COOLDOWN_SECONDS,
@@ -129,6 +133,37 @@ def _tokens_for(user):
     """Issue a fresh access/refresh token pair for a user."""
     refresh = RefreshToken.for_user(user)
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
+
+
+class CheckedTokenRefreshSerializer(TokenRefreshSerializer):
+    """
+    simplejwt's refresh, refusing a refresh token whose session has ended.
+
+    With CHECK_REVOKE_TOKEN on (settings.SIMPLE_JWT) an ACCESS token issued
+    before a password change is refused, but simplejwt's own refresh would
+    still happily mint new ones from an old refresh token -- each refused
+    in turn, leaving the app stuck instead of back at the login screen. So
+    the refresh is checked the same way: the account must still exist, be
+    active, and have the password the token was issued under. (simplejwt's
+    own check also raised a 500 for a deleted account.)
+    """
+
+    def validate(self, attrs):
+        refresh = self.token_class(attrs["refresh"])
+        user = User.objects.filter(pk=refresh.payload.get(jwt_settings.USER_ID_CLAIM)).first()
+        if (
+            user is None
+            or not user.is_active
+            or refresh.payload.get(jwt_settings.REVOKE_TOKEN_CLAIM) != get_md5_hash_password(user.password)
+        ):
+            raise AuthenticationFailed("This session has ended. Please sign in again.", "session_ended")
+        return super().validate(attrs)
+
+
+class CheckedTokenRefreshView(TokenRefreshView):
+    """POST /auth/refresh/ -- see CheckedTokenRefreshSerializer."""
+
+    serializer_class = CheckedTokenRefreshSerializer
 
 
 class ThrottledTokenObtainPairView(TokenObtainPairView):
@@ -287,6 +322,12 @@ class VerifyEmailView(APIView):
             pending.save(update_fields=["attempts"])
             return Response({"detail": "Incorrect verification code."}, status=400)
 
+        # Checked again here, not only at signup: the address may have gained
+        # an account since the code was sent (another signup finished first).
+        if email_is_taken(pending.email):
+            pending.delete()
+            return Response({"detail": "An account with this email already exists."}, status=400)
+
         user = self._create_account(pending)
         pending.delete()
 
@@ -299,13 +340,14 @@ class VerifyEmailView(APIView):
 
     @staticmethod
     def _create_account(pending):
-        # Clears out any leftover inactive row for this address. Under
-        # the current design nothing creates one, but accounts from
-        # before this flow existed (signups that were stored as
-        # is_active=False users and never verified) are still out there,
-        # and they'd otherwise collide with User.email's unique
-        # constraint and make those addresses permanently unusable.
-        User.objects.filter(email__iexact=pending.email, is_active=False).delete()
+        # Clears out an abandoned signup from before this flow existed (an
+        # inactive, never-used row that would otherwise collide with
+        # User.email's unique constraint). Only that: a deactivated account
+        # is never deleted here -- the caller has already refused the
+        # signup if one exists. See accounts/legacy_signups.py.
+        for leftover in User.objects.filter(email__iexact=pending.email, is_active=False):
+            if is_abandoned_legacy_signup(leftover):
+                leftover.delete()
 
         user = User(
             email=pending.email,
@@ -549,15 +591,51 @@ class CheckInView(APIView):
         return Response(UserSerializer(user).data)
 
 
+def _mothers_of_my_facility(staff):
+    """
+    The mothers a facility's staff may see and act on: those with at least
+    one booking at THEIR facility, past or present. Never every mother in
+    the system -- a hospital has no business with the email, baby details
+    or clinic of a mother who never booked there (RA 10173, data
+    minimisation). A staff account with no facility sees nobody.
+    """
+    from django.db.models import Q, Sum
+    from django.db.models.functions import Coalesce
+
+    from milkbank.models import MilkBankRequest
+
+    if not staff.facility_id:
+        return User.objects.none()
+    # The filter comes before the annotations on purpose: the sums then run
+    # over this facility's bookings only, and grouping by user returns each
+    # mother once. Her totals are what she gave and received HERE -- a
+    # hospital must not learn what she did at another one.
+    completed = Q(milkbank_requests__current_sub_status=MilkBankRequest.Status.COMPLETED)
+    return User.objects.filter(
+        role=User.Role.MOTHER,
+        milkbank_requests__allocated_facility_id=staff.facility_id,
+    ).annotate(
+        facility_drawn_ml=Coalesce(Sum(
+            "milkbank_requests__amount_ml",
+            filter=completed & Q(milkbank_requests__request_type=MilkBankRequest.RequestType.DONOR),
+        ), 0),
+        facility_received_ml=Coalesce(Sum(
+            "milkbank_requests__amount_ml",
+            filter=completed & Q(milkbank_requests__request_type=MilkBankRequest.RequestType.RECIPIENT),
+        ), 0),
+    )
+
+
 class StaffUserListView(generics.ListAPIView):
-    """GET /auth/users/ -- every mother account, newest first, for the
-    facility dashboard's User Management table."""
+    """GET /auth/users/ -- the mothers who have booked at this staff member's
+    facility, newest first, for the facility dashboard's User Management
+    table and reports."""
 
     serializer_class = StaffUserListSerializer
     permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
 
     def get_queryset(self):
-        return User.objects.filter(role=User.Role.MOTHER).order_by("-date_joined")
+        return _mothers_of_my_facility(self.request.user).order_by("-date_joined")
 
 
 class StaffUserSetActiveView(APIView):
@@ -582,7 +660,8 @@ class StaffUserSetActiveView(APIView):
 
     @extend_schema(request=None, responses=StaffUserListSerializer)
     def post(self, request, pk):
-        user = generics.get_object_or_404(User, pk=pk, role=User.Role.MOTHER)
+        # Only a mother who has booked at this staff member's own facility.
+        user = generics.get_object_or_404(_mothers_of_my_facility(request.user), pk=pk)
         user.is_active = self.active
         user.save(update_fields=["is_active"])
         log_action(request.user, "user.activated" if self.active else "user.deactivated", f"User:{user.id}")
