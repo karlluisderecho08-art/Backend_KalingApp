@@ -3,11 +3,17 @@ Breastmilk Collection for donors: when the delivery link is due, and the
 notifications that walk her through the way she chose.
 
 She picks how her milk reaches the facility right after choosing her
-appointment date and time (the app no longer asks on the health form). A Drop
-off goes by courier, and a courier can only be booked when the milk is ready
-to leave -- so the delivery link is asked for, and required, only from the
-appointment's own hour onward ("the same day and the same hour"), until her
-milk is collected.
+appointment date and time (the app no longer asks on the health form), and can
+change it until her booking is confirmed -- after that it is fixed, so the
+facility can plan around it (views.CollectionMethodView).
+
+A Drop off goes by courier, so a Drop off donor confirms her booking by pasting
+the courier's delivery link instead of confirming attendance. She can paste it
+any time once the facility has accepted -- usually on the day, once the courier
+is booked -- so her booking doesn't expire 8 business hours after acceptance:
+it waits until DROP_OFF_LINK_GRACE after her appointment time
+(transitions.attendance_deadline). She can still replace the link (a courier
+rebooked) until her milk is collected.
 
 Notifications (all Bookings, all with a Tagalog line in core/tagalog_catalog.py):
   * when her appointment is confirmed (Scheduled), and whenever she changes the
@@ -17,7 +23,7 @@ Notifications (all Bookings, all with a Tagalog line in core/tagalog_catalog.py)
     same sweep that expires overdue requests (transitions.sweep_expired_requests).
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from django.utils import timezone
 
@@ -45,11 +51,20 @@ STEPS = {
         "You can change this in Booking Status until your milk is collected."
     ),
     Method.DROP_OFF: (
-        "Drop off: on {date}, at {time}, book a courier (for example Lalamove or Grab) to bring your milk "
-        "to the facility. Then open Booking Status and paste the courier's delivery link so the facility "
-        "can track it. You can change this in Booking Status until your milk is collected."
+        "Drop off: book a courier (for example Lalamove or Grab) to bring your milk to the facility on "
+        "{date} at {time}, then paste its delivery link in Booking Status. That confirms your booking "
+        "and lets the facility track your milk."
     ),
 }
+# A Drop off whose link is already in (pasting it is what confirmed her booking).
+STEPS_DROP_OFF_LINKED = (
+    "Drop off: your courier brings your milk to the facility on {date} at {time}, and the facility "
+    "can track it with the delivery link you sent. If you book a different courier, paste its new "
+    "link in Booking Status."
+)
+# How long after her appointment time a Drop off waits for its delivery link
+# before the booking expires.
+DROP_OFF_LINK_GRACE = timedelta(hours=2)
 REMINDER_TITLE = "Time to send your milk"
 REMINDER_BODY = (
     "It's time for your {time} drop off. Book your courier now, then open Booking Status "
@@ -95,11 +110,29 @@ def _when(req):
     return {"date": f"{day:%B} {day.day}, {day.year}", "time": req.preferred_time}
 
 
+def confirms_by_delivery_link(req):
+    """A Drop off donor confirms her booking by pasting the courier's link, not by confirming attendance."""
+    return req.request_type == MilkBankRequest.RequestType.DONOR and req.collection_method == Method.DROP_OFF
+
+
+def drop_off_link_deadline(req, now=None):
+    """When a Drop off still waiting for its link expires, or None if her appointment time can't be read.
+    At least DROP_OFF_LINK_GRACE from now, so a late acceptance never expires on the spot."""
+    start = appointment_start(req)
+    if start is None:
+        return None
+    now = now or timezone.now()
+    return max(start + DROP_OFF_LINK_GRACE, now + DROP_OFF_LINK_GRACE)
+
+
 def notify_collection_steps(req):
     """The steps for the way she chose, with her date and time. Nothing when no method is set."""
     if req.request_type != MilkBankRequest.RequestType.DONOR or req.collection_method not in STEPS:
         return
-    notify(req.owner, STEPS_TITLE, STEPS[req.collection_method].format(**_when(req)), NotificationItem.Category.BOOKINGS)
+    template = STEPS[req.collection_method]
+    if req.collection_method == Method.DROP_OFF and req.delivery_link:
+        template = STEPS_DROP_OFF_LINKED
+    notify(req.owner, STEPS_TITLE, template.format(**_when(req)), NotificationItem.Category.BOOKINGS)
 
 
 def send_delivery_link_reminders(now=None):

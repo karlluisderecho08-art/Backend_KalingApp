@@ -303,6 +303,14 @@ MESSAGES = {
         "I-paste ang link ng iyong delivery booking para masubaybayan ng pasilidad ang iyong courier.",
     "Enter a full web link that starts with https://":
         "Maglagay ng buong link na nagsisimula sa https://",
+    "Set your pickup pin: tap Use my current location where your milk will be picked up.":
+        "I-set ang iyong pickup pin: pindutin ang Gamitin ang kasalukuyan kong lokasyon sa lugar kung saan kukunin ang iyong gatas.",
+    "That pin is outside the Philippines. Set it again where your milk will be picked up.":
+        "Nasa labas ng Pilipinas ang pin na iyan. I-set itong muli sa lugar kung saan kukunin ang iyong gatas.",
+    "Enter the complete address where your milk will be picked up.":
+        "Ilagay ang kumpletong address kung saan kukunin ang iyong gatas.",
+    "Add a landmark so the facility can find you.":
+        "Maglagay ng palatandaan para madali kang mahanap ng pasilidad.",
     "Choose how your milk will reach the facility.":
         "Piliin kung paano makakarating sa pasilidad ang iyong gatas.",
     "Only a donation has a collection method.":
@@ -331,6 +339,18 @@ MESSAGES = {
         "Oras na para ipadala ang iyong gatas",
     "It's time for your {time} drop off. Book your courier now, then open Booking Status and paste the delivery link so the facility can track your milk.":
         "Oras na ng iyong drop off sa {time}. Mag-book na ng courier, saka buksan ang Katayuan ng Reserbasyon at i-paste ang delivery link para masubaybayan ng pasilidad ang iyong gatas.",
+    "Drop off: book a courier (for example Lalamove or Grab) to bring your milk to the facility on {date} at {time}, then paste its delivery link in Booking Status. That confirms your booking and lets the facility track your milk.":
+        "Drop off: mag-book ng courier (halimbawa, Lalamove o Grab) para dalhin ang iyong gatas sa pasilidad sa {date}, {time}, saka i-paste ang delivery link nito sa Katayuan ng Reserbasyon. Iyon ang magkukumpirma ng iyong reserbasyon at makakatulong sa pasilidad na masubaybayan ang iyong gatas.",
+    "Drop off: your courier brings your milk to the facility on {date} at {time}, and the facility can track it with the delivery link you sent. If you book a different courier, paste its new link in Booking Status.":
+        "Drop off: dadalhin ng iyong courier ang iyong gatas sa pasilidad sa {date}, {time}, at masusubaybayan ito ng pasilidad gamit ang delivery link na ipinadala mo. Kung ibang courier ang i-book mo, i-paste ang bagong link nito sa Katayuan ng Reserbasyon.",
+    "The facility accepted your request. Book a courier for your appointment and paste its delivery link in Booking Status. That confirms your booking.":
+        "Tinanggap ng pasilidad ang iyong kahilingan. Mag-book ng courier para sa iyong appointment at i-paste ang delivery link nito sa Katayuan ng Reserbasyon. Iyon ang magkukumpirma ng iyong reserbasyon.",
+    "Your request expired because no courier delivery link was sent by 2 hours after your appointment time. Please submit a new request.":
+        "Nag-expire ang iyong kahilingan dahil walang naipadalang delivery link ng courier hanggang 2 oras matapos ang oras ng iyong appointment. Magpasa ng bagong kahilingan.",
+    "No courier delivery link was sent in time after the facility accepted your request, so it expired. Please submit a new request.":
+        "Walang naipadalang delivery link ng courier sa takdang oras matapos tanggapin ng pasilidad ang iyong kahilingan, kaya nag-expire ito. Magpasa ng bagong kahilingan.",
+    "Your collection method can't be changed after your booking is confirmed. Message the facility in Chat if something has changed.":
+        "Hindi na mapapalitan ang paraan ng pagkolekta kapag nakumpirma na ang iyong reserbasyon. Mag-message sa pasilidad sa Chat kung may nagbago.",
 }
 
 # Values that are inserted into a message's {slot}: translated there, but

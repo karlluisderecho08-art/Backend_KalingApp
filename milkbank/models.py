@@ -130,6 +130,12 @@ class MilkBankRequest(models.Model):
         "Status", "Booking Confirmation", "Counseling and Testing",
         "Breastmilk Collection", "Results",
     ]
+    # A Drop off sends her milk by courier and never comes in, so there is no
+    # Counseling and Testing visit: confirming with the courier's delivery link
+    # takes her straight to Breastmilk Collection. The stages before it are the
+    # same as DONOR_STAGES, so changing the method -- possible only until her
+    # booking is confirmed -- never moves her.
+    DROP_OFF_DONOR_STAGES = ["Status", "Booking Confirmation", "Breastmilk Collection", "Results"]
     RECIPIENT_STAGES = ["Requirements", "Status", "Booking Confirmation", "Results"]
 
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="milkbank_requests")
@@ -222,6 +228,15 @@ class MilkBankRequest(models.Model):
 
     collection_method = models.CharField(max_length=20, choices=CollectionMethod.choices, blank=True)
     delivery_link = models.URLField(max_length=500, blank=True)
+    # Pick up only: where the facility collects her milk -- a pin from her
+    # phone's location plus the address and landmark she types. Seen only by
+    # her and her booking's facility, and cleared once the booking has been
+    # closed for RETENTION_PICKUP_ADDRESS_DAYS (core/retention.py). Empty for
+    # any other method (switching away clears them).
+    pickup_address = models.CharField(max_length=300, blank=True)
+    pickup_landmark = models.CharField(max_length=200, blank=True)
+    pickup_latitude = models.FloatField(null=True, blank=True)
+    pickup_longitude = models.FloatField(null=True, blank=True)
     # The appointment ("<date> <time>") the Drop off reminder was last sent
     # for, so it goes out once per appointment (milkbank/collection.py).
     delivery_reminder_for = models.CharField(max_length=40, blank=True)
@@ -262,7 +277,11 @@ class MilkBankRequest(models.Model):
 
     @property
     def stages(self):
-        return self.DONOR_STAGES if self.request_type == self.RequestType.DONOR else self.RECIPIENT_STAGES
+        if self.request_type == self.RequestType.DONOR:
+            if self.collection_method == self.CollectionMethod.DROP_OFF:
+                return self.DROP_OFF_DONOR_STAGES
+            return self.DONOR_STAGES
+        return self.RECIPIENT_STAGES
 
     def __str__(self):
         return f"{self.owner} - {self.request_type} - {self.current_sub_status}"

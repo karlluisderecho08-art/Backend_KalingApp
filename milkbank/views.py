@@ -1,6 +1,8 @@
 import secrets
 
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator
 from django.db import transaction
 from django.db.models import ProtectedError
 from django.http import FileResponse, Http404
@@ -34,7 +36,7 @@ from .capacity import has_donor_slot_room, has_room
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
 from .photo_checks import MAX_PHOTO_BYTES, detect_image, read_head
-from .collection import delivery_link_due, notify_collection_steps
+from .collection import confirms_by_delivery_link, delivery_link_due, notify_collection_steps
 from .results import decline_notification
 from .scheduling import counter_offer_errors
 from .serializers import (
@@ -52,10 +54,16 @@ from .serializers import (
     RebookSerializer,
     StaffMessageSerializer,
     TransactionRecordSerializer,
+    DELIVERY_LINK_INVALID,
+    DELIVERY_LINK_REQUIRED,
+    collection_details_required,
 )
-from .transitions import FINAL_STATUSES, InvalidTransition, apply_transition, sweep_expired_requests
+from .transitions import (
+    FINAL_STATUSES, InvalidTransition, apply_transition, refresh_attendance_deadline, sweep_expired_requests,
+)
 
 Status = MilkBankRequest.Status
+Method = MilkBankRequest.CollectionMethod
 
 # Room for the questionnaire's other form fields around the photo itself.
 UPLOAD_FORM_OVERHEAD_BYTES = 256 * 1024
@@ -217,7 +225,9 @@ class MilkBankRequestCreateView(APIView):
     serializer_class = MilkBankRequestCreateSerializer
 
     def post(self, request):
-        serializer = MilkBankRequestCreateSerializer(data=request.data)
+        serializer = MilkBankRequestCreateSerializer(
+            data=request.data, context={"pickup_required": collection_details_required(request)},
+        )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -302,6 +312,10 @@ class MilkBankRequestCreateView(APIView):
                 requested_bottles=data["requested_bottles"],
                 collection_method=data["collection_method"],
                 delivery_link=data["delivery_link"],
+                pickup_address=data["pickup_address"],
+                pickup_landmark=data["pickup_landmark"],
+                pickup_latitude=data["pickup_latitude"],
+                pickup_longitude=data["pickup_longitude"],
             )
             log_action(request.user, "booking.created", f"MilkBankRequest:{req.id}")
             notify(
@@ -400,14 +414,74 @@ class MilkBankRequestDetailView(generics.RetrieveAPIView):
 
 # --- Mother-side actions ---
 
+COLLECTION_LOCKED = (
+    "Your collection method can't be changed after your booking is confirmed. "
+    "Message the facility in Chat if something has changed."
+)
+
+
+def _collection_locked(req):
+    """Past Booking Confirmation, the way her milk reaches the facility is fixed:
+    the facility plans around it (and a Drop off has a shorter list of stages,
+    so changing the method then would move her)."""
+    return req.current_stage_index > req.stages.index("Booking Confirmation")
+
+
+def _delivery_link_error(link):
+    """Why a pasted courier link can't be used, or None."""
+    if not link:
+        return DELIVERY_LINK_REQUIRED
+    try:
+        URLValidator(schemes=["http", "https"])(link)
+    except DjangoValidationError:
+        return DELIVERY_LINK_INVALID
+    return None
+
+
+def _confirm_attendance(req, user):
+    """
+    Confirms her accepted booking: Scheduled, on to the next stage, and her
+    facility told. Raises InvalidTransition when it isn't waiting on her.
+
+    The one place both pathways confirm through -- a DONOR reaches
+    AWAITING_ATTENDANCE via StaffAcceptView, a RECIPIENT via
+    StaffAdvanceStageView's "Booking Confirmation" branch. This is what puts
+    her on the facility's next queue: Counseling and Testing, or -- a Drop off,
+    which confirms with its courier link and has no Counseling and Testing --
+    Breastmilk Collection straight away.
+    """
+    apply_transition(req, Status.SCHEDULED, user, "attendance_confirmed")
+    req.attendance_confirmed = True
+    req.current_stage_index += 1
+    req.save(update_fields=["attendance_confirmed", "current_stage_index"])
+    name = req.owner.mom_name or req.owner.email
+    if confirms_by_delivery_link(req):
+        title = "Delivery Link Sent"
+        body = (
+            f"{name} sent her courier's delivery link, so her drop off is confirmed "
+            f"and she is now on Breastmilk Collection."
+        )
+    else:
+        title = "Attendance Confirmed"
+        body = f"{name} confirmed she's coming for her \"{req.stages[req.current_stage_index]}\" appointment."
+    notify_many(
+        User.objects.filter(facility=req.allocated_facility, role=User.Role.FACILITY_STAFF, is_active=True),
+        title, body, NotificationItem.Category.BOOKINGS,
+    )
+
+
 class CollectionMethodView(generics.GenericAPIView):
     """
-    POST /milkbank/requests/<id>/collection-method/  {collection_method, delivery_link}
+    POST /milkbank/requests/<id>/collection-method/
+         {collection_method, delivery_link, pickup_address, pickup_landmark,
+          pickup_latitude, pickup_longitude}
 
-    Lets a donor change how her milk reaches the facility -- or paste a new
-    courier link -- while her booking is open and the milk has not been
-    collected yet. Past Breastmilk Collection the answer is history, so it
-    is locked. The facility sees the change on its next refresh.
+    Until her booking is confirmed, a donor can change how her milk reaches
+    the facility. A Drop off's courier link can be pasted any time once the
+    facility has accepted -- and pasting it while the booking waits on her IS
+    her confirmation. After confirmation the method is locked; only a Drop
+    off's link can still be replaced (a courier rebooked), until her milk is
+    collected. The facility sees changes on its next refresh.
     """
 
     queryset = MilkBankRequest.objects.all()
@@ -423,22 +497,69 @@ class CollectionMethodView(generics.GenericAPIView):
         collection_stage = req.stages.index("Breastmilk Collection")
         if req.current_stage_index > collection_stage:
             return Response({"detail": "Your milk has already been collected."}, status=400)
-        req.collection_method = request.data.get("collection_method", "")
-        serializer = self.get_serializer(data=request.data, context={"link_due": delivery_link_due(req)})
+
+        wanted = request.data.get("collection_method", "")
+        if _collection_locked(req):
+            if req.collection_method != Method.DROP_OFF or wanted != Method.DROP_OFF:
+                return Response({"detail": COLLECTION_LOCKED}, status=400)
+            link = str(request.data.get("delivery_link") or "").strip()
+            error = _delivery_link_error(link)
+            if error:
+                return Response({"delivery_link": [error]}, status=400)
+            req.delivery_link = link
+            req.save(update_fields=["delivery_link"])
+            log_action(request.user, "booking.delivery_link_changed", f"MilkBankRequest:{req.id}")
+            return Response(MilkBankRequestSerializer(req).data)
+
+        current_rules = collection_details_required(request)
+        before = req.collection_method
+        req.collection_method = wanted
+        serializer = self.get_serializer(data=request.data, context={
+            # An app this version asks for the link any time after acceptance;
+            # an older one only from the appointment hour.
+            "link_due": False if current_rules else delivery_link_due(req),
+            "pickup_required": current_rules,
+        })
         serializer.is_valid(raise_exception=True)
-        before = MilkBankRequest.objects.values_list("collection_method", flat=True).get(pk=req.pk)
-        req.collection_method = serializer.validated_data["collection_method"]
-        req.delivery_link = serializer.validated_data["delivery_link"]
-        req.save(update_fields=["collection_method", "delivery_link"])
+        data = serializer.validated_data
+        req.collection_method = data["collection_method"]
+        req.delivery_link = data["delivery_link"]
+        req.pickup_address = data["pickup_address"]
+        req.pickup_landmark = data["pickup_landmark"]
+        req.pickup_latitude = data["pickup_latitude"]
+        req.pickup_longitude = data["pickup_longitude"]
+        req.save(update_fields=[
+            "collection_method", "delivery_link",
+            "pickup_address", "pickup_landmark", "pickup_latitude", "pickup_longitude",
+        ])
         log_action(request.user, "booking.collection_method_changed", f"MilkBankRequest:{req.id}")
-        # A new way: tell her its steps (pasting the link alone needs no message).
+
+        confirm_now = (
+            current_rules and req.current_sub_status == Status.AWAITING_ATTENDANCE
+            and confirms_by_delivery_link(req) and bool(req.delivery_link)
+        )
         if req.collection_method != before:
-            notify_collection_steps(req)
+            # A Drop off's deadline differs from a confirmation's.
+            refresh_attendance_deadline(req)
+            # A new way: tell her its steps -- unless confirming right now
+            # sends them anyway (Scheduled does).
+            if not confirm_now:
+                notify_collection_steps(req)
+        if confirm_now:
+            try:
+                _confirm_attendance(req, request.user)
+            except InvalidTransition as exc:
+                return Response({"detail": str(exc)}, status=400)
         return Response(MilkBankRequestSerializer(req).data)
 
 
 class ConfirmAttendanceView(generics.GenericAPIView):
-    """POST /milkbank/requests/<id>/confirm-attendance/ -- mother confirms an accepted slot."""
+    """
+    POST /milkbank/requests/<id>/confirm-attendance/  {delivery_link for a Drop off}
+
+    The mother confirms her accepted booking. A Drop off confirms with its
+    courier's delivery link instead (required from this app version on).
+    """
 
     queryset = MilkBankRequest.objects.all()
     serializer_class = MilkBankRequestSerializer
@@ -447,28 +568,20 @@ class ConfirmAttendanceView(generics.GenericAPIView):
     @extend_schema(request=None)
     def post(self, request, pk):
         req = self.get_object()
+        link_required = confirms_by_delivery_link(req) and collection_details_required(request)
+        if link_required:
+            link = str(request.data.get("delivery_link") or "").strip()
+            error = _delivery_link_error(link)
+            if error:
+                return Response({"delivery_link": [error]}, status=400)
+            # Set before confirming, so the steps she is sent know it's in.
+            req.delivery_link = link
         try:
-            apply_transition(req, Status.SCHEDULED, request.user, "attendance_confirmed")
+            _confirm_attendance(req, request.user)
         except InvalidTransition as exc:
             return Response({"detail": str(exc)}, status=400)
-        req.attendance_confirmed = True
-        req.current_stage_index += 1
-        req.save(update_fields=["attendance_confirmed", "current_stage_index"])
-        # The one endpoint both pathways confirm attendance through --
-        # a DONOR reaches AWAITING_ATTENDANCE via StaffAcceptView, a
-        # RECIPIENT via StaffAdvanceStageView's "Booking Confirmation"
-        # branch, but either way THIS is where she actually says she's
-        # coming. Staff had no way to know that until she physically
-        # showed up -- this is what puts her on their Counseling and
-        # Testing / Results queue, not just an appointment they'd
-        # otherwise have to remember on their own.
-        notify_many(
-            User.objects.filter(facility=req.allocated_facility, role=User.Role.FACILITY_STAFF, is_active=True),
-            "Attendance Confirmed",
-            f"{req.owner.mom_name or req.owner.email} confirmed she's coming for her "
-            f"\"{req.stages[req.current_stage_index]}\" appointment.",
-            NotificationItem.Category.BOOKINGS,
-        )
+        if link_required:
+            req.save(update_fields=["delivery_link"])
         return Response(MilkBankRequestSerializer(req).data)
 
 
@@ -565,6 +678,9 @@ class AcceptCounterOfferView(generics.GenericAPIView):
             req.preferred_time = req.counter_offer_time
             req.current_stage_index = req.stages.index(target_stage)
             req.save(update_fields=["preferred_date", "preferred_time", "current_stage_index"])
+            # A Drop off waits for its courier link until after the NEW
+            # appointment time -- reckoned again now the date has moved.
+            refresh_attendance_deadline(req)
         return Response(MilkBankRequestSerializer(req).data)
 
 

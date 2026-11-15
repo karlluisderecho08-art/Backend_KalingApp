@@ -65,6 +65,15 @@ def purge_expired_data(now=None):
         )
     )
 
+    # Where a Pick up was collected -- her home, as a rule -- once the booking
+    # has been closed for the retention period. The booking stays.
+    pickup_cutoff = now - timedelta(days=settings.RETENTION_PICKUP_ADDRESS_DAYS)
+    counts["pickup_addresses"] = (
+        MilkBankRequest.objects.filter(closed_at__isnull=False, closed_at__lt=pickup_cutoff)
+        .filter(~Q(pickup_address="") | ~Q(pickup_landmark="") | Q(pickup_latitude__isnull=False))
+        .update(pickup_address="", pickup_landmark="", pickup_latitude=None, pickup_longitude=None)
+    )
+
     chat_cutoff = now - timedelta(days=settings.RETENTION_CHAT_DAYS)
     counts["chat_messages"] = ChatMessage.objects.filter(created_at__lt=chat_cutoff).delete()[0]
 

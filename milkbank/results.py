@@ -104,6 +104,12 @@ EXPIRED_MOTHER = (
     "Your attendance wasn't confirmed in time after the facility accepted your "
     "request, so it expired. Please submit a new request.",
 )
+# A Drop off confirms with the courier's delivery link instead of attendance.
+EXPIRED_DROP_OFF = (
+    "Request expired",
+    "No courier delivery link was sent in time after the facility accepted your "
+    "request, so it expired. Please submit a new request.",
+)
 
 
 def facility_note(req):
@@ -150,7 +156,12 @@ def mother_result(req):
         waiting_on_her = (
             req.stages[req.current_stage_index] == "Booking Confirmation" and not req.attendance_confirmed
         )
-        title, message = EXPIRED_MOTHER if waiting_on_her else EXPIRED_FACILITY
+        if not waiting_on_her:
+            title, message = EXPIRED_FACILITY
+        elif req.request_type == MilkBankRequest.RequestType.DONOR and req.collection_method == MilkBankRequest.CollectionMethod.DROP_OFF:
+            title, message = EXPIRED_DROP_OFF
+        else:
+            title, message = EXPIRED_MOTHER
         return {"title": title, "message": message, "health_followup": False, "facility_note": ""}
 
     if req.current_sub_status == Status.COMPLETED:

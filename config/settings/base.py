@@ -178,12 +178,15 @@ APP_DOWNLOAD_URL = env("APP_DOWNLOAD_URL", default="https://github.com/karlluisd
 #   pending sign-ups       never verified, counted from the last code sent
 #   representative details a pickup representative's name, birthday and
 #                          number, counted from when the request closed
+#   pickup addresses       a Pick up's address, landmark and pin, counted
+#                          from when the request closed
 #   chat messages          Kali conversations
 #   audit log              who-did-what records
 # Serology photos are deleted together with their request or account
 # (milkbank/signals.py), not on a timer.
 RETENTION_PENDING_SIGNUP_HOURS = env.int("RETENTION_PENDING_SIGNUP_HOURS", default=24)
 RETENTION_REPRESENTATIVE_DAYS = env.int("RETENTION_REPRESENTATIVE_DAYS", default=7)
+RETENTION_PICKUP_ADDRESS_DAYS = env.int("RETENTION_PICKUP_ADDRESS_DAYS", default=7)
 RETENTION_CHAT_DAYS = env.int("RETENTION_CHAT_DAYS", default=90)
 RETENTION_AUDIT_DAYS = env.int("RETENTION_AUDIT_DAYS", default=365)
 

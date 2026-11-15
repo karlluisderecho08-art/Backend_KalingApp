@@ -7,7 +7,9 @@ from notifications.models import NotificationItem
 from notifications.services import notify
 
 from .business_hours import add_business_hours
-from .collection import notify_collection_steps, send_delivery_link_reminders
+from .collection import (
+    confirms_by_delivery_link, drop_off_link_deadline, notify_collection_steps, send_delivery_link_reminders,
+)
 from .models import Facility, MilkBankRequest, TransactionRecord
 
 Status = MilkBankRequest.Status
@@ -36,6 +38,34 @@ STATUS_NOTIFICATIONS = {
     Status.COUNTER_OFFERED: "The facility proposed a new date for your appointment.",
     Status.COMPLETED: "Your booking is complete. Thank you!",
 }
+# A Drop off donor confirms by pasting her courier's delivery link instead.
+DROP_OFF_ACCEPTED_NOTIFICATION = (
+    "The facility accepted your request. Book a courier for your appointment and paste its "
+    "delivery link in Booking Status. That confirms your booking."
+)
+
+
+def attendance_deadline(req, now=None):
+    """
+    When a request waiting on the mother (AWAITING_ATTENDANCE) expires: 8
+    business hours to confirm attendance -- or, for a Drop off, which she
+    confirms with the courier's link, usually on the day, until shortly after
+    her appointment time (collection.drop_off_link_deadline).
+    """
+    now = now or timezone.now()
+    if confirms_by_delivery_link(req):
+        deadline = drop_off_link_deadline(req, now)
+        if deadline is not None:
+            return deadline
+    return add_business_hours(now)
+
+
+def refresh_attendance_deadline(req):
+    """Re-reckon the deadline of a request already waiting on the mother -- after
+    its date or its collection method changed. Saves only that field."""
+    if req.current_sub_status == Status.AWAITING_ATTENDANCE:
+        req.response_deadline = attendance_deadline(req)
+        req.save(update_fields=["response_deadline"])
 
 # Which status a request is allowed to move to from each current status.
 # The roadmap mentions django-fsm as an option for this; a plain dict is
@@ -162,7 +192,12 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
         raise InvalidTransition(f"Cannot move from {req.current_sub_status} to {new_status}")
 
     req.current_sub_status = new_status
-    req.response_deadline = add_business_hours(timezone.now()) if new_status in STATUSES_WITH_SLA_CLOCK else None
+    if new_status == Status.AWAITING_ATTENDANCE:
+        req.response_deadline = attendance_deadline(req)
+    elif new_status in STATUSES_WITH_SLA_CLOCK:
+        req.response_deadline = add_business_hours(timezone.now())
+    else:
+        req.response_deadline = None
     update_fields = ["current_sub_status", "response_deadline"]
     # A final status starts the retention clock for the pickup
     # representative's details (core/retention.py).
@@ -175,6 +210,8 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
     log_action(actor, f"booking.{action_name}", f"MilkBankRequest:{req.id}")
 
     message = message_override or STATUS_NOTIFICATIONS.get(new_status)
+    if not message_override and new_status == Status.AWAITING_ATTENDANCE and confirms_by_delivery_link(req):
+        message = DROP_OFF_ACCEPTED_NOTIFICATION
     if message:
         notify(req.owner, f"Milk Bank Request: {req.get_current_sub_status_display()}", message, NotificationItem.Category.BOOKINGS)
     # Her appointment is now fixed: the steps for how her milk reaches the facility.
@@ -232,6 +269,10 @@ SLA_EXPIRY_MESSAGES = {
         "8 business hours of the facility's acceptance. Please submit a new request."
     ),
 }
+DROP_OFF_EXPIRY_MESSAGE = (
+    "Your request expired because no courier delivery link was sent by 2 hours after "
+    "your appointment time. Please submit a new request."
+)
 
 
 def sweep_expired_requests(now=None):
@@ -264,10 +305,13 @@ def sweep_expired_requests(now=None):
     expired = []
     for req in overdue:
         was_status = req.current_sub_status
+        message = SLA_EXPIRY_MESSAGES.get(was_status)
+        if was_status == Status.AWAITING_ATTENDANCE and confirms_by_delivery_link(req):
+            message = DROP_OFF_EXPIRY_MESSAGE
         try:
             apply_transition(
                 req, Status.EXPIRED, None, "expired_sla_timeout",
-                message_override=SLA_EXPIRY_MESSAGES.get(was_status),
+                message_override=message,
             )
         except InvalidTransition:
             # Another request in this same sweep (or a concurrent request

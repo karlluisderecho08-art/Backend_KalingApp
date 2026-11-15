@@ -43,6 +43,34 @@ def _resolve_bottles(attrs):
 DELIVERY_LINK_REQUIRED = "Paste the delivery booking link so the facility can track your courier."
 DELIVERY_LINK_INVALID = "Enter a full web link that starts with https://"
 
+PICKUP_PIN_REQUIRED = "Set your pickup pin: tap Use my current location where your milk will be picked up."
+PICKUP_PIN_OUTSIDE = "That pin is outside the Philippines. Set it again where your milk will be picked up."
+PICKUP_ADDRESS_REQUIRED = "Enter the complete address where your milk will be picked up."
+PICKUP_LANDMARK_REQUIRED = "Add a landmark so the facility can find you."
+
+# The first app version (versionCode) that asks for the pickup pin, address
+# and landmark. Older installs have no such fields, so a Pick up from them is
+# accepted without -- until APP_MIN_VERSION_CODE reaches this version, after
+# which every Pick up must carry them (see collection_details_required()).
+COLLECTION_DETAILS_FROM_VERSION = 6
+
+# A loose box around the Philippines -- a pin outside it is a GPS glitch or a
+# wrong place, never a real pickup for these facilities.
+_PH_LAT = (4.0, 21.5)
+_PH_LNG = (116.0, 127.0)
+
+
+def collection_details_required(request):
+    """Whether a Pick up from this request must carry its pin and address."""
+    from django.conf import settings
+
+    from core.versioning import client_version_code
+
+    return (
+        settings.APP_MIN_VERSION_CODE >= COLLECTION_DETAILS_FROM_VERSION
+        or (request is not None and client_version_code(request) >= COLLECTION_DETAILS_FROM_VERSION)
+    )
+
 
 def _collection_fields():
     """The two Breastmilk Collection fields, shared by the create and update shapes."""
@@ -54,15 +82,52 @@ def _collection_fields():
     )
 
 
-def _check_collection(attrs, link_due=False):
+def _pickup_fields():
+    """The Pick up location fields, shared by the create and update shapes."""
+    return (
+        serializers.CharField(max_length=300, required=False, allow_blank=True, default="", trim_whitespace=True),
+        serializers.CharField(max_length=200, required=False, allow_blank=True, default="", trim_whitespace=True),
+        serializers.FloatField(required=False, allow_null=True, default=None, min_value=-90, max_value=90),
+        serializers.FloatField(required=False, allow_null=True, default=None, min_value=-180, max_value=180),
+    )
+
+
+def _check_pickup(attrs, required):
+    """
+    A Pick up needs to say where: the pin from her phone, the complete address
+    and a landmark -- the facility goes there to collect the milk. Any other
+    method carries none of it (left over from switching away, it is cleared).
+    `required` is False only for an installed app too old to ask for them.
+    """
+    if attrs.get("collection_method") != MilkBankRequest.CollectionMethod.PICKUP:
+        attrs.update(pickup_address="", pickup_landmark="", pickup_latitude=None, pickup_longitude=None)
+        return attrs
+    lat, lng = attrs.get("pickup_latitude"), attrs.get("pickup_longitude")
+    if (lat is None) != (lng is None):
+        raise serializers.ValidationError({"pickup_latitude": PICKUP_PIN_REQUIRED})
+    if lat is not None and not (_PH_LAT[0] <= lat <= _PH_LAT[1] and _PH_LNG[0] <= lng <= _PH_LNG[1]):
+        raise serializers.ValidationError({"pickup_latitude": PICKUP_PIN_OUTSIDE})
+    if required:
+        if lat is None:
+            raise serializers.ValidationError({"pickup_latitude": PICKUP_PIN_REQUIRED})
+        if not attrs.get("pickup_address"):
+            raise serializers.ValidationError({"pickup_address": PICKUP_ADDRESS_REQUIRED})
+        if not attrs.get("pickup_landmark"):
+            raise serializers.ValidationError({"pickup_landmark": PICKUP_LANDMARK_REQUIRED})
+    return attrs
+
+
+def _check_collection(attrs, link_due=False, pickup_required=False):
     """
     A Drop Off goes by courier, so it needs the courier's booking link -- but
     only from the appointment's hour onward (`link_due`, milkbank/collection.py):
     a courier can't be booked before the milk is ready to leave. Any other
     method carries no link (one left over from switching away from Drop Off is
     cleared rather than kept). Only http(s) links are accepted -- the facility
-    dashboard opens this in a browser.
+    dashboard opens this in a browser. A Pick up needs its location instead
+    (_check_pickup).
     """
+    _check_pickup(attrs, pickup_required)
     if attrs.get("collection_method") != MilkBankRequest.CollectionMethod.DROP_OFF:
         attrs["delivery_link"] = ""
         return attrs
@@ -386,6 +451,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "has_cooler", "has_medical_abstract",
             "amount_ml", "completed_at", "requested_ml", "requested_bottles", "result",
             "closed_at", "representative_purged_at", "collection_method", "delivery_link",
+            "pickup_address", "pickup_landmark", "pickup_latitude", "pickup_longitude",
             "appointment_start_ms", "delivery_link_due",
         ]
         read_only_fields = [
@@ -397,6 +463,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "neonate_name", "clinic_info", "has_prescription_proof",
             "has_cooler", "has_medical_abstract", "requested_ml", "requested_bottles",
             "closed_at", "representative_purged_at", "collection_method", "delivery_link",
+            "pickup_address", "pickup_landmark", "pickup_latitude", "pickup_longitude",
         ]
 
     # When her appointment begins (epoch ms; null when its time can't be read),
@@ -471,6 +538,8 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
     # that predates the question can still book (the app itself requires a
     # choice); a Drop Off always needs its delivery link -- see _check_collection.
     collection_method, delivery_link = _collection_fields()
+    # Pick up only: where (see _check_pickup).
+    pickup_address, pickup_landmark, pickup_latitude, pickup_longitude = _pickup_fields()
 
     def validate(self, attrs):
         if attrs["request_type"] != MilkBankRequest.RequestType.RECIPIENT:
@@ -478,7 +547,7 @@ class MilkBankRequestCreateSerializer(serializers.Serializer):
             attrs["requested_bottles"] = None
         if attrs["request_type"] != MilkBankRequest.RequestType.DONOR:
             attrs["collection_method"] = ""
-        _check_collection(attrs)
+        _check_collection(attrs, pickup_required=self.context.get("pickup_required", False))
         return _resolve_bottles(attrs)
 
 
@@ -487,11 +556,16 @@ class CollectionMethodSerializer(serializers.Serializer):
     her booking is still open. Unlike on the form, a method is required."""
 
     collection_method, delivery_link = _collection_fields()
+    pickup_address, pickup_landmark, pickup_latitude, pickup_longitude = _pickup_fields()
 
     def validate(self, attrs):
         if not attrs.get("collection_method"):
             raise serializers.ValidationError({"collection_method": "Choose how your milk will reach the facility."})
-        return _check_collection(attrs, link_due=self.context.get("link_due", False))
+        return _check_collection(
+            attrs,
+            link_due=self.context.get("link_due", False),
+            pickup_required=self.context.get("pickup_required", False),
+        )
 
 
 class ProposeCounterOfferSerializer(serializers.Serializer):
