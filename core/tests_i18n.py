@@ -14,7 +14,7 @@ from django.core import mail
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from accounts.emails import send_password_reset_email, send_verification_email
+from accounts.emails import send_existing_account_notice, send_password_reset_email, send_verification_email
 from accounts.models import User
 from accounts.serializers import RegisterSerializer
 from chat.guardrail import OFF_TOPIC_RESPONSE, is_breastfeeding_topic
@@ -233,6 +233,22 @@ class EmailLanguageTests(TestCase):
         self.assertTrue(message.body.startswith("Kumusta, Rachel!"))
         self.assertIn(pending.code, message.body)
         self.assertIn("15 minuto", message.body)
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_existing_account_notice_in_tagalog_with_and_without_a_name(self):
+        named = User.objects.create_user(email="named@example.com", password="x", is_active=True, mom_name="Rachel")
+        unnamed = User.objects.create_user(email="unnamed@example.com", password="x", is_active=True)
+        send_existing_account_notice(named, tagalog=True)
+        send_existing_account_notice(unnamed, tagalog=True)
+        send_existing_account_notice(unnamed)
+        tl_named, tl_unnamed, english = mail.outbox
+        self.assertEqual(tl_named.subject, MESSAGES["Your KalingApp account"])
+        self.assertTrue(tl_named.body.startswith("Kumusta, Rachel!"))
+        self.assertTrue(tl_unnamed.body.startswith("Kumusta!\n"))
+        self.assertIn("walang nagbago sa iyong account", tl_unnamed.body)
+        self.assertEqual(english.subject, "Your KalingApp account")
+        self.assertTrue(english.body.startswith("Hi there,"))
+        self.assertNotIn("--", english.body + tl_named.body)
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     def test_reset_email_in_tagalog_and_english_by_default(self):

@@ -26,7 +26,7 @@ class Command(BaseCommand):
                 "title": "How to Breastfeed Correctly: Positioning and Latch",
                 "category": Article.Category.LATCHING,
                 "read_time": "2 min read",
-                "teaser": "The fundamentals of a comfortable, effective latch -- how to position your baby and recognize the signs that feeding is going well.",
+                "teaser": "The fundamentals of a comfortable, effective latch — how to position your baby and recognize the signs that feeding is going well.",
                 "author": "Adapted from UNICEF (unicef.org)",
                 "date": "August 2025",
                 "content": """Good breastfeeding starts with the right position and a good latch. Getting these two things right helps the baby feed effectively and keeps the mother comfortable.
@@ -53,7 +53,7 @@ Source: UNICEF India, "How to Breastfeed Correctly." https://www.unicef.org/indi
                 "title": "5 Common Breastfeeding Problems and How to Handle Them",
                 "category": Article.Category.LATCHING,
                 "read_time": "3 min read",
-                "teaser": "From latch trouble to low supply, engorgement, cracked nipples, and blocked ducts -- practical guidance for the most common breastfeeding challenges.",
+                "teaser": "From latch trouble to low supply, engorgement, cracked nipples, and blocked ducts — practical guidance for the most common breastfeeding challenges.",
                 "author": "Adapted from UNICEF (unicef.org)",
                 "date": "2026",
                 "content": """Breastfeeding is not always easy. It takes time and practice for both mother and baby, and many mothers run into challenges along the way. The good news is that most problems can be managed with the right support. If you are struggling, reach out to a midwife, lactation specialist, or health care provider.

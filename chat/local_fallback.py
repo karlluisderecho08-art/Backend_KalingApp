@@ -20,7 +20,7 @@ FALLBACK_RESPONSES = [
          "masakit", "sumasakit", "utong", "sugat", "pagkapit", "kumapit"),
         "A good latch means baby's mouth covers most of the areola, not just the "
         "nipple, with lips flanged outward. Pain that continues throughout a feed "
-        "usually means the latch needs adjusting -- breaking suction gently and "
+        "usually means the latch needs adjusting — breaking suction gently and "
         "relatching often helps. If pain persists, an IBCLC lactation consultant "
         "can check for tongue-tie or positioning issues in person.",
     ),
@@ -38,7 +38,7 @@ FALLBACK_RESPONSES = [
         ("storage", "store", "freeze", "frozen", "fridge", "freezer", "how long",
          "itabi", "maitatabi", "itatabi", "pagtatabi", "imbak", "ref", "gaano katagal"),
         "Freshly expressed milk is generally fine at room temperature for a few "
-        "hours, in the fridge for several days, and in a freezer for months -- "
+        "hours, in the fridge for several days, and in a freezer for months — "
         "always label with the date and use the oldest milk first. Thawed milk "
         "shouldn't be refrozen. WHO/AAP guidance has the specific time windows if "
         "you need exact numbers for your storage method.",
@@ -55,14 +55,14 @@ FALLBACK_RESPONSES = [
         ("hello", "hi", "hey", "good morning", "good afternoon", "good evening",
          "kumusta", "kamusta", "magandang umaga", "magandang hapon", "magandang gabi"),
         "Hi, I'm Kali! I'm here to help with breastfeeding and lactation "
-        "questions -- latching, milk supply, storage, or donor milk. What's on "
+        "questions — latching, milk supply, storage, or donor milk. What's on "
         "your mind?",
     ),
 ]
 
 GENERIC_FALLBACK_RESPONSE = (
     "I'm currently running on offline mode and can't reach my full knowledge "
-    "base, but I'm still here to help with breastfeeding basics -- latching, "
+    "base, but I'm still here to help with breastfeeding basics — latching, "
     "milk supply, storage, or donation. Could you tell me a bit more about what "
     "you're looking for?"
 )

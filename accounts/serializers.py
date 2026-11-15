@@ -3,7 +3,6 @@ from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from . import lockout
-from .legacy_signups import email_is_taken
 from .models import PendingRegistration, User
 
 
@@ -72,16 +71,11 @@ class RegisterSerializer(serializers.Serializer):
     baby_name = serializers.CharField(required=False, allow_blank=True, max_length=150)
 
     def validate_email(self, value):
-        value = value.strip().lower()
-        # Any existing account blocks the address -- active or deactivated.
-        # A deactivated mother signing up again must not get a fresh account
-        # (that would undo the deactivation and erase her history). The one
-        # exception is an abandoned signup from before verification existed,
-        # which nothing can verify any more; VerifyEmailView clears it when
-        # the replacement account is created. See accounts/legacy_signups.py.
-        if email_is_taken(value):
-            raise serializers.ValidationError("An account with this email already exists.")
-        return value
+        # Whether the address already has an account is decided in
+        # RegisterView, not here: refusing it with "An account with this email
+        # already exists" told anyone who asked which addresses have
+        # KalingApp accounts.
+        return value.strip().lower()
 
     def create(self, validated_data):
         email = validated_data["email"]

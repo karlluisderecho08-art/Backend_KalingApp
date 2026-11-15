@@ -168,13 +168,15 @@ class RegistrationAndVerificationTests(ThrottleIsolatedTestCase):
         pending = PendingRegistration.objects.get(email="mother@example.com")
         self.assertEqual(pending.baby_name, "James")
 
-    def test_register_rejects_an_email_that_already_has_an_account(self):
+    def test_register_starts_nothing_for_an_email_that_already_has_an_account(self):
+        # Answered like any signup (see SignupDoesNotRevealAccountsTests), but
+        # no pending signup is made, so no code can turn it into an account.
         User.objects.create_user(email="mother@example.com", password="x", is_active=True)
 
         response = self.register()
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("email", response.data)
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(PendingRegistration.objects.filter(email="mother@example.com").exists())
 
     def test_a_legacy_unverified_account_does_not_lock_the_address_out(self):
         """
@@ -1169,3 +1171,102 @@ class StaffPasswordResetTests(ThrottleIsolatedTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["detail"], "Incorrect reset code.")
+
+
+class ServerSideLogoutTests(ThrottleIsolatedTestCase):
+    """POST /auth/logout/ revokes the refresh token on the server."""
+
+    def setUp(self):
+        super().setUp()
+        User.objects.create_user(email="mother@example.com", password="her-password-2026", is_active=True)
+
+    def sign_in(self):
+        response = self.client.post("/auth/login/", {"email": "mother@example.com", "password": "her-password-2026"})
+        self.assertEqual(response.status_code, 200)
+        return response.data
+
+    def refresh(self, token):
+        return self.client.post("/auth/refresh/", {"refresh": token})
+
+    def test_a_signed_out_refresh_token_never_works_again(self):
+        tokens = self.sign_in()
+        self.assertEqual(self.refresh(tokens["refresh"]).status_code, 200)
+
+        self.assertEqual(self.client.post("/auth/logout/", {"refresh": tokens["refresh"]}).status_code, 204)
+
+        self.assertEqual(self.refresh(tokens["refresh"]).status_code, 401)
+
+    def test_only_that_device_is_signed_out(self):
+        phone, laptop = self.sign_in(), self.sign_in()
+        self.client.post("/auth/logout/", {"refresh": phone["refresh"]})
+        self.assertEqual(self.refresh(laptop["refresh"]).status_code, 200)
+
+    def test_an_expired_access_token_in_the_header_does_not_stop_it(self):
+        tokens = self.sign_in()
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer not-a-valid-access-token")
+        response = self.client.post("/auth/logout/", {"refresh": tokens["refresh"]})
+        self.client.credentials()
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.refresh(tokens["refresh"]).status_code, 401)
+
+    def test_nothing_to_revoke_is_still_a_clean_answer(self):
+        tokens = self.sign_in()
+        for body in ({}, {"refresh": "garbage"}, {"refresh": tokens["access"]}):
+            with self.subTest(body=body):
+                self.assertEqual(self.client.post("/auth/logout/", body, format="json").status_code, 204)
+        self.client.post("/auth/logout/", {"refresh": tokens["refresh"]})
+        self.assertEqual(self.client.post("/auth/logout/", {"refresh": tokens["refresh"]}).status_code, 204)
+
+
+class SignupDoesNotRevealAccountsTests(ThrottleIsolatedTestCase):
+    """
+    POST /auth/register/ answers an address that already has an account
+    exactly as it answers a new one, so it can't be used to find out who has
+    a KalingApp account. The owner of the address is emailed instead.
+    """
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch("accounts.views.threading.Thread", new=_SynchronousThread)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.owner = User.objects.create_user(
+            email="taken@example.com", password="her-own-password", is_active=True, mom_name="Lea",
+        )
+
+    def register(self, email):
+        return self.client.post("/auth/register/", {
+            "email": email, "password": "correct-horse-battery-staple", "mom_name": "Someone",
+        })
+
+    def test_a_taken_address_is_answered_like_a_new_one(self):
+        taken = self.register("taken@example.com")
+        new = self.register("brand-new@example.com")
+
+        self.assertEqual(taken.status_code, new.status_code)
+        self.assertEqual(taken.data["detail"], new.data["detail"])
+        self.assertEqual(set(taken.data), set(new.data))
+
+    def test_no_signup_starts_and_the_account_is_untouched(self):
+        self.register("TAKEN@example.com")
+
+        self.assertFalse(PendingRegistration.objects.filter(email__iexact="taken@example.com").exists())
+        self.owner.refresh_from_db()
+        self.assertTrue(self.owner.check_password("her-own-password"))
+        self.assertEqual(self.owner.mom_name, "Lea")
+
+    def test_the_owner_is_told_once_an_hour_and_gets_no_code(self):
+        self.register("taken@example.com")
+        self.register("taken@example.com")
+
+        notices = [m for m in mail.outbox if m.to == ["taken@example.com"]]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0].subject, "Your KalingApp account")
+        self.assertTrue(notices[0].body.startswith("Hi Lea,"))
+        self.assertIn("no new one was made", notices[0].body)
+        self.assertNotRegex(notices[0].body, r"\b\d{6}\b")
+
+    def test_a_new_address_still_gets_its_code(self):
+        self.register("brand-new@example.com")
+        pending = PendingRegistration.objects.get(email="brand-new@example.com")
+        self.assertIn(pending.code, mail.outbox[-1].body)

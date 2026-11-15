@@ -154,29 +154,36 @@ class SignupNeverReplacesAnAccountTests(ThrottleIsolationMixin, APITestCase):
     def register(self, email):
         return self.client.post("/auth/register/", {"email": email, "password": PASSWORD})
 
+    def assertRefusedQuietly(self, email):
+        # Answered exactly like a new address -- so signing up can't be used to
+        # find out which addresses have accounts -- but no signup is started.
+        response = self.register(email)
+        self.assertEqual(response.status_code, 201)
+        self.assertFalse(PendingRegistration.objects.filter(email__iexact=email).exists())
+
     def test_a_deactivated_verified_mother_cannot_sign_up_again(self):
         mother = User.objects.create_user(email="banned@example.com", password="x", email_verified=True)
         User.objects.filter(pk=mother.pk).update(is_active=False)
-        self.assertEqual(self.register("banned@example.com").status_code, 400)
+        self.assertRefusedQuietly("banned@example.com")
         self.assertTrue(User.objects.filter(pk=mother.pk).exists())
 
     def test_a_deactivated_older_account_with_history_is_kept(self):
         # From before email verification existed: never verified, but used.
         mother = User.objects.create_user(email="old@example.com", password="x", is_active=False)
         make_request(mother, make_facility())
-        self.assertEqual(self.register("old@example.com").status_code, 400)
+        self.assertRefusedQuietly("old@example.com")
         self.assertTrue(User.objects.filter(pk=mother.pk).exists())
 
     def test_a_deactivation_on_record_keeps_even_an_empty_account(self):
         mother = User.objects.create_user(email="empty@example.com", password="x", is_active=False)
         log_action(None, "user.deactivated", f"User:{mother.id}")
-        self.assertEqual(self.register("empty@example.com").status_code, 400)
+        self.assertRefusedQuietly("empty@example.com")
 
     def test_deactivated_staff_are_never_replaced(self):
         staff = User.objects.create_user(
             email="oldstaff@example.com", password="x", is_active=False, role=User.Role.FACILITY_STAFF,
         )
-        self.assertEqual(self.register("oldstaff@example.com").status_code, 400)
+        self.assertRefusedQuietly("oldstaff@example.com")
         self.assertTrue(User.objects.filter(pk=staff.pk).exists())
 
     def test_verify_refuses_if_the_address_was_taken_meanwhile(self):

@@ -157,6 +157,38 @@ class AdminArticleSaveRepairsMarkersTests(APITestCase):
         self.assertEqual(fine.content, "Already **fine**.")
 
 
+class TeaserDashMigrationTests(APITestCase):
+    """0007: the two seeded teasers lose their "--", and only if still as seeded."""
+
+    def test_seeded_teasers_get_a_real_dash_and_edited_ones_are_left_alone(self):
+        migration = import_module("articles.migrations.0007_teaser_dashes")
+        (latch_title, latch_old), (problems_title, problems_old) = migration.TEASERS
+        seeded = make_article(title=latch_title, teaser=latch_old)
+        edited = make_article(title=problems_title, teaser="An admin rewrote this -- on purpose.")
+
+        migration.forwards(apps, None)
+
+        seeded.refresh_from_db()
+        edited.refresh_from_db()
+        self.assertNotIn("--", seeded.teaser)
+        self.assertIn("effective latch — how to position", seeded.teaser)
+        self.assertEqual(edited.teaser, "An admin rewrote this -- on purpose.")
+
+        migration.backwards(apps, None)
+        seeded.refresh_from_db()
+        self.assertEqual(seeded.teaser, latch_old)
+
+    def test_the_seed_and_the_migration_agree(self):
+        # A fresh database gets the seeded text, an existing one the migrated
+        # text -- they must be the same words.
+        from articles.management.commands import seed_articles
+
+        source = open(seed_articles.__file__, encoding="utf-8").read()
+        migration = import_module("articles.migrations.0007_teaser_dashes")
+        for _title, old in migration.TEASERS:
+            self.assertIn(old.replace(" -- ", " — "), source)
+
+
 class AdminArticleDateAddedTests(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_user(

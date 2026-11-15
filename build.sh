@@ -27,6 +27,9 @@ python manage.py seed_facility_staff
 python manage.py ensure_admin
 python manage.py purge_expired_data
 python manage.py purge_orphaned_serology_files
+# Drops the record of every refresh token that has expired (and its revoked
+# entry, if signed out) -- see token_blacklist in settings. Idempotent.
+python manage.py flushexpiredtokens
 
 # Builds Kali's retrieval index over the knowledge base and embeds every
 # passage (see chat/retrieval.py). Must come after seed_articles, since

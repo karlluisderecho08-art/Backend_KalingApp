@@ -86,6 +86,6 @@ def is_breastfeeding_topic(text):
 
 OFF_TOPIC_RESPONSE = (
     "I'm Kali, and I'm here specifically to help with breastfeeding and lactation "
-    "questions. That question is outside what I can help with -- feel free to ask "
+    "questions. That question is outside what I can help with — feel free to ask "
     "me anything about latching, milk supply, storage, or donor milk instead."
 )

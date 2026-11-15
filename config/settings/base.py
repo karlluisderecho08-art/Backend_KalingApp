@@ -155,7 +155,7 @@ DJANGO_ADMIN_ENABLED = env.bool("DJANGO_ADMIN_ENABLED", default=False)
 # One product version for every part of KalingApp (backend, admin portal,
 # facility console, mother app). Bump it here, in both package.json files and
 # in the app's versionName together, and tag each repository v<version>.
-KALINGAPP_VERSION = "1.3.1"
+KALINGAPP_VERSION = "1.3.2"
 
 # What the mother app is told by GET /app/version/. An installed app whose
 # versionCode is below APP_MIN_VERSION_CODE is blocked until it updates
@@ -336,6 +336,10 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    # Every refresh token issued is recorded, so signing out (POST
+    # /auth/logout/) can revoke that one token for good -- see LogoutView.
+    # build.sh runs flushexpiredtokens on every deploy to drop expired rows.
+    "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
     "corsheaders",
     "core",

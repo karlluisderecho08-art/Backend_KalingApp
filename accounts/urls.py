@@ -11,6 +11,7 @@ from .views import (
     DemoLoginView,
     ForgotPasswordView,
     LocationConsentView,
+    LogoutView,
     MeView,
     RegisterView,
     ResendVerificationView,
@@ -35,6 +36,7 @@ urlpatterns = [
     # authenticate an unverified (is_active=False) account here.
     path("login/", ThrottledTokenObtainPairView.as_view(), name="login"),
     path("refresh/", CheckedTokenRefreshView.as_view(), name="token_refresh"),
+    path("logout/", LogoutView.as_view(), name="logout"),
     path("demo-login/", DemoLoginView.as_view(), name="demo_login"),
     path("me/", MeView.as_view(), name="me"),
     path("me/delete/", DeleteMyAccountView.as_view(), name="me-delete"),

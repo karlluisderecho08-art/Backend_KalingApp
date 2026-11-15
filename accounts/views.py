@@ -1,9 +1,12 @@
+import hashlib
 import logging
 import threading
 from datetime import timedelta
 
 from django.conf import settings
+from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import update_last_login
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import F
 from django.http import Http404
@@ -13,6 +16,7 @@ from rest_framework import generics, permissions, serializers
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
@@ -33,6 +37,7 @@ from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
     RESEND_COOLDOWN_SECONDS,
     VERIFICATION_CODE_TTL_MINUTES,
+    send_existing_account_notice,
     send_password_reset_email,
     send_verification_email,
 )
@@ -78,6 +83,11 @@ def _send_verification_email_in_background(pending, tagalog=False):
 def _send_password_reset_email_in_background(user, tagalog=False):
     """Same fire-and-forget reasoning as _send_verification_email_in_background above."""
     _send_in_background(send_password_reset_email, user, "password_reset", tagalog)
+
+
+def _send_existing_account_notice_in_background(user, tagalog=False):
+    """Same fire-and-forget reasoning as _send_verification_email_in_background above."""
+    _send_in_background(send_existing_account_notice, user, "existing_account_notice", tagalog)
 
 
 def _send_in_background(send_func, recipient, kind, tagalog=False):
@@ -171,6 +181,41 @@ class CheckedTokenRefreshView(TokenRefreshView):
     """POST /auth/refresh/ -- see CheckedTokenRefreshSerializer."""
 
     serializer_class = CheckedTokenRefreshSerializer
+
+
+class LogoutView(APIView):
+    """
+    POST /auth/logout/  {refresh}
+
+    Signs this device out on the server as well: its refresh token goes on
+    the blacklist (simplejwt's token_blacklist app), so it can never be
+    traded for a new access token again -- not even by someone who copied
+    it. Signing out used to only forget the tokens on the device, and a
+    copied refresh token kept working until it expired. The access token
+    that goes with it is short-lived and runs out within minutes.
+
+    Always answers 204: a token that is malformed, expired or already
+    revoked has nothing left to revoke, and the client signs out locally
+    either way. No authentication is required or read -- the refresh token
+    is the proof -- so an expired access token in the header can't make
+    signing out fail.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    @extend_schema(
+        request=inline_serializer("Logout", {"refresh": serializers.CharField()}),
+        responses={204: None},
+    )
+    def post(self, request):
+        token = request.data.get("refresh")
+        if isinstance(token, str) and token:
+            try:
+                RefreshToken(token).blacklist()
+            except TokenError:
+                pass
+        return Response(status=204)
 
 
 class ThrottledTokenObtainPairView(TokenObtainPairView):
@@ -268,6 +313,18 @@ class RegisterView(generics.CreateAPIView):
     Response shape is unchanged from when this did create an inactive
     account, so the mobile client needs no changes: it still shows the
     "enter your code" screen next.
+
+    An address that already has an account gets the very same answer, as
+    fast: no signup is started, and its owner is emailed instead (at most
+    once an hour). It used to be refused with "An account with this email
+    already exists", which let anyone find out who has a KalingApp account
+    -- a mother of a newborn, a facility's staff login -- one address at a
+    time. An existing account is never replaced either way: a deactivated
+    mother must not get a fresh one (that would undo the deactivation and
+    erase her history). The one exception is an abandoned signup from
+    before verification existed, which nothing can verify any more;
+    VerifyEmailView clears it when the replacement account is created. See
+    accounts/legacy_signups.py.
     """
 
     serializer_class = RegisterSerializer
@@ -275,9 +332,36 @@ class RegisterView(generics.CreateAPIView):
     throttle_scope = "register"
     throttle_classes = [ClientIPScopedRateThrottle]
 
+    # How long one address's owner hears about signup attempts only once, so
+    # signing up with someone else's address can't flood their inbox.
+    EXISTING_NOTICE_SECONDS = 60 * 60
+
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+        answer = Response({
+            "detail": "Account created. Check your email for a 6-digit verification code.",
+            "email": email,
+        }, status=201)
+
+        owner = next(
+            (user for user in User.objects.filter(email__iexact=email) if not is_abandoned_legacy_signup(user)),
+            None,
+        )
+        if owner is not None:
+            # The password is hashed all the same and thrown away: a new
+            # address spends seconds on it, and answering this one at once
+            # would tell the two apart just by how long the reply took.
+            make_password(serializer.validated_data["password"])
+            notice_key = "signup-existing-notice:" + hashlib.sha256(email.encode()).hexdigest()
+            if cache.add(notice_key, True, self.EXISTING_NOTICE_SECONDS):
+                threading.Thread(
+                    target=_send_existing_account_notice_in_background,
+                    args=(owner, wants_tagalog(request)), daemon=True,
+                ).start()
+            return answer
+
         pending = serializer.save()
 
         # Fire-and-forget: the pending row above is already committed,
@@ -286,10 +370,7 @@ class RegisterView(generics.CreateAPIView):
         # docstring for why this can't just be a try/except here.
         threading.Thread(target=_send_verification_email_in_background, args=(pending, wants_tagalog(request)), daemon=True).start()
 
-        return Response({
-            "detail": "Account created. Check your email for a 6-digit verification code.",
-            "email": pending.email,
-        }, status=201)
+        return answer
 
 
 class VerifyEmailView(APIView):

@@ -130,7 +130,7 @@ def _allocation_error_response(exc):
         # covers it without naming which internal filter rejected her,
         # which is not something a mother can act on anyway.
         return Response(
-            {"detail": "No facility is available right now -- they're either closed or fully booked. Please try again later."},
+            {"detail": "No facility is available right now — they're either closed or fully booked. Please try again later."},
             status=404,
         )
     if isinstance(exc, DayFullyBooked):
@@ -162,7 +162,7 @@ def _allocation_error_response(exc):
         return Response({
             "detail": (
                 f"No milk bank currently holds that much milk. The most available right now is "
-                f"{exc.max_available_ml} mL -- please request that amount or less."
+                f"{exc.max_available_ml} mL — please request that amount or less."
             ),
             "max_available_ml": exc.max_available_ml,
         }, status=400)
@@ -1065,7 +1065,7 @@ class StaffConfirmCompletionView(generics.GenericAPIView):
             if req.request_type == MilkBankRequest.RequestType.RECIPIENT and facility.stock_level_ml < amount_ml:
                 return Response(
                     {"detail": f"{facility.name} only has "
-                               f"{facility.stock_level_ml} mL in stock -- not enough to dispense "
+                               f"{facility.stock_level_ml} mL in stock — not enough to dispense "
                                f"{amount_ml} mL."},
                     status=400,
                 )

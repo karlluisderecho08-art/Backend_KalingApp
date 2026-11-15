@@ -37,6 +37,13 @@ Fewer entries than that means there were fewer proxies than expected
 (local development, tests), and the leftmost entry is then the best
 there is.
 
+Checked against production on 2026-11-16, over one connection to
+/auth/forgot-password/ (3 a minute): plain requests got 3 answers then
+429s, and so did requests faking X-Forwarded-For -- a new address each
+time, or a whole made-up chain. True-Client-IP and X-Real-IP reach the app
+but are never read here. A CF-Connecting-IP sent by a caller is refused by
+the edge (Cloudflare) with a 403 before it gets here.
+
 Every limit here also counts requests that arrive at the same moment
 (_CountsParallelRequestsMixin) -- the server answers several at once
 (gunicorn.conf.py), and DRF's count is a read followed by a write.
