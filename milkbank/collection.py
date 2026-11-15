@@ -155,8 +155,17 @@ def send_delivery_link_reminders(now=None):
         key = f"{_appointment_day(req).isoformat()} {req.preferred_time}"
         if req.delivery_reminder_for == key or not delivery_link_due(req, now):
             continue
-        notify(req.owner, REMINDER_TITLE, REMINDER_BODY.format(time=req.preferred_time), NotificationItem.Category.BOOKINGS)
+        # Claimed before it is sent: every page load runs this sweep, and the
+        # server answers several at once (gunicorn.conf.py), so two sweeps can
+        # both find her unreminded. Only the one whose UPDATE marks her gets
+        # to send; the other finds her already marked and sends nothing.
+        claimed = (
+            MilkBankRequest.objects.filter(pk=req.pk).exclude(delivery_reminder_for=key)
+            .update(delivery_reminder_for=key)
+        )
+        if not claimed:
+            continue
         req.delivery_reminder_for = key
-        req.save(update_fields=["delivery_reminder_for"])
+        notify(req.owner, REMINDER_TITLE, REMINDER_BODY.format(time=req.preferred_time), NotificationItem.Category.BOOKINGS)
         reminded.append(req)
     return reminded

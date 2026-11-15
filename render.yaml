@@ -42,11 +42,15 @@ services:
     runtime: python
     plan: free
     buildCommand: ./build.sh
+    # Threads, worker type and timeout live in gunicorn.conf.py, which
+    # gunicorn reads by itself from the folder it starts in -- so they
+    # apply to the command set in Render's dashboard too, not only to this
+    # file (which this hand-made service never read; see the top).
+    #
     # --timeout 40, up from gunicorn's 30s default: a detailed Gemini
     # chat reply (chat/gemini_client.py, MAX_TOKENS=4000) can legitimately
-    # take close to 30s to generate, and gunicorn's default was killing
-    # the whole worker process mid-request when it did -- outside
-    # Python's control, so no try/except in the view could catch it.
+    # take close to 30s to generate, and under the old single-threaded
+    # worker gunicorn killed the whole process mid-request when it did.
     # gemini_client.py's own HTTP_TIMEOUT_MS (25s) stays under this, so a
     # call that's genuinely stuck (not just slow) still fails fast as a
     # catchable exception rather than relying on this as the only net.

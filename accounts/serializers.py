@@ -1,4 +1,5 @@
 from django.contrib.auth.hashers import make_password
+from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from . import lockout
@@ -95,12 +96,11 @@ class RegisterSerializer(serializers.Serializer):
         # email address out permanently -- and the replacement carries a
         # fresh code and attempt count, not leftover state from whatever
         # went wrong the first time.
-        PendingRegistration.objects.filter(email__iexact=email).delete()
-
+        #
         # No code or sent_at here on purpose -- send_verification_email()
         # owns those, and generating one in both places meant the row's
         # code could be replaced moments after this returned.
-        return PendingRegistration.objects.create(
+        fields = dict(
             email=email,
             # Hashed here, at the boundary -- the plaintext never reaches
             # the database, exactly as if this were a real account.
@@ -108,6 +108,19 @@ class RegisterSerializer(serializers.Serializer):
             mom_name=validated_data.get("mom_name", ""),
             baby_name=baby_name,
         )
+        # Two taps on Sign up now run side by side (gunicorn.conf.py), and
+        # both can get past the delete before either has made its row; the
+        # second then hits the unique email. It goes round once more and
+        # replaces the first one's row -- what happened when they ran one
+        # after the other -- instead of failing with a server error.
+        for last_try in (False, True):
+            try:
+                with transaction.atomic():
+                    PendingRegistration.objects.filter(email__iexact=email).delete()
+                    return PendingRegistration.objects.create(**fields)
+            except IntegrityError:
+                if last_try:
+                    raise
 
 
 class StaffUserListSerializer(serializers.ModelSerializer):

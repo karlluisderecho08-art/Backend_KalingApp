@@ -26,11 +26,11 @@ from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from accounts.models import User
 from core.audit import log_action
+from core.throttling import ClientIPScopedRateThrottle
 from milkbank.models import Facility, MilkBankRequest
 from milkbank.transitions import FINAL_STATUSES
 from notifications.models import NotificationItem
@@ -72,7 +72,7 @@ class _MessagingView(APIView):
     def get_throttles(self):
         throttles = super().get_throttles()
         if self.request.method == "POST":
-            throttles.append(ScopedRateThrottle())
+            throttles.append(ClientIPScopedRateThrottle())
         return throttles
 
     def finalize_response(self, request, response, *args, **kwargs):

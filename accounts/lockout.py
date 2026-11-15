@@ -13,8 +13,13 @@ The rule (kept here, in one place, so the app's wording and the tests agree):
     email), or an admin pressing Unlock clears everything.
   * Wrong passwords more than 24 hours apart don't add up: a count left
     behind by a slip last month must not lock her out on today's first typo.
+  * Password checks for one account happen one at a time
+    (one_attempt_at_a_time), so guesses sent all at once are counted, and
+    locked out, exactly as if they had been sent one after another.
 """
 
+import threading
+from contextlib import contextmanager
 from datetime import timedelta
 
 from django.utils import timezone
@@ -23,6 +28,34 @@ LOCK_THRESHOLD = 5
 BASE_LOCK = timedelta(minutes=1)
 MAX_LOCK = timedelta(hours=24)
 ATTEMPT_MEMORY = timedelta(hours=24)
+
+LOCKOUT_FIELDS = ["failed_login_attempts", "last_failed_login_at", "locked_until"]
+
+# The server answers several requests at once (gunicorn.conf.py). Without
+# this, ten guesses at one account sent together would all pass "is it
+# locked?" before any of them had been counted, and all ten passwords would be
+# checked -- where one after another, the sixth onwards is refused unchecked.
+# They would also each add one to the same stale count, and most of them would
+# vanish. Holding a lock per account from "is it locked?" to recording the
+# outcome restores one-after-another for that account, while different
+# accounts still sign in side by side.
+#
+# Striped over a fixed set of locks so memory stays bounded; two accounts that
+# share a stripe merely take turns. Covers one process only -- see
+# gunicorn.conf.py.
+_ACCOUNT_LOCKS = [threading.Lock() for _ in range(64)]
+
+
+@contextmanager
+def one_attempt_at_a_time(user):
+    """
+    Hold while checking a password for `user`: from the lock check to
+    register_failure() or clear(). Re-reads her lockout state once it's her
+    turn -- the copy loaded before waiting may be several attempts out of date.
+    """
+    with _ACCOUNT_LOCKS[user.pk % len(_ACCOUNT_LOCKS)]:
+        user.refresh_from_db(fields=LOCKOUT_FIELDS)
+        yield
 
 
 def lock_duration(failed_attempts):
@@ -61,7 +94,7 @@ def register_failure(user, now=None):
     user.last_failed_login_at = now
     duration = lock_duration(user.failed_login_attempts)
     user.locked_until = now + duration if duration else None
-    user.save(update_fields=["failed_login_attempts", "last_failed_login_at", "locked_until"])
+    user.save(update_fields=LOCKOUT_FIELDS)
     return user.failed_login_attempts, user.failed_login_attempts == LOCK_THRESHOLD
 
 
@@ -71,4 +104,4 @@ def clear(user):
         user.failed_login_attempts = 0
         user.last_failed_login_at = None
         user.locked_until = None
-        user.save(update_fields=["failed_login_attempts", "last_failed_login_at", "locked_until"])
+        user.save(update_fields=LOCKOUT_FIELDS)

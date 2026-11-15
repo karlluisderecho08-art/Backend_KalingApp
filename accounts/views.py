@@ -4,6 +4,8 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import update_last_login
+from django.db import transaction
+from django.db.models import F
 from django.http import Http404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -192,31 +194,36 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
 
         Only an account that exists and is active can be locked. Someone
         typing an unknown address just gets the ordinary 401 every time.
+
+        Sign-ins to one account are checked one at a time (see
+        lockout.one_attempt_at_a_time), so guesses sent all at once can't all
+        slip in before the lock.
         """
         email = str(request.data.get("email") or "").strip()
         user = User.objects.filter(email__iexact=email, is_active=True).first() if email else None
+        if user is None:
+            return super().post(request, *args, **kwargs)
 
-        if user and lockout.is_locked(user):
-            return self._locked_response(user)
+        with lockout.one_attempt_at_a_time(user):
+            if lockout.is_locked(user):
+                return self._locked_response(user)
 
-        try:
-            response = super().post(request, *args, **kwargs)
-        except AuthenticationFailed:
-            # simplejwt reports wrong credentials by raising, not by returning.
-            if user is None:
-                raise
-            attempts, newly_locked = lockout.register_failure(user)
-            if newly_locked:
-                self._tell_admins(user)
-            if not lockout.is_locked(user):
-                raise
-            log_action(None, "account.locked", f"User:{user.id} ({user.email}) after {attempts} failed sign-ins, "
-                                               f"until {user.locked_until.isoformat()}")
-            return self._locked_response(user)
+            try:
+                response = super().post(request, *args, **kwargs)
+            except AuthenticationFailed:
+                # simplejwt reports wrong credentials by raising, not by returning.
+                attempts, newly_locked = lockout.register_failure(user)
+                if newly_locked:
+                    self._tell_admins(user)
+                if not lockout.is_locked(user):
+                    raise
+                log_action(None, "account.locked", f"User:{user.id} ({user.email}) after {attempts} failed sign-ins, "
+                                                   f"until {user.locked_until.isoformat()}")
+                return self._locked_response(user)
 
-        if user is not None and response.status_code == 200:
-            lockout.clear(user)
-        return response
+            if response.status_code == 200:
+                lockout.clear(user)
+            return response
 
     @staticmethod
     def _tell_admins(user):
@@ -318,12 +325,18 @@ class VerifyEmailView(APIView):
         ):
             return Response({"detail": "This code has expired. Please request a new one."}, status=400)
 
-        if pending.attempts >= MAX_VERIFICATION_ATTEMPTS:
+        # The guess is counted BEFORE it is compared, in one UPDATE that only
+        # succeeds while guesses are left. Counting after a wrong guess (read
+        # the count, add one, save) let guesses sent all at once each read the
+        # same count: every one of them was compared, and most went uncounted.
+        # A right code uses up a guess too, which changes nothing -- the
+        # pending signup is deleted below.
+        if not PendingRegistration.objects.filter(
+            pk=pending.pk, attempts__lt=MAX_VERIFICATION_ATTEMPTS,
+        ).update(attempts=F("attempts") + 1):
             return Response({"detail": "Too many incorrect attempts. Please request a new code."}, status=400)
 
         if not code or not pending.code or code != pending.code:
-            pending.attempts += 1
-            pending.save(update_fields=["attempts"])
             return Response({"detail": "Incorrect verification code."}, status=400)
 
         # Checked again here, not only at signup: the address may have gained
@@ -332,8 +345,15 @@ class VerifyEmailView(APIView):
             pending.delete()
             return Response({"detail": "An account with this email already exists."}, status=400)
 
-        user = self._create_account(pending)
-        pending.delete()
+        with transaction.atomic():
+            # Claimed by deleting it. Two taps on Verify arriving together both
+            # get this far; only one of them deletes the pending signup, so only
+            # one account is made -- the other would have failed on the unique
+            # email with a server error. If making the account fails, the
+            # pending signup comes back with the rollback.
+            if not PendingRegistration.objects.filter(pk=pending.pk).delete()[0]:
+                return Response({"detail": "Invalid email, or this account is already verified."}, status=400)
+            user = self._create_account(pending)
 
         log_action(user, "account.email_verified", f"User:{user.id}")
 
@@ -467,18 +487,25 @@ class ResetPasswordView(APIView):
         ):
             return Response({"detail": "This code has expired. Please request a new one."}, status=400)
 
-        if user.password_reset_attempts >= MAX_VERIFICATION_ATTEMPTS:
+        # Counted before it is compared, in one UPDATE that only succeeds while
+        # guesses are left -- see VerifyEmailView. This is the code that lets
+        # someone set a new password on her account, so guesses sent all at
+        # once must not get more tries than guesses sent one at a time.
+        guesses_left = User.objects.filter(pk=user.pk, password_reset_attempts__lt=MAX_VERIFICATION_ATTEMPTS)
+        if not guesses_left.update(password_reset_attempts=F("password_reset_attempts") + 1):
             return Response({"detail": "Too many incorrect attempts. Please request a new code."}, status=400)
 
         if not code or not user.password_reset_code or code != user.password_reset_code:
-            user.password_reset_attempts += 1
-            user.save(update_fields=["password_reset_attempts"])
             return Response({"detail": "Incorrect reset code."}, status=400)
 
         # Same rule RegisterSerializer's password field enforces --
         # checked here, not there, since this never goes through that
         # serializer.
         if len(new_password) < 8:
+            # Her code was right, so this try doesn't count against her.
+            User.objects.filter(pk=user.pk, password_reset_attempts__gt=0).update(
+                password_reset_attempts=F("password_reset_attempts") - 1,
+            )
             return Response({"detail": "Password must be at least 8 characters."}, status=400)
 
         user.set_password(new_password)
@@ -826,15 +853,16 @@ class DeleteMyAccountView(APIView):
                 {"detail": "Staff and admin accounts can only be removed by a platform admin."},
                 status=403,
             )
-        if lockout.is_locked(user):
-            return ThrottledTokenObtainPairView._locked_response(user)
-
         password = request.data.get("password") or ""
-        if not user.check_password(password):
-            lockout.register_failure(user)
+        # One password check at a time for her account, the same as signing in.
+        with lockout.one_attempt_at_a_time(user):
             if lockout.is_locked(user):
                 return ThrottledTokenObtainPairView._locked_response(user)
-            return Response({"detail": "That password is incorrect.", "code": "wrong_password"}, status=400)
+            if not user.check_password(password):
+                lockout.register_failure(user)
+                if lockout.is_locked(user):
+                    return ThrottledTokenObtainPairView._locked_response(user)
+                return Response({"detail": "That password is incorrect.", "code": "wrong_password"}, status=400)
 
         open_statuses = [
             MilkBankRequest.Status.PENDING,

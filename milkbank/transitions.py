@@ -163,6 +163,27 @@ def delete_booking_chat(req):
     log_action(None, "messaging.booking_chat_deleted", f"MilkBankRequest:{req.id} ({count} messages)")
 
 
+STAGE_CHANGED = "This booking was just updated by someone else. Refresh the page and try again."
+
+
+def advance_stage(req):
+    """
+    Move a Scheduled booking on to its next phase, if it is still Scheduled
+    and still on the phase `req` was read with. Returns whether it moved.
+
+    Compare-and-set for the same reason as apply_transition: a double-click on
+    "next phase" sends two requests that now run side by side
+    (gunicorn.conf.py). Both would move it to the same next phase -- and both
+    tell her so. Only the first moves it now; the second is told it changed.
+    """
+    moved = MilkBankRequest.objects.filter(
+        pk=req.pk, current_sub_status=Status.SCHEDULED, current_stage_index=req.current_stage_index,
+    ).update(current_stage_index=F("current_stage_index") + 1)
+    if moved:
+        req.current_stage_index += 1
+    return bool(moved)
+
+
 def apply_transition(req, new_status, actor, action_name, message_override=None, amount_ml=None):
     """
     The one place a MilkBankRequest's status is ever allowed to change.
@@ -188,23 +209,39 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
     here would mean that check was bypassed, not that this function needs
     to re-guard it.
     """
-    if new_status not in ALLOWED_TRANSITIONS.get(req.current_sub_status, set()):
-        raise InvalidTransition(f"Cannot move from {req.current_sub_status} to {new_status}")
+    old_status = req.current_sub_status
+    if new_status not in ALLOWED_TRANSITIONS.get(old_status, set()):
+        raise InvalidTransition(f"Cannot move from {old_status} to {new_status}")
 
-    req.current_sub_status = new_status
     if new_status == Status.AWAITING_ATTENDANCE:
-        req.response_deadline = attendance_deadline(req)
+        deadline = attendance_deadline(req)
     elif new_status in STATUSES_WITH_SLA_CLOCK:
-        req.response_deadline = add_business_hours(timezone.now())
+        deadline = add_business_hours(timezone.now())
     else:
-        req.response_deadline = None
-    update_fields = ["current_sub_status", "response_deadline"]
+        deadline = None
+    changes = {"current_sub_status": new_status, "response_deadline": deadline}
     # A final status starts the retention clock for the pickup
     # representative's details (core/retention.py).
     if new_status in FINAL_STATUSES:
-        req.closed_at = timezone.now()
-        update_fields.append("closed_at")
-    req.save(update_fields=update_fields)
+        changes["closed_at"] = timezone.now()
+
+    # Compare-and-set, not a plain save: the status only changes if it is
+    # still the one `req` was read with. The server answers several requests
+    # at once (gunicorn.conf.py), so two can get here having read the same
+    # status -- staff double-clicking Complete, two dashboards sweeping the
+    # same overdue booking, a mother cancelling as staff accept. The database
+    # lets exactly one of them through; every other one is refused here, as
+    # the illegal move it now is, before any stock, total, record, chat or
+    # notification below has been touched. (Every caller changes the status
+    # before writing anything else, so a refused request has written nothing.)
+    if not MilkBankRequest.objects.filter(pk=req.pk, current_sub_status=old_status).update(**changes):
+        now_status = (
+            MilkBankRequest.objects.filter(pk=req.pk).values_list("current_sub_status", flat=True).first()
+        )
+        raise InvalidTransition(f"Cannot move from {now_status} to {new_status}")
+    for field, value in changes.items():
+        setattr(req, field, value)
+
     if new_status in FINAL_STATUSES:
         delete_booking_chat(req)
     log_action(actor, f"booking.{action_name}", f"MilkBankRequest:{req.id}")

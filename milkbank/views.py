@@ -59,7 +59,8 @@ from .serializers import (
     collection_details_required,
 )
 from .transitions import (
-    FINAL_STATUSES, InvalidTransition, apply_transition, refresh_attendance_deadline, sweep_expired_requests,
+    FINAL_STATUSES, STAGE_CHANGED, InvalidTransition, advance_stage, apply_transition, refresh_attendance_deadline,
+    sweep_expired_requests,
 )
 
 Status = MilkBankRequest.Status
@@ -254,6 +255,16 @@ class MilkBankRequestCreateView(APIView):
         # facility permanently one slot short for a booking that never
         # existed.
         with transaction.atomic():
+            # Her account row is locked until this booking is made, and the
+            # one-open-request rule asked again under that lock. A double tap on
+            # Book sends two requests that now run side by side
+            # (gunicorn.conf.py): both pass the check above before either has
+            # booked. With the lock the second waits, then finds the first
+            # booking here and is refused -- one booking, not two.
+            User.objects.select_for_update().filter(pk=request.user.pk).first()
+            if MilkBankRequest.objects.filter(owner=request.user, current_sub_status__in=open_statuses).exists():
+                return Response({"detail": "You already have an open request."}, status=400)
+
             # The ranking above was read a moment ago, and "a moment" is
             # long enough for another mother to take the last slot of her
             # day. So the slot is not assumed -- it is claimed: the
@@ -986,8 +997,8 @@ class StaffAdvanceStageView(generics.GenericAPIView):
             return Response({"detail": "Only a scheduled request can move between phases."}, status=400)
         if req.current_stage_index >= len(req.stages) - 1:
             return Response({"detail": "Already at the final phase."}, status=400)
-        req.current_stage_index += 1
-        req.save(update_fields=["current_stage_index"])
+        if not advance_stage(req):
+            return Response({"detail": STAGE_CHANGED}, status=409)
 
         # "Booking Confirmation" is by definition the stage where the ball
         # is in the mother's court. Landing on it while still SCHEDULED
@@ -1045,21 +1056,26 @@ class StaffConfirmCompletionView(generics.GenericAPIView):
         serializer.is_valid(raise_exception=True)
         amount_ml = serializer.validated_data["amount_ml"]
 
-        if req.request_type == MilkBankRequest.RequestType.RECIPIENT:
-            if req.allocated_facility.stock_level_ml < amount_ml:
+        with transaction.atomic():
+            # The facility's row is locked and its stock read fresh, until this
+            # completion is saved. Requests run side by side (gunicorn.conf.py),
+            # so two dispensings from one facility could otherwise both pass
+            # the stock check on the same figure and take it below zero.
+            facility = Facility.objects.select_for_update().get(pk=req.allocated_facility_id)
+            if req.request_type == MilkBankRequest.RequestType.RECIPIENT and facility.stock_level_ml < amount_ml:
                 return Response(
-                    {"detail": f"{req.allocated_facility.name} only has "
-                               f"{req.allocated_facility.stock_level_ml} mL in stock -- not enough to dispense "
+                    {"detail": f"{facility.name} only has "
+                               f"{facility.stock_level_ml} mL in stock -- not enough to dispense "
                                f"{amount_ml} mL."},
                     status=400,
                 )
 
-        try:
-            apply_transition(req, Status.COMPLETED, request.user, "completed", amount_ml=amount_ml)
-        except InvalidTransition as exc:
-            return Response({"detail": str(exc)}, status=400)
-        req.current_stage_index = len(req.stages) - 1
-        req.save(update_fields=["current_stage_index"])
+            try:
+                apply_transition(req, Status.COMPLETED, request.user, "completed", amount_ml=amount_ml)
+            except InvalidTransition as exc:
+                return Response({"detail": str(exc)}, status=400)
+            req.current_stage_index = len(req.stages) - 1
+            req.save(update_fields=["current_stage_index"])
         return Response(MilkBankRequestSerializer(req).data)
 
 

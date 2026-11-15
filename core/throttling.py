@@ -36,10 +36,57 @@ from the end:
 Fewer entries than that means there were fewer proxies than expected
 (local development, tests), and the leftmost entry is then the best
 there is.
+
+Every limit here also counts requests that arrive at the same moment
+(_CountsParallelRequestsMixin) -- the server answers several at once
+(gunicorn.conf.py), and DRF's count is a read followed by a write.
 """
+
+import threading
+import zlib
 
 from django.conf import settings
 from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle, UserRateThrottle
+
+# DRF counts a caller's requests by reading their history from the cache and
+# writing it back with the new one added: two steps. While the server answered
+# one request at a time nothing could come between them. With several threads,
+# requests from one caller arriving together could each read the same history
+# and each write back only its own addition -- so a burst of parallel sign-in
+# attempts went partly uncounted and could get past the limit. A lock per cache
+# key, held from that read to that write, makes them one step again.
+#
+# Striped over a fixed set of locks, so memory stays bounded however many
+# callers there are; two keys that share a stripe merely take turns, for the
+# few milliseconds a cache read and write take. These locks cover one process
+# only -- see gunicorn.conf.py for why that is enough, and what to change
+# before running more than one.
+_KEY_LOCKS = [threading.Lock() for _ in range(64)]
+
+
+class _CountsParallelRequestsMixin:
+    def allow_request(self, request, view):
+        self._held_lock = None
+        try:
+            return super().allow_request(request, view)
+        finally:
+            if self._held_lock is not None:
+                self._held_lock.release()
+                self._held_lock = None
+
+    def get_cache_key(self, request, view):
+        # SimpleRateThrottle.allow_request asks for the key just before it reads
+        # the history, and saves the history (throttle_success) or gives up
+        # (throttle_failure) before returning -- so the lock taken here spans
+        # exactly that read and write, and allow_request above releases it.
+        # A throttle instance is made per request, and DRF checks one throttle
+        # after another, so one thread never holds two of these at once.
+        key = super().get_cache_key(request, view)
+        if key is not None:
+            lock = _KEY_LOCKS[zlib.crc32(key.encode()) % len(_KEY_LOCKS)]
+            lock.acquire()
+            self._held_lock = lock
+        return key
 
 
 def client_ip(request):
@@ -58,21 +105,29 @@ class _ClientIPIdentMixin:
         return client_ip(request)
 
 
-class ClientIPScopedRateThrottle(_ClientIPIdentMixin, ScopedRateThrottle):
+class ClientIPScopedRateThrottle(_CountsParallelRequestsMixin, _ClientIPIdentMixin, ScopedRateThrottle):
     """ScopedRateThrottle that buckets by originating client, not by proxy path."""
 
 
-class ClientIPAnonRateThrottle(_ClientIPIdentMixin, AnonRateThrottle):
+class ClientIPAnonRateThrottle(_CountsParallelRequestsMixin, _ClientIPIdentMixin, AnonRateThrottle):
     """AnonRateThrottle with the same correction, for the global default."""
 
 
-class ChatBurstThrottle(UserRateThrottle):
+class AccountRateThrottle(_CountsParallelRequestsMixin, _ClientIPIdentMixin, UserRateThrottle):
+    """
+    Requests per minute, per signed-in account (settings: user) -- the global
+    default. A request with no account falls back to its client address, read
+    the same proxy-proof way as above.
+    """
+
+
+class ChatBurstThrottle(AccountRateThrottle):
     """Kali messages per minute, per account (settings: chat_burst)."""
 
     scope = "chat_burst"
 
 
-class ChatDailyThrottle(UserRateThrottle):
+class ChatDailyThrottle(AccountRateThrottle):
     """Kali messages per day, per account (settings: chat_daily)."""
 
     scope = "chat_daily"

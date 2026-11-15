@@ -570,7 +570,7 @@ REST_FRAMEWORK = {
     # blunt abuse limits, not usage quotas.
     "DEFAULT_THROTTLE_CLASSES": (
         "core.throttling.ClientIPAnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
+        "core.throttling.AccountRateThrottle",
     ),
     "DEFAULT_THROTTLE_RATES": {
         "anon": "60/min",
