@@ -1004,3 +1004,111 @@ class SignInLockoutTests(ThrottleIsolatedTestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertTrue(lockout.is_locked(self.refresh()))
+
+
+class AdminSetStaffPasswordTests(ThrottleIsolatedTestCase):
+    """
+    POST /auth/admin/users/<id>/set-password/ -- the admin portal's "Set new
+    password" for a facility staff account.
+    """
+
+    OLD = "Old-Staff-Password-2026"
+    NEW = "Bagong-Password-PGH-2026"
+
+    def setUp(self):
+        super().setUp()
+        self.staff = User.objects.create_user(
+            email="staff@example.com", password=self.OLD, is_active=True, role=User.Role.FACILITY_STAFF,
+        )
+        self.mother = User.objects.create_user(email="mother@example.com", password=self.OLD, is_active=True)
+        self.admin = User.objects.create_superuser(email="admin@example.com", password=self.OLD)
+
+    def set_password(self, user, password, as_user=None):
+        self.client.force_authenticate(as_user or self.admin)
+        response = self.client.post(f"/auth/admin/users/{user.pk}/set-password/", {"new_password": password})
+        self.client.force_authenticate(None)
+        return response
+
+    def sign_in(self, password):
+        return self.client.post("/auth/login/", {"email": "staff@example.com", "password": password})
+
+    def test_the_new_password_works_and_the_old_one_stops(self):
+        response = self.set_password(self.staff, self.NEW)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["email"], "staff@example.com")
+        self.assertNotIn("password", response.data)
+        self.assertEqual(self.sign_in(self.NEW).status_code, 200)
+        self.assertEqual(self.sign_in(self.OLD).status_code, 401)
+
+    def test_it_signs_the_account_out_everywhere(self):
+        tokens = self.sign_in(self.OLD).data
+        self.set_password(self.staff, self.NEW)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+        self.assertEqual(self.client.get("/auth/me/").status_code, 401)
+        self.client.credentials()
+        self.assertEqual(self.client.post("/auth/refresh/", {"refresh": tokens["refresh"]}).status_code, 401)
+
+    def test_it_lifts_a_lockout_and_voids_an_outstanding_reset_code(self):
+        User.objects.filter(pk=self.staff.pk).update(
+            failed_login_attempts=7, locked_until=timezone.now() + timedelta(hours=1),
+            last_failed_login_at=timezone.now(),
+            password_reset_code="123456", password_reset_sent_at=timezone.now(), password_reset_attempts=2,
+        )
+
+        self.assertEqual(self.set_password(self.staff, self.NEW).status_code, 200)
+
+        staff = self.staff.__class__.objects.get(pk=self.staff.pk)
+        self.assertFalse(lockout.is_locked(staff))
+        self.assertEqual((staff.failed_login_attempts, staff.password_reset_code, staff.password_reset_attempts),
+                         (0, "", 0))
+        self.assertEqual(self.sign_in(self.NEW).status_code, 200)
+
+    def test_it_is_audited_without_the_password(self):
+        self.set_password(self.staff, self.NEW)
+
+        entry = AuditLogEntry.objects.get(action="account.password_set_by_admin")
+        self.assertEqual(entry.actor, self.admin)
+        self.assertIn("staff@example.com", entry.target)
+        self.assertNotIn(self.NEW, f"{entry.action} {entry.target}")
+
+    def test_weak_passwords_are_refused_with_the_reasons(self):
+        for weak, reason in [
+            ("Short-2026!", "at least 12 characters"),
+            ("384729105638", "entirely numeric"),
+            ("demo-only-not-a-real-password", "public code history"),
+        ]:
+            with self.subTest(weak=weak):
+                response = self.set_password(self.staff, weak)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(reason, " ".join(response.data["new_password"]))
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.check_password(self.OLD))
+
+    def test_only_a_facility_staff_accounts_password_can_be_set(self):
+        other_admin = User.objects.create_superuser(email="other-admin@example.com", password=self.OLD)
+        for target in (self.mother, other_admin, self.admin):
+            with self.subTest(target=target.email):
+                response = self.set_password(target, self.NEW)
+                self.assertEqual(response.status_code, 400)
+                target.refresh_from_db()
+                self.assertTrue(target.check_password(self.OLD))
+
+    def test_only_an_admin_can_set_one(self):
+        other_staff = User.objects.create_user(
+            email="other-staff@example.com", password=self.OLD, is_active=True, role=User.Role.FACILITY_STAFF,
+        )
+        for actor in (self.mother, other_staff, self.staff):
+            with self.subTest(actor=actor.email):
+                self.assertEqual(self.set_password(self.staff, self.NEW, as_user=actor).status_code, 403)
+        anonymous = self.client.post(f"/auth/admin/users/{self.staff.pk}/set-password/", {"new_password": self.NEW})
+        self.assertEqual(anonymous.status_code, 401)
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.check_password(self.OLD))
+
+    def test_a_missing_password_or_account_is_refused(self):
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.post(f"/auth/admin/users/{self.staff.pk}/set-password/", {}).status_code, 400)
+        missing = self.client.post("/auth/admin/users/999999/set-password/", {"new_password": self.NEW})
+        self.assertEqual(missing.status_code, 404)

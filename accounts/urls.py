@@ -4,6 +4,7 @@ from .views import (
     CheckedTokenRefreshView,
     AdminUserDeleteView,
     AdminUserListView,
+    AdminUserSetPasswordView,
     AdminUserUnlockView,
     CheckInView,
     DeleteMyAccountView,
@@ -47,4 +48,5 @@ urlpatterns = [
     path("admin/users/", AdminUserListView.as_view(), name="admin-user-list"),
     path("admin/users/<int:pk>/", AdminUserDeleteView.as_view(), name="admin-user-delete"),
     path("admin/users/<int:pk>/unlock/", AdminUserUnlockView.as_view(), name="admin-user-unlock"),
+    path("admin/users/<int:pk>/set-password/", AdminUserSetPasswordView.as_view(), name="admin-user-set-password"),
 ]

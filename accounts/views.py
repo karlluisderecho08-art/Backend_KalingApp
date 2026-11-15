@@ -8,8 +8,8 @@ from django.db import transaction
 from django.db.models import F
 from django.http import Http404
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema
-from rest_framework import generics, permissions
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import generics, permissions, serializers
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -37,6 +37,7 @@ from .emails import (
     send_verification_email,
 )
 from .models import PendingRegistration, User
+from .staff_passwords import staff_password_problems
 from .serializers import (
     AdminUserListSerializer,
     LocationConsentSerializer,
@@ -735,6 +736,58 @@ class AdminUserUnlockView(APIView):
         user = generics.get_object_or_404(User, pk=pk)
         lockout.clear(user)
         log_action(request.user, "account.unlocked", f"User:{user.id} ({user.email})")
+        return Response(AdminUserListSerializer(user).data)
+
+
+class AdminUserSetPasswordView(APIView):
+    """
+    POST /auth/admin/users/<id>/set-password/  {new_password} -- platform-admin only.
+
+    Gives a facility staff account a new password: for a facility that lost
+    it, a staff member who left, or a password that may have leaked. The admin
+    then hands it to the facility, the same way as a new staff login made from
+    the facility form.
+
+    Facility staff accounts only. A mother resets her own password by email
+    (ForgotPasswordView) -- an admin must never know it -- and an admin
+    account's password is not another admin's to change.
+
+    What it does besides the password:
+      * signs that account out everywhere: each session carries a fingerprint
+        of the password (SIMPLE_JWT CHECK_REVOKE_TOKEN), so every one issued
+        under the old password stops working at once;
+      * lifts any sign-in lockout, as a password reset does;
+      * voids any password-reset code still outstanding for it;
+      * records who did it in the audit log -- never the password itself.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    @extend_schema(
+        request=inline_serializer("AdminSetPassword", {"new_password": serializers.CharField()}),
+        responses=AdminUserListSerializer,
+    )
+    def post(self, request, pk):
+        user = generics.get_object_or_404(User, pk=pk)
+        if user.is_staff or user.is_superuser or user.role != User.Role.FACILITY_STAFF:
+            return Response(
+                {"detail": "Only a facility staff account's password can be set here. "
+                           "Mothers reset their own password from the app's sign-in screen."},
+                status=400,
+            )
+        new_password = request.data.get("new_password")
+        if not isinstance(new_password, str) or not new_password:
+            return Response({"new_password": ["Enter a new password."]}, status=400)
+        problems = staff_password_problems(new_password, user)
+        if problems:
+            return Response({"new_password": problems}, status=400)
+
+        user.set_password(new_password)
+        user.password_reset_code = ""
+        user.password_reset_attempts = 0
+        user.save(update_fields=["password", "password_reset_code", "password_reset_attempts"])
+        lockout.clear(user)
+        log_action(request.user, "account.password_set_by_admin", f"User:{user.id} ({user.email})")
         return Response(AdminUserListSerializer(user).data)
 
 

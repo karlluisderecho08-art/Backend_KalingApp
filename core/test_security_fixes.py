@@ -407,6 +407,19 @@ class SeedFacilityStaffTests(TestCase):
         existing.refresh_from_db()
         self.assertTrue(existing.check_password("whatever-it-was-before"))
 
+    def test_a_variable_never_undoes_a_password_set_from_the_admin_portal(self):
+        self.run_command(**{f"FACILITY_STAFF_PASSWORD_{self.a.id}": self.STRONG_A})
+        staff = User.objects.get(email=f"staff{self.a.id}@kalingapp.demo")
+        staff.set_password("Set-In-The-Admin-Portal-2026")
+        staff.save()
+
+        # The next deploy, with the variable still on the host -- even changed.
+        output = self.run_command(**{f"FACILITY_STAFF_PASSWORD_{self.a.id}": self.STRONG_B})
+
+        staff.refresh_from_db()
+        self.assertTrue(staff.check_password("Set-In-The-Admin-Portal-2026"))
+        self.assertIn("can be deleted", output)
+
 
 # --- The API map is not published by the live server ------------------------
 

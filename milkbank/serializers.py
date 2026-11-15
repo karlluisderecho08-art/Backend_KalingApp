@@ -1,9 +1,9 @@
-from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator
 from rest_framework import serializers
 
 from accounts.models import User
+from accounts.staff_passwords import staff_password_problems
 from core.audit import log_action
 
 from .allocation import REQUEST_ML_CEILING
@@ -202,7 +202,7 @@ class FacilitySerializer(serializers.ModelSerializer):
 
     staff_user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     new_staff_email = serializers.EmailField(write_only=True, required=False)
-    new_staff_password = serializers.CharField(write_only=True, required=False, min_length=8)
+    new_staff_password = serializers.CharField(write_only=True, required=False)
 
     class Meta:
         model = Facility
@@ -354,13 +354,12 @@ class FacilitySerializer(serializers.ModelSerializer):
                 )
 
         if new_staff_password:
-            # A staff login opens mothers' health records, so it gets Django's
-            # full password rules (length, common, numeric, too like the email),
-            # not just a minimum length.
-            try:
-                validate_password(new_staff_password, User(email=new_staff_email or ""))
-            except DjangoValidationError as exc:
-                raise serializers.ValidationError({"new_staff_password": list(exc.messages)})
+            # A staff login opens mothers' health records: the staff password
+            # rules (accounts/staff_passwords.py), the same as when an admin
+            # sets a new one later.
+            problems = staff_password_problems(new_staff_password, User(email=new_staff_email or ""))
+            if problems:
+                raise serializers.ValidationError({"new_staff_password": problems})
 
         if new_staff_email and User.objects.filter(email__iexact=new_staff_email).exists():
             raise serializers.ValidationError(
