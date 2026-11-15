@@ -464,3 +464,37 @@ class FacilityStaffEmailsTests(APITestCase):
         self.client.force_authenticate(user=self.admin)
         detail = self.client.get(f"/milkbank/facilities/{self.facility.id}/")
         self.assertEqual(detail.data["staff_emails"], ["login.staff@example.com"])
+
+
+# --- "Last login" is recorded ------------------------------------------------
+
+class LastLoginTests(ThrottleIsolationMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.staff = User.objects.create_user(
+            email="staff.login@example.com", password=PASSWORD, is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=make_facility(),
+        )
+
+    def login(self, password):
+        return self.client.post("/auth/login/", {"email": self.staff.email, "password": password}, format="json")
+
+    def test_a_sign_in_records_last_login(self):
+        self.assertIsNone(self.staff.last_login)
+        self.assertEqual(self.login(PASSWORD).status_code, 200)
+        self.staff.refresh_from_db()
+        self.assertIsNotNone(self.staff.last_login)
+
+    def test_a_wrong_password_records_nothing(self):
+        self.assertEqual(self.login("not-the-password").status_code, 401)
+        self.staff.refresh_from_db()
+        self.assertIsNone(self.staff.last_login)
+
+    def test_the_admin_user_list_shows_it(self):
+        self.login(PASSWORD)
+        admin = User.objects.create_user(email="admin@example.com", password="x", is_active=True, is_staff=True)
+        self.client.force_authenticate(user=admin)
+        rows = self.client.get("/auth/admin/users/").data
+        rows = rows.get("results", rows) if isinstance(rows, dict) else rows
+        row = next(r for r in rows if r["email"] == self.staff.email)
+        self.assertIsNotNone(row["last_login"])

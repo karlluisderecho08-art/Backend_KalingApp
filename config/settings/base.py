@@ -606,6 +606,11 @@ SIMPLE_JWT = {
     # endpoint checks the same thing (accounts.views.CheckedTokenRefreshView),
     # so a signed-out device goes straight back to the login screen.
     "CHECK_REVOKE_TOKEN": True,
+    # Record User.last_login on every password sign-in (POST /auth/login/), so
+    # the admin portal's "Last login" shows when an account was last used. Off
+    # by default in simplejwt, which left it blank for every account. One
+    # extra write per sign-in; /auth/login/ is rate-limited.
+    "UPDATE_LAST_LOGIN": True,
 }
 
 SPECTACULAR_SETTINGS = {

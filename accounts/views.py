@@ -3,6 +3,7 @@ import threading
 from datetime import timedelta
 
 from django.conf import settings
+from django.contrib.auth.models import update_last_login
 from django.http import Http404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -130,7 +131,10 @@ class IsFacilityStaff(permissions.BasePermission):
 
 
 def _tokens_for(user):
-    """Issue a fresh access/refresh token pair for a user."""
+    """Issue a fresh access/refresh token pair for a user -- signing her in, so
+    it counts as a login (verify email, password reset, demo), the same as
+    POST /auth/login/ with SIMPLE_JWT's UPDATE_LAST_LOGIN."""
+    update_last_login(None, user)
     refresh = RefreshToken.for_user(user)
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
