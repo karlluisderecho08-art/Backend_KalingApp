@@ -155,7 +155,7 @@ DJANGO_ADMIN_ENABLED = env.bool("DJANGO_ADMIN_ENABLED", default=False)
 # One product version for every part of KalingApp (backend, admin portal,
 # facility console, mother app). Bump it here, in both package.json files and
 # in the app's versionName together, and tag each repository v<version>.
-KALINGAPP_VERSION = "1.2.1"
+KALINGAPP_VERSION = "1.3.0"
 
 # What the mother app is told by GET /app/version/. An installed app whose
 # versionCode is below APP_MIN_VERSION_CODE is blocked until it updates
@@ -164,8 +164,12 @@ KALINGAPP_VERSION = "1.2.1"
 # reaches copies too old to ask. Raise both codes when publishing a release.
 # The app sends its own code in the X-KalingApp-Version-Code header.
 APP_LATEST_VERSION_NAME = env("APP_LATEST_VERSION_NAME", default=KALINGAPP_VERSION)
-APP_LATEST_VERSION_CODE = env.int("APP_LATEST_VERSION_CODE", default=4)
-APP_MIN_VERSION_CODE = env.int("APP_MIN_VERSION_CODE", default=3)
+APP_LATEST_VERSION_CODE = env.int("APP_LATEST_VERSION_CODE", default=5)
+# 5 (1.3.0) is required: earlier builds were debug-signed and debuggable, so
+# anyone with the phone and a USB cable could read her stored sign-in and
+# donor answers. 1.3.0 is release-signed, which also means installing it
+# takes one uninstall of the old app (KalingApp-Releases says so).
+APP_MIN_VERSION_CODE = env.int("APP_MIN_VERSION_CODE", default=5)
 APP_DOWNLOAD_URL = env("APP_DOWNLOAD_URL", default="https://github.com/karlluisderecho08-art/KalingApp-Releases")
 
 # --- Data retention (RA 10173) -------------------------------------------
