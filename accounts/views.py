@@ -439,7 +439,7 @@ class ForgotPasswordView(APIView):
     throttle_classes = [ClientIPScopedRateThrottle]
 
     def post(self, request):
-        email = (request.data.get("email") or "").strip().lower()
+        email = str(request.data.get("email") or "").strip().lower()
         generic_response = Response({"detail": "If that email has a KalingApp account, a reset code has been sent."})
 
         try:
@@ -466,6 +466,9 @@ class ResetPasswordView(APIView):
     like it, hands back a fresh {user, access, refresh} on success --
     no reason to make her go type the password she just set into a
     separate Login screen right after.
+
+    Used by the mother app and by the facility console's "Forgot password?"
+    page (which ignores the tokens and sends staff back to sign in).
     """
 
     permission_classes = [permissions.AllowAny]
@@ -473,9 +476,11 @@ class ResetPasswordView(APIView):
     throttle_classes = [ClientIPScopedRateThrottle]
 
     def post(self, request):
-        email = (request.data.get("email") or "").strip().lower()
-        code = (request.data.get("code") or "").strip()
+        email = str(request.data.get("email") or "").strip().lower()
+        code = str(request.data.get("code") or "").strip()
         new_password = request.data.get("new_password") or ""
+        if not isinstance(new_password, str):
+            new_password = ""
 
         try:
             user = User.objects.get(email__iexact=email, is_active=True)
@@ -499,15 +504,24 @@ class ResetPasswordView(APIView):
         if not code or not user.password_reset_code or code != user.password_reset_code:
             return Response({"detail": "Incorrect reset code."}, status=400)
 
-        # Same rule RegisterSerializer's password field enforces --
-        # checked here, not there, since this never goes through that
-        # serializer.
-        if len(new_password) < 8:
+        # A mother: the same rule RegisterSerializer's password field enforces
+        # (checked here, since this never goes through that serializer).
+        # Facility staff -- who reset from the facility console's sign-in page
+        # -- and admins get the staff rules (accounts/staff_passwords.py): the
+        # same 12 characters and checks as a password an admin sets for them,
+        # so a reset can't be the way round them.
+        if user.role == User.Role.FACILITY_STAFF or user.is_staff:
+            problems = staff_password_problems(new_password, user)
+        elif len(new_password) < 8:
+            problems = ["Password must be at least 8 characters."]
+        else:
+            problems = []
+        if problems:
             # Her code was right, so this try doesn't count against her.
             User.objects.filter(pk=user.pk, password_reset_attempts__gt=0).update(
                 password_reset_attempts=F("password_reset_attempts") - 1,
             )
-            return Response({"detail": "Password must be at least 8 characters."}, status=400)
+            return Response({"detail": " ".join(problems)}, status=400)
 
         user.set_password(new_password)
         user.password_reset_code = ""

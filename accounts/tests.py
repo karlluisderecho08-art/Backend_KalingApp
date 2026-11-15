@@ -1112,3 +1112,60 @@ class AdminSetStaffPasswordTests(ThrottleIsolatedTestCase):
         self.assertEqual(self.client.post(f"/auth/admin/users/{self.staff.pk}/set-password/", {}).status_code, 400)
         missing = self.client.post("/auth/admin/users/999999/set-password/", {"new_password": self.NEW})
         self.assertEqual(missing.status_code, 404)
+
+
+class StaffPasswordResetTests(ThrottleIsolatedTestCase):
+    """
+    The emailed-code reset (/auth/reset-password/), as facility staff use it
+    from the facility console's "Forgot password?" page: a staff or admin
+    account gets the staff password rules, a mother keeps her own.
+    """
+
+    OLD = "Old-Staff-Password-2026"
+
+    def account(self, email, **extra):
+        user = User.objects.create_user(email=email, password=self.OLD, is_active=True, **extra)
+        User.objects.filter(pk=user.pk).update(
+            password_reset_code="246810", password_reset_sent_at=timezone.now(), password_reset_attempts=1,
+        )
+        return user
+
+    def reset(self, email, new_password, code="246810"):
+        return self.client.post("/auth/reset-password/", {"email": email, "code": code, "new_password": new_password})
+
+    def test_a_staff_reset_needs_the_staff_rules(self):
+        staff = self.account("staff@example.com", role=User.Role.FACILITY_STAFF)
+
+        response = self.reset("staff@example.com", "Ten-chars!")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("at least 12 characters", response.data["detail"])
+        staff.refresh_from_db()
+        self.assertTrue(staff.check_password(self.OLD))
+        self.assertEqual(staff.password_reset_attempts, 1)  # a right code costs no guess
+
+    def test_a_staff_reset_with_a_strong_password_works(self):
+        self.account("staff@example.com", role=User.Role.FACILITY_STAFF)
+
+        self.assertEqual(self.reset("staff@example.com", "Bagong-Password-PGH-2026").status_code, 200)
+        signed_in = self.client.post("/auth/login/", {"email": "staff@example.com", "password": "Bagong-Password-PGH-2026"})
+        self.assertEqual(signed_in.status_code, 200)
+
+    def test_an_admin_reset_needs_the_staff_rules_too(self):
+        admin = self.account("admin@example.com", is_staff=True)
+
+        self.assertEqual(self.reset("admin@example.com", "short-pass").status_code, 400)
+        admin.refresh_from_db()
+        self.assertTrue(admin.check_password(self.OLD))
+
+    def test_a_mother_keeps_her_eight_character_rule(self):
+        self.account("mother@example.com")
+        self.assertEqual(self.reset("mother@example.com", "eight888x").status_code, 200)
+
+    def test_a_code_sent_as_a_number_is_an_ordinary_wrong_code(self):
+        self.account("staff@example.com", role=User.Role.FACILITY_STAFF)
+        response = self.client.post(
+            "/auth/reset-password/", {"email": "staff@example.com", "code": 123456, "new_password": "x"}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["detail"], "Incorrect reset code.")
