@@ -16,7 +16,7 @@ from rest_framework.test import APITestCase
 from accounts.models import PendingRegistration, User
 from chat.models import ChatMessage, ChatSession
 from milkbank.models import MilkBankRequest
-from milkbank.tests import make_facility, make_request
+from milkbank.tests import BOOK_DATE, make_facility, make_request
 from milkbank.transitions import apply_transition
 
 from .models import AuditLogEntry
@@ -55,7 +55,7 @@ class AppVersionGateTests(APITestCase):
         )
         self.client.force_authenticate(user=self.mother)
         self.facility = make_facility()
-        self.booking = {"request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM"}
+        self.booking = {"request_type": "DONOR", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM"}
 
     def test_an_app_too_old_to_send_its_version_is_told_to_update(self):
         response = self.client.post("/milkbank/requests/", self.booking, format="json")

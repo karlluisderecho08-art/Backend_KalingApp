@@ -47,6 +47,13 @@ def manila(y, mo, d, h, mi=0):
 
 class DropOffConfirmationTests(APITestCase):
     def setUp(self):
+        # Every date here is written out (December 2026), so "now" is held at
+        # a fixed moment before them -- otherwise these tests would start
+        # failing the day those dates passed. A test needing another moment
+        # patches it again, or passes `now`.
+        clock = patch("django.utils.timezone.now", return_value=manila(2026, 11, 20, 8))
+        clock.start()
+        self.addCleanup(clock.stop)
         self.facility = make_facility(name="PGH")
         self.mother = User.objects.create_user(email="donor@example.com", password="x", is_active=True, mom_name="Ana")
         self.staff = User.objects.create_user(
@@ -56,7 +63,10 @@ class DropOffConfirmationTests(APITestCase):
 
     def booking(self, method=Method.DROP_OFF):
         # Appointment: December 1, 2026, 10:00 AM (Manila).
-        return make_request(self.mother, self.facility, collection_method=method)
+        return make_request(
+            self.mother, self.facility, collection_method=method,
+            preferred_date="2026-12-01", preferred_time="10:00 AM",
+        )
 
     def accept(self, req):
         self.client.force_authenticate(user=self.staff)

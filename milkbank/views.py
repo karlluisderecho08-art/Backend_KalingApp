@@ -39,7 +39,7 @@ from .photo_checks import MAX_PHOTO_BYTES, detect_image, read_head
 from .removal import remove_facility, removal_summary, restore_facility
 from .collection import confirms_by_delivery_link, delivery_link_due, notify_collection_steps
 from .results import decline_notification
-from .scheduling import counter_offer_errors
+from .scheduling import appointment_label, counter_offer_errors, slot_has_started
 from .serializers import (
     AllocationRequestSerializer,
     CollectionMethodSerializer,
@@ -69,6 +69,9 @@ Method = MilkBankRequest.CollectionMethod
 
 # Room for the questionnaire's other form fields around the photo itself.
 UPLOAD_FORM_OVERHEAD_BYTES = 256 * 1024
+
+# A mother picking a time that has already begun (scheduling.slot_has_started).
+PAST_SLOT_DETAIL = "This time has already passed. Please choose a later time."
 
 
 class FacilityListView(generics.ListCreateAPIView):
@@ -300,6 +303,11 @@ class MilkBankRequestCreateView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        # The app's calendar only offers times still ahead; this is what
+        # actually refuses a past one (a form left open past its hour, a
+        # direct call).
+        if slot_has_started(data["preferred_date"], data["preferred_time"]):
+            return Response({"detail": PAST_SLOT_DETAIL, "code": "slot_passed"}, status=400)
 
         # One open request per user (roadmap Phase 4 concurrency
         # decision: simplest option, matches the Kotlin app's single
@@ -726,6 +734,16 @@ class AcceptCounterOfferView(generics.GenericAPIView):
         else:
             target_status = Status.SCHEDULED
             target_stage = "Status"
+        # An offer she opens after its time has passed can't be taken up: the
+        # same answer as a slot that filled up meanwhile, so the app offers
+        # her "Choose New Time" in the same way.
+        if req.current_sub_status == Status.COUNTER_OFFERED and slot_has_started(
+            req.counter_offer_date, req.counter_offer_time,
+        ):
+            return Response({
+                "detail": "The time the facility offered has passed. Please choose a new time instead.",
+                "code": "offer_passed",
+            }, status=409)
         with transaction.atomic():
             # Accepting moves her booking onto the offered day, so that day
             # needs a free slot NOW -- it had one when staff offered it, but
@@ -781,6 +799,10 @@ class RejectCounterOfferView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         new_date = serializer.validated_data["preferred_date"]
+        # The app's calendar only offers times still ahead; this is what
+        # actually refuses a past one (a stale screen, a direct call).
+        if slot_has_started(new_date, serializer.validated_data["preferred_time"]):
+            return Response({"detail": PAST_SLOT_DETAIL, "code": "slot_passed"}, status=400)
 
         with transaction.atomic():
             # Her request moves to the day she picked, so that day needs a
@@ -832,6 +854,20 @@ class StaffAcceptView(generics.GenericAPIView):
         req = self.get_object()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        # Her appointment time has come and gone while the request waited for
+        # an answer: accepting it now would confirm a visit that can't happen
+        # (she'd be asked to confirm attendance for a past hour, or a Drop off
+        # given two hours to book a courier). Staff propose a new date --
+        # she keeps her questionnaire -- or decline. Left alone, it still
+        # expires on its 8-business-hour clock.
+        if req.current_sub_status == Status.PENDING and slot_has_started(req.preferred_date, req.preferred_time):
+            return Response({
+                "detail": (
+                    f"Her appointment time ({appointment_label(req.preferred_date, req.preferred_time)}) has "
+                    "passed, so this request can't be accepted as it is. Propose a new date, or decline it."
+                ),
+                "code": "appointment_passed",
+            }, status=400)
         # Where accepting lands depends on the pathway, because the two
         # pathways order their steps differently.
         #

@@ -46,6 +46,14 @@ BOOKED_DAY = _first_weekday_after(21)
 OTHER_DAY = _first_weekday_after(
     (date.fromisoformat(BOOKED_DAY) - datetime.now(BUSINESS_TZ).date()).days + 1
 )
+# Future weekdays for bookings made or moved through the API, which refuses a
+# time already gone (scheduling.slot_has_started): a written-out calendar date
+# would start failing the day it passed. REBOOK_DATE is always a later day.
+BOOK_DATE = _first_weekday_after(28)
+REBOOK_DATE = _first_weekday_after(35)
+# make_request's appointment: well ahead, so a test that accepts it never
+# finds its time already gone.
+APPOINTMENT_DATE = _first_weekday_after(60)
 
 
 # Where the questionnaire tests store uploaded photos: a throwaway folder,
@@ -82,7 +90,7 @@ def make_request(owner, facility, **overrides):
         owner=owner,
         request_type=MilkBankRequest.RequestType.DONOR,
         allocated_facility=facility,
-        preferred_date="2026-12-01",
+        preferred_date=APPOINTMENT_DATE,
         preferred_time="10:00 AM",
     )
     defaults.update(overrides)
@@ -803,7 +811,7 @@ class BookingEndpointPermissionTests(APITestCase):
         self.client.force_authenticate(user=self.mother)
 
         response = self.client.post("/milkbank/requests/", {
-            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "DONOR", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM",
         })
 
         self.assertEqual(response.status_code, 400)
@@ -820,7 +828,7 @@ class BookingEndpointPermissionTests(APITestCase):
         self.client.force_authenticate(user=self.other_mother)
 
         response = self.client.post("/milkbank/requests/", {
-            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "DONOR", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM",
         })
 
         self.assertEqual(response.status_code, 201)
@@ -1053,7 +1061,7 @@ class BookingStageIndexTests(APITestCase):
 
         self.client.force_authenticate(user=self.mother)
         response = self.client.post(f"/milkbank/requests/{req.id}/reject-counter-offer/", {
-            "preferred_date": "2026-12-22", "preferred_time": "10:00 AM",
+            "preferred_date": REBOOK_DATE, "preferred_time": "10:00 AM",
         })
         self.assertEqual(response.status_code, 200)
         req.refresh_from_db()
@@ -1108,7 +1116,7 @@ class RecipientRequirementsTests(APITestCase):
 
     def test_a_recipient_requests_requirements_are_saved(self):
         response = self.client.post("/milkbank/requests/", {
-            "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "RECIPIENT", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM",
             "requested_ml": 100,
             "neonate_name": "Baby Cruz", "clinic_info": "Under Dr. Santos, PGH Pediatrics",
             "has_prescription_proof": True, "has_cooler": True, "has_medical_abstract": True,
@@ -1127,7 +1135,7 @@ class RecipientRequirementsTests(APITestCase):
         # whole point: the facility dashboard's View Details reads these
         # same field names straight off the list/detail response.
         response = self.client.post("/milkbank/requests/", {
-            "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "RECIPIENT", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM",
             "requested_ml": 100,
             "neonate_name": "Baby Cruz", "has_cooler": True,
         })
@@ -1142,7 +1150,7 @@ class RecipientRequirementsTests(APITestCase):
         # accepts them unconditionally (same posture as the representative
         # fields) -- confirms a DONOR request stays blank even if sent.
         response = self.client.post("/milkbank/requests/", {
-            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "DONOR", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM",
             "neonate_name": "Should not apply to a donor",
         })
 
@@ -1155,7 +1163,7 @@ class RecipientRequirementsTests(APITestCase):
         # The serializer must not make these required -- a caller that
         # predates this field (or simply omits them) still gets a 201.
         response = self.client.post("/milkbank/requests/", {
-            "request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "RECIPIENT", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM",
             "requested_ml": 100,
         })
 
@@ -1266,13 +1274,13 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
 
         self.client.force_authenticate(user=self.mother)
         response = self.client.post(f"/milkbank/requests/{req.id}/reject-counter-offer/", {
-            "preferred_date": "2026-12-22", "preferred_time": "10:00 AM",
+            "preferred_date": REBOOK_DATE, "preferred_time": "10:00 AM",
         })
 
         self.assertEqual(response.status_code, 200)
         req.refresh_from_db()
         self.assertEqual(req.current_sub_status, Status.PENDING)
-        self.assertEqual(str(req.preferred_date), "2026-12-22")
+        self.assertEqual(str(req.preferred_date), REBOOK_DATE)
         # Still hers, still attached -- nothing was re-submitted.
         self.assertTrue(hasattr(req, "donor_questionnaire"))
         self.assertTrue(req.donor_questionnaire.good_general_health)
@@ -2224,7 +2232,7 @@ class RequestedMilkAmountTests(APITestCase):
         self.client.force_authenticate(user=self.mother)
 
     def post(self, **extra):
-        payload = {"request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM"}
+        payload = {"request_type": "RECIPIENT", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM"}
         payload.update(extra)
         return self.client.post(self.URL, payload, format="json")
 
@@ -2291,7 +2299,7 @@ class RequestedMilkAmountTests(APITestCase):
         make_facility()
 
         response = self.client.post(self.URL, {
-            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "DONOR", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM",
             "requested_ml": 200,
         }, format="json")
 
@@ -2378,7 +2386,7 @@ class RecipientAmountPerFacilityTests(APITestCase):
         self.client.force_authenticate(user=self.mother)
 
     def post(self, **extra):
-        payload = {"request_type": "RECIPIENT", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM"}
+        payload = {"request_type": "RECIPIENT", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM"}
         payload.update(extra)
         return self.client.post(self.URL, payload, format="json")
 
@@ -2472,7 +2480,7 @@ class DonorSlotLimitTests(APITestCase):
     the daily capacity. Recipients are never limited by it and never use it up.
     """
 
-    DAY = "2026-12-15"
+    DAY = BOOK_DATE
     URL = "/milkbank/requests/"
 
     def setUp(self):
@@ -2543,7 +2551,8 @@ class DonorSlotLimitTests(APITestCase):
     def test_the_facility_reports_its_full_donor_slots_and_days(self):
         from .scheduling import SLOTS
         fill_slot(self.facility, self.DAY, "10:00 AM", 2)
-        full_day = "2026-12-16"
+        day = date.fromisoformat(self.DAY)
+        full_day = (day + timedelta(days=1 if day.weekday() < 4 else 3)).isoformat()  # the next weekday
         for label, _hour in SLOTS:
             fill_slot(self.facility, full_day, label, 2)
 
@@ -2559,11 +2568,11 @@ class DonorSlotLimitTests(APITestCase):
             current_sub_status=Status.COUNTER_OFFERED, counter_offer_date=COUNTER_OFFER_DATE,
             counter_offer_time="2:00 PM",
         )
-        fill_slot(self.facility, "2026-12-22", "11:00 AM", 2)
+        fill_slot(self.facility, REBOOK_DATE, "11:00 AM", 2)
         self.client.force_authenticate(user=self.mother)
 
         response = self.client.post(f"/milkbank/requests/{req.id}/reject-counter-offer/", {
-            "preferred_date": "2026-12-22", "preferred_time": "11:00 AM",
+            "preferred_date": REBOOK_DATE, "preferred_time": "11:00 AM",
         })
 
         self.assertEqual(response.status_code, 409, response.data)

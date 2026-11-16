@@ -24,7 +24,9 @@ direct API call cannot offer a slot nobody could attend.
 08:00 Manila just because settings.TIME_ZONE is UTC.
 """
 
-from datetime import datetime
+from datetime import date, datetime
+
+from django.utils import timezone
 
 from .business_hours import BUSINESS_TZ
 from .capacity import has_donor_slot_room, has_room
@@ -41,6 +43,36 @@ SLOTS = (
 SLOT_HOURS = dict(SLOTS)
 
 
+def slot_has_started(day, time_label, now=None):
+    """
+    Whether an appointment at `time_label` ("10:00 AM") on `day` has begun,
+    on the facility's clock (Manila). A slot starting exactly now counts as
+    started, as in counter_offer_errors.
+
+    What it guards: nothing may be booked, accepted or agreed to for a time
+    that is already gone -- a request still waiting for the facility when its
+    hour passes is no longer acceptable as it stands (staff propose a new date
+    or decline it instead), and a mother can't pick or agree to a past slot.
+
+    False when the date or time can't be read: nothing is refused on a guess.
+    """
+    try:
+        day = date.fromisoformat(day) if isinstance(day, str) else day
+        clock = datetime.strptime((time_label or "").strip(), "%I:%M %p").time()
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(day, date):
+        return False
+    now = (now or timezone.now()).astimezone(BUSINESS_TZ)
+    return datetime.combine(day, clock, tzinfo=BUSINESS_TZ) <= now
+
+
+def appointment_label(day, time_label):
+    """'November 17, 2026 at 12:00 PM' -- how a slot is named in messages."""
+    day = date.fromisoformat(day) if isinstance(day, str) else day
+    return f"{day:%B} {day.day}, {day.year} at {time_label}"
+
+
 def counter_offer_errors(req, offered_date, offered_time, now=None):
     """
     Why `offered_date` / `offered_time` cannot be offered on `req`, as a
@@ -50,7 +82,7 @@ def counter_offer_errors(req, offered_date, offered_time, now=None):
     `now` is for tests; it defaults to the current moment.
     """
     errors = {}
-    now = (now or datetime.now(BUSINESS_TZ)).astimezone(BUSINESS_TZ)
+    now = (now or timezone.now()).astimezone(BUSINESS_TZ)
     today = now.date()
 
     hour = SLOT_HOURS.get(offered_time)

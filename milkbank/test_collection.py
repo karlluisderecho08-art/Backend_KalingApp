@@ -29,6 +29,13 @@ def manila(y, mo, d, h, mi=0):
 
 class CollectionTimingTests(APITestCase):
     def setUp(self):
+        # The appointments here are written out (December 1, 2026), so "now" is
+        # held at a fixed moment before them -- otherwise these tests would
+        # start failing the day it passed. A test needing another moment
+        # patches it again, or passes `now`.
+        clock = patch("django.utils.timezone.now", return_value=manila(2026, 11, 20, 8))
+        clock.start()
+        self.addCleanup(clock.stop)
         self.mother = User.objects.create_user(email="donor@example.com", password="x", is_active=True)
         self.facility = make_facility(name="PGH")
         self.client.force_authenticate(user=self.mother)
@@ -75,7 +82,8 @@ class CollectionTimingTests(APITestCase):
                 NotificationItem.objects.all().delete()
                 MilkBankRequest.objects.all().delete()
                 req = make_request(self.mother, self.facility, collection_method=method,
-                                   current_sub_status=Status.AWAITING_ATTENDANCE)
+                                   current_sub_status=Status.AWAITING_ATTENDANCE,
+                                   preferred_date="2026-12-01", preferred_time="10:00 AM")
                 apply_transition(req, Status.SCHEDULED, self.mother, "attendance_confirmed")
                 self.assertEqual(self.steps().count(), 1)
                 body = self.steps().get().description

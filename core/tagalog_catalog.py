@@ -155,6 +155,10 @@ MESSAGES = {
         "Napuno na ang petsang iminungkahi ng pasilidad. Pumili na lang ng bagong oras.",
     "The time the facility offered has filled up since. Please choose a new time instead.":
         "Napuno na ang oras na iminungkahi ng pasilidad. Pumili na lang ng bagong oras.",
+    "The time the facility offered has passed. Please choose a new time instead.":
+        "Lumipas na ang oras na iminungkahi ng pasilidad. Pumili na lang ng bagong oras.",
+    "This time has already passed. Please choose a later time.":
+        "Lumipas na ang oras na ito. Pumili ng mas huling oras.",
     "{facility_name} is fully booked on {date}. Please choose another date.":
         "Puno na ang {facility_name} sa {date}. Pumili ng ibang petsa.",
     "Milk Bank Request Update":

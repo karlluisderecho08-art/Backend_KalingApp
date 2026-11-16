@@ -17,7 +17,7 @@ from .models import MilkBankRequest
 from .serializers import (
     PICKUP_ADDRESS_REQUIRED, PICKUP_LANDMARK_REQUIRED, PICKUP_PIN_OUTSIDE, PICKUP_PIN_REQUIRED,
 )
-from .tests import make_facility, make_request
+from .tests import BOOK_DATE, make_facility, make_request
 
 Status = MilkBankRequest.Status
 Method = MilkBankRequest.CollectionMethod
@@ -43,7 +43,7 @@ class PickupAddressTests(APITestCase):
 
     def book(self, headers=NEW_APP, **extra):
         payload = {
-            "request_type": "DONOR", "preferred_date": "2026-12-15", "preferred_time": "10:00 AM",
+            "request_type": "DONOR", "preferred_date": BOOK_DATE, "preferred_time": "10:00 AM",
             "collection_method": "pickup",
         }
         payload.update(extra)
