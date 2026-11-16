@@ -8,3 +8,5 @@ staticfiles/
 .claude/settings.local.json
 .coverage
 htmlcov/
+# Database backups (tools/backup-database.ps1) hold personal data: never commit one.
+*.dump
