@@ -31,7 +31,7 @@ from notifications.models import NotificationItem
 from core.i18n import wants_tagalog
 from notifications.services import notify_many
 
-from . import lockout
+from . import devices, lockout
 from .legacy_signups import email_is_taken, is_abandoned_legacy_signup
 from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
@@ -42,7 +42,7 @@ from .emails import (
     send_verification_email,
 )
 from .models import PendingRegistration, User
-from .staff_passwords import staff_password_problems
+from .passwords import mother_password_problems, staff_password_problems
 from .serializers import (
     AdminUserListSerializer,
     LocationConsentSerializer,
@@ -149,7 +149,9 @@ def _tokens_for(user):
     POST /auth/login/ with SIMPLE_JWT's UPDATE_LAST_LOGIN."""
     update_last_login(None, user)
     refresh = RefreshToken.for_user(user)
-    return {"access": str(refresh.access_token), "refresh": str(refresh)}
+    # Each of these proves the password (or the email address) just now, so
+    # the device it came from is trusted from here on -- see accounts/devices.py.
+    return {"access": str(refresh.access_token), "refresh": str(refresh), "device_token": devices.issue(user)}
 
 
 class CheckedTokenRefreshSerializer(TokenRefreshSerializer):
@@ -244,20 +246,41 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
         Sign-ins to one account are checked one at a time (see
         lockout.one_attempt_at_a_time), so guesses sent all at once can't all
         slip in before the lock.
+
+        A device she has signed in on before sends its trusted-device token
+        (`device_token`, see accounts/devices.py): the account-wide lock
+        doesn't apply to it, and its own wrong passwords lock only that
+        device -- so a stranger who knows her email can't keep her out of
+        her own phone. Every successful sign-in answers with a fresh
+        `device_token` for the client to keep.
         """
         email = str(request.data.get("email") or "").strip()
         user = User.objects.filter(email__iexact=email, is_active=True).first() if email else None
         if user is None:
             return super().post(request, *args, **kwargs)
 
+        presented = request.data.get("device_token")
         with lockout.one_attempt_at_a_time(user):
-            if lockout.is_locked(user):
+            device = devices.device_id(presented, user)
+            if device is not None:
+                until = lockout.device_locked_until(device)
+                if until:
+                    return self._locked_response(user, until)
+            elif lockout.is_locked(user):
                 return self._locked_response(user)
 
             try:
                 response = super().post(request, *args, **kwargs)
             except AuthenticationFailed:
                 # simplejwt reports wrong credentials by raising, not by returning.
+                if device is not None:
+                    attempts = lockout.register_device_failure(device)
+                    until = lockout.device_locked_until(device)
+                    if until is None:
+                        raise
+                    log_action(None, "account.device_locked", f"User:{user.id} ({user.email}) one trusted device, "
+                                                              f"after {attempts} failed sign-ins, until {until.isoformat()}")
+                    return self._locked_response(user, until)
                 attempts, newly_locked = lockout.register_failure(user)
                 if newly_locked:
                     self._tell_admins(user)
@@ -268,7 +291,13 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
                 return self._locked_response(user)
 
             if response.status_code == 200:
-                lockout.clear(user)
+                if device is not None:
+                    # Only this device's count: what strangers did to the
+                    # account stays on it, for the devices it was meant for.
+                    lockout.clear_device(device)
+                else:
+                    lockout.clear(user)
+                response.data["device_token"] = devices.issue(user, presented)
             return response
 
     @staticmethod
@@ -282,14 +311,17 @@ class ThrottledTokenObtainPairView(TokenObtainPairView):
         )
 
     @staticmethod
-    def _locked_response(user):
-        seconds = lockout.seconds_remaining(user)
+    def _locked_response(user, until=None):
+        """423 for a locked account -- or, with `until`, for one trusted device's own lock."""
+        until = until or user.locked_until
+        # Rounded up, so "0 seconds left" never shows while still locked.
+        seconds = max(0, int((until - timezone.now()).total_seconds()) + 1)
         contact = SupportContact.objects.filter(name__icontains="arugaan").first()
         body = {
             "code": "account_locked",
             "detail": "Too many incorrect passwords, so this account is locked for now. "
                       "Please contact the admin for help and assistance.",
-            "locked_until": user.locked_until.isoformat(),
+            "locked_until": until.isoformat(),
             "retry_after_seconds": seconds,
             "contact": {
                 "name": contact.name if contact else "",
@@ -588,21 +620,23 @@ class ResetPasswordView(APIView):
         # A mother: the same rule RegisterSerializer's password field enforces
         # (checked here, since this never goes through that serializer).
         # Facility staff -- who reset from the facility console's sign-in page
-        # -- and admins get the staff rules (accounts/staff_passwords.py): the
+        # -- and admins get the staff rules (accounts/passwords.py): the
         # same 12 characters and checks as a password an admin sets for them,
         # so a reset can't be the way round them.
-        if user.role == User.Role.FACILITY_STAFF or user.is_staff:
+        staff = user.role == User.Role.FACILITY_STAFF or user.is_staff
+        if staff:
             problems = staff_password_problems(new_password, user)
-        elif len(new_password) < 8:
-            problems = ["Password must be at least 8 characters."]
         else:
-            problems = []
+            # A mother: 8 characters, and not one of the passwords guessed first.
+            problems = mother_password_problems(new_password, user)
         if problems:
             # Her code was right, so this try doesn't count against her.
             User.objects.filter(pk=user.pk, password_reset_attempts__gt=0).update(
                 password_reset_attempts=F("password_reset_attempts") - 1,
             )
-            return Response({"detail": " ".join(problems)}, status=400)
+            # A mother is shown one reason at a time: each one has its own
+            # Tagalog line, where several joined into one sentence would not.
+            return Response({"detail": " ".join(problems) if staff else problems[0]}, status=400)
 
         user.set_password(new_password)
         user.password_reset_code = ""
@@ -1002,14 +1036,27 @@ class DeleteMyAccountView(APIView):
                 status=403,
             )
         password = request.data.get("password") or ""
-        # One password check at a time for her account, the same as signing in.
+        # One password check at a time for her account, the same as signing
+        # in -- and, the same as signing in, her own trusted device isn't held
+        # to an account-wide lock that someone else's guesses set off.
         with lockout.one_attempt_at_a_time(user):
-            if lockout.is_locked(user):
+            device = devices.device_id(request.data.get("device_token"), user)
+            if device is not None:
+                until = lockout.device_locked_until(device)
+                if until:
+                    return ThrottledTokenObtainPairView._locked_response(user, until)
+            elif lockout.is_locked(user):
                 return ThrottledTokenObtainPairView._locked_response(user)
-            if not user.check_password(password):
-                lockout.register_failure(user)
-                if lockout.is_locked(user):
-                    return ThrottledTokenObtainPairView._locked_response(user)
+            if not isinstance(password, str) or not user.check_password(password):
+                if device is not None:
+                    lockout.register_device_failure(device)
+                    until = lockout.device_locked_until(device)
+                    if until:
+                        return ThrottledTokenObtainPairView._locked_response(user, until)
+                else:
+                    lockout.register_failure(user)
+                    if lockout.is_locked(user):
+                        return ThrottledTokenObtainPairView._locked_response(user)
                 return Response({"detail": "That password is incorrect.", "code": "wrong_password"}, status=400)
 
         open_statuses = [

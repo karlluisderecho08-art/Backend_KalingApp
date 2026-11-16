@@ -3,7 +3,7 @@ from django.core.validators import URLValidator
 from rest_framework import serializers
 
 from accounts.models import User
-from accounts.staff_passwords import staff_password_problems
+from accounts.passwords import staff_password_problems
 from core.audit import log_action
 
 from .allocation import REQUEST_ML_CEILING
@@ -355,7 +355,7 @@ class FacilitySerializer(serializers.ModelSerializer):
 
         if new_staff_password:
             # A staff login opens mothers' health records: the staff password
-            # rules (accounts/staff_passwords.py), the same as when an admin
+            # rules (accounts/passwords.py), the same as when an admin
             # sets a new one later.
             problems = staff_password_problems(new_staff_password, User(email=new_staff_email or ""))
             if problems:

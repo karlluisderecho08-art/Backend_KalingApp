@@ -139,15 +139,19 @@ services:
         sync: false
       - key: DEFAULT_FROM_EMAIL
         sync: false
-      # ensure_admin (run from build.sh) reads these to create the
-      # first admin account -- free-tier workaround for not having
-      # Shell access to run `createsuperuser` by hand. ADMIN_PASSWORD
-      # is a real secret: fill it in via Render's dashboard, never here.
-      # It's only ever used once (see accounts/management/commands/
-      # ensure_admin.py) -- change it through /admin/ after first login,
-      # not by editing this value again.
+      # ensure_admin (run from build.sh) reads these to create an admin
+      # account whose email doesn't exist yet -- the free-tier workaround
+      # for not having Shell access to run `createsuperuser` by hand.
+      # Set BOTH in Render's dashboard, never here. The admin's email used
+      # to be written in this public file, and anyone who knows an
+      # account's email can try to lock it out (accounts/devices.py is the
+      # defence). Use an address that is a real inbox you read: it is how
+      # the admin resets a forgotten password ("Forgot password?" on the
+      # admin portal's sign-in page). Pointing ADMIN_EMAIL at a new address
+      # creates a second admin on the next deploy; ADMIN_PASSWORD is only
+      # ever used for that creation.
       - key: ADMIN_EMAIL
-        value: admin@kalingapp.onrender.com
+        sync: false
       - key: ADMIN_PASSWORD
         sync: false
       # Comma-separated list of web frontend URLs allowed to call this API

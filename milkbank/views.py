@@ -1207,7 +1207,15 @@ class SerologyPhotoView(APIView):
         questionnaire = getattr(req, "donor_questionnaire", None)
         if not questionnaire or not questionnaire.serology_photo:
             raise Http404
-        photo = questionnaire.serology_photo.open("rb")
+        try:
+            photo = questionnaire.serology_photo.open("rb")
+        except FileNotFoundError:
+            # The record names a photo the storage no longer has -- e.g. one
+            # uploaded before photos moved to Supabase Storage, back when they
+            # sat on the server's own disk and were wiped on every deploy.
+            # "Not available" (404), never a crash with a traceback.
+            log_action(request.user, "serology_photo.missing", f"MilkBankRequest:{req.id}")
+            raise Http404
         # Checked again here, from the bytes: photos stored before uploads
         # were checked this way are served only if they really are images,
         # and always under their real type -- never under the type the name

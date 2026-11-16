@@ -1173,6 +1173,151 @@ class StaffPasswordResetTests(ThrottleIsolatedTestCase):
         self.assertEqual(response.data["detail"], "Incorrect reset code.")
 
 
+class TrustedDeviceTests(ThrottleIsolatedTestCase):
+    """
+    accounts/devices.py: someone who knows her email can't lock her out of the
+    devices she already signs in on -- and guessing is no easier for anyone.
+    """
+
+    PASSWORD = "her-own-password-2026"
+
+    def setUp(self):
+        super().setUp()
+        self.owner = User.objects.create_user(email="mother@example.com", password=self.PASSWORD, is_active=True)
+
+    def sign_in(self, password, device=None, email="mother@example.com"):
+        body = {"email": email, "password": password}
+        if device is not None:
+            body["device_token"] = device
+        return self.client.post("/auth/login/", body)
+
+    def trusted_device(self):
+        response = self.sign_in(self.PASSWORD)
+        self.assertEqual(response.status_code, 200)
+        return response.data["device_token"]
+
+    def stranger_locks_the_account(self):
+        for _ in range(lockout.LOCK_THRESHOLD):
+            self.sign_in("a-wrong-guess")
+        self.assertEqual(self.sign_in(self.PASSWORD).status_code, 423)
+
+    def test_every_sign_in_hands_out_a_device_token(self):
+        self.assertTrue(self.trusted_device())
+
+    def test_a_stranger_cannot_lock_her_out_of_her_own_device(self):
+        device = self.trusted_device()
+        self.stranger_locks_the_account()
+
+        response = self.sign_in(self.PASSWORD, device)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.data)
+        # ...while the account stays locked for everyone else.
+        self.assertEqual(self.sign_in(self.PASSWORD).status_code, 423)
+
+    def test_her_device_keeps_guessing_just_as_limited(self):
+        device = self.trusted_device()
+        for _ in range(lockout.LOCK_THRESHOLD):
+            self.sign_in("a-wrong-guess", device)
+
+        self.assertEqual(self.sign_in(self.PASSWORD, device).status_code, 423)
+        # Only that device: the account itself was never locked.
+        self.assertFalse(lockout.is_locked(User.objects.get(pk=self.owner.pk)))
+        self.assertEqual(self.sign_in(self.PASSWORD).status_code, 200)
+
+    def test_changing_the_password_retires_every_device_token(self):
+        device = self.trusted_device()
+        self.owner.set_password("a-brand-new-password-2026")
+        self.owner.save()
+        self.stranger_locks_the_account()
+
+        self.assertEqual(self.sign_in("a-brand-new-password-2026", device).status_code, 423)
+
+    def test_a_forged_or_borrowed_token_counts_for_nothing(self):
+        device = self.trusted_device()
+        other = User.objects.create_user(email="other@example.com", password="other-password-2026", is_active=True)
+        others_device = self.sign_in("other-password-2026", email=other.email).data["device_token"]
+        self.stranger_locks_the_account()
+        cache.clear()  # the 10-a-minute sign-in limit isn't what this test is about
+
+        for fake in (device[:-2] + ("AA" if not device.endswith("AA") else "BB"), others_device, "not-a-token"):
+            with self.subTest(fake=fake[:12]):
+                self.assertEqual(self.sign_in(self.PASSWORD, fake).status_code, 423)
+
+    def test_the_same_device_keeps_its_identity(self):
+        first = self.trusted_device()
+        second = self.sign_in(self.PASSWORD, first).data["device_token"]
+        from . import devices
+        self.assertEqual(devices.device_id(first, self.owner), devices.device_id(second, self.owner))
+
+    def test_deleting_her_account_from_her_device_is_not_blocked_by_a_stranger(self):
+        device = self.trusted_device()
+        self.stranger_locks_the_account()
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post("/auth/me/delete/", {"password": self.PASSWORD, "device_token": device})
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(User.objects.filter(pk=self.owner.pk).exists())
+
+    def test_verify_and_reset_also_trust_the_device(self):
+        User.objects.filter(pk=self.owner.pk).update(
+            password_reset_code="246810", password_reset_sent_at=timezone.now(), password_reset_attempts=0,
+        )
+        response = self.client.post("/auth/reset-password/", {
+            "email": "mother@example.com", "code": "246810", "new_password": "a-brand-new-password-2026",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["device_token"])
+
+
+class MotherPasswordRulesTests(ThrottleIsolatedTestCase):
+    """accounts/passwords.py: a mother's password isn't one of those guessed first."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch("accounts.views.threading.Thread", new=_SynchronousThread)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def register(self, password, email="maria.santos@example.com", **headers):
+        return self.client.post("/auth/register/", {"email": email, "password": password}, **headers)
+
+    def test_common_and_all_number_passwords_are_refused_at_sign_up(self):
+        for password, reason in [
+            ("password", "This password is too common."),
+            ("12345678", "This password is too common."),
+            ("84726153904", "This password is entirely numeric."),
+            ("maria.santos@example", "The password is too similar to the email."),
+        ]:
+            with self.subTest(password=password):
+                response = self.register(password)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(reason, response.data["password"])
+        self.assertFalse(PendingRegistration.objects.exists())
+
+    def test_an_ordinary_good_password_still_works(self):
+        self.assertEqual(self.register("gatas-ni-nanay-2026").status_code, 201)
+
+    def test_the_reason_reaches_her_in_tagalog(self):
+        response = self.register("password", HTTP_ACCEPT_LANGUAGE="tl", HTTP_X_KALINGAPP_VERSION_CODE="7")
+        self.assertEqual(response.json()["password"][0], "Masyadong karaniwan ang password na ito.")
+
+    def test_a_reset_is_held_to_the_same_rules(self):
+        mother = User.objects.create_user(email="mother@example.com", password="her-old-password-26", is_active=True)
+        User.objects.filter(pk=mother.pk).update(
+            password_reset_code="246810", password_reset_sent_at=timezone.now(), password_reset_attempts=0,
+        )
+        reset = lambda new: self.client.post("/auth/reset-password/", {
+            "email": "mother@example.com", "code": "246810", "new_password": new,
+        })
+
+        refused = reset("12345678")
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(refused.data["detail"], "This password is too common.")
+        self.assertEqual(reset("gatas-ni-nanay-2026").status_code, 200)
+
+
 class ServerSideLogoutTests(ThrottleIsolatedTestCase):
     """POST /auth/logout/ revokes the refresh token on the server."""
 

@@ -3,7 +3,7 @@ import os
 from django.core.management.base import BaseCommand
 
 from accounts.models import User
-from accounts.staff_passwords import staff_password_problems
+from accounts.passwords import staff_password_problems
 from milkbank.models import Facility
 
 # Kept pointing at St. Luke's so an existing bookmark/saved login still
@@ -46,7 +46,7 @@ class Command(BaseCommand):
       * variable unset      -> nothing. A missing account is not created,
                                and nothing guessable is ever set.
       * variable too weak   -> nothing, with a warning. The staff password
-                               rules (accounts/staff_passwords.py), and never
+                               rules (accounts/passwords.py), and never
                                the same value as another account's variable.
       * variable set        -> the missing account is created with it.
 

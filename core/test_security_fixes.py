@@ -18,6 +18,7 @@ from accounts.models import PendingRegistration, User
 from accounts.tests import _SynchronousThread
 from articles.models import Article, ArticleComment
 from core.audit import log_action
+from core.models import AuditLogEntry
 from milkbank.models import DonorQuestionnaire, MilkBankRequest
 from milkbank.tests import make_facility, make_request
 
@@ -348,6 +349,18 @@ class SerologyPhotoSafetyTests(APITestCase):
             f.write(HTML)
         self.client.force_authenticate(user=self.staff)
         self.assertEqual(self.client.get(f"/milkbank/requests/{self.req.id}/serology-photo/").status_code, 404)
+
+    def test_a_photo_the_storage_no_longer_has_is_not_available_not_a_crash(self):
+        # E.g. one uploaded while photos still sat on the server's own disk,
+        # which every deploy wiped.
+        self.submit("photo.jpg", JPEG, "image/jpeg")
+        os.remove(DonorQuestionnaire.objects.get().serology_photo.path)
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.get(f"/milkbank/requests/{self.req.id}/serology-photo/")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(AuditLogEntry.objects.filter(action="serology_photo.missing").exists())
 
 
 # --- Facility staff passwords: one per account, never overwritten needlessly -

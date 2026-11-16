@@ -16,12 +16,18 @@ The rule (kept here, in one place, so the app's wording and the tests agree):
   * Password checks for one account happen one at a time
     (one_attempt_at_a_time), so guesses sent all at once are counted, and
     locked out, exactly as if they had been sent one after another.
+  * A device she has already signed in on (a valid trusted-device token --
+    accounts/devices.py) is not held to the account-wide lock, so nobody can
+    lock her out of her own phone by guessing her email. Its own wrong
+    passwords lock that device alone, by the same rule (the device_* helpers
+    below).
 """
 
 import threading
 from contextlib import contextmanager
 from datetime import timedelta
 
+from django.core.cache import cache
 from django.utils import timezone
 
 LOCK_THRESHOLD = 5
@@ -96,6 +102,46 @@ def register_failure(user, now=None):
     user.locked_until = now + duration if duration else None
     user.save(update_fields=LOCKOUT_FIELDS)
     return user.failed_login_attempts, user.failed_login_attempts == LOCK_THRESHOLD
+
+
+def _device_key(device):
+    return f"signin-device:{device}"
+
+
+def device_locked_until(device, now=None):
+    """When this trusted device's own lock ends, or None if it isn't locked."""
+    now = now or timezone.now()
+    state = cache.get(_device_key(device)) or {}
+    until = state.get("locked_until")
+    return until if until and until > now else None
+
+
+def register_device_failure(device, now=None):
+    """
+    One wrong password from a trusted device: counted against that device
+    only, with the same escalation as an account (lock_duration). Kept in the
+    cache -- a device's count is short-lived and needs no table. Call inside
+    one_attempt_at_a_time(), like register_failure().
+    """
+    now = now or timezone.now()
+    state = cache.get(_device_key(device)) or {}
+    attempts = state.get("attempts", 0)
+    last = state.get("last")
+    if last and now - last > ATTEMPT_MEMORY:
+        attempts = 0
+    attempts += 1
+    duration = lock_duration(attempts)
+    cache.set(
+        _device_key(device),
+        {"attempts": attempts, "last": now, "locked_until": now + duration if duration else None},
+        timeout=int((ATTEMPT_MEMORY + MAX_LOCK).total_seconds()),
+    )
+    return attempts
+
+
+def clear_device(device):
+    """Forget a trusted device's failed attempts, after it signs in with the right password."""
+    cache.delete(_device_key(device))
 
 
 def clear(user):

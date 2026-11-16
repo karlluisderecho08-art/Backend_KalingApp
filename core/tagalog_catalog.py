@@ -37,6 +37,12 @@ MESSAGES = {
         "Mali ang code para sa pag-reset.",
     "Password must be at least 8 characters.":
         "Dapat may hindi bababa sa 8 karakter ang password.",
+    "This password is too common.":
+        "Masyadong karaniwan ang password na ito.",
+    "This password is entirely numeric.":
+        "Puro numero ang password na ito.",
+    "The password is too similar to the email.":
+        "Masyadong kahawig ng iyong email ang password na ito.",
     "That password is incorrect.":
         "Mali ang password na iyan.",
     "An account with this email already exists.":

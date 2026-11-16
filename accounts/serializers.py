@@ -4,6 +4,7 @@ from rest_framework import serializers
 
 from . import lockout
 from .models import PendingRegistration, User
+from .passwords import mother_password_problems
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -76,6 +77,13 @@ class RegisterSerializer(serializers.Serializer):
         # already exists" told anyone who asked which addresses have
         # KalingApp accounts.
         return value.strip().lower()
+
+    def validate(self, attrs):
+        # Not one of the passwords people guess first -- see accounts/passwords.py.
+        problems = mother_password_problems(attrs["password"], User(email=attrs["email"]))
+        if problems:
+            raise serializers.ValidationError({"password": problems})
+        return attrs
 
     def create(self, validated_data):
         email = validated_data["email"]
