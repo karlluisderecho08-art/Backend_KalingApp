@@ -1,6 +1,5 @@
 import hashlib
 import logging
-import os
 import secrets
 import threading
 from datetime import timedelta
@@ -16,7 +15,7 @@ from django.http import Http404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import generics, permissions, serializers
-from rest_framework.exceptions import AuthenticationFailed, ValidationError
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
@@ -34,7 +33,7 @@ from notifications.models import NotificationItem
 from core.i18n import wants_tagalog
 from notifications.services import notify_many
 
-from . import devices, lockout
+from . import devices, lockout, owner
 from .legacy_signups import email_is_taken, is_abandoned_legacy_signup
 from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
@@ -384,11 +383,11 @@ class RegisterView(generics.CreateAPIView):
             "email": email,
         }, status=201)
 
-        owner = next(
+        existing = next(
             (user for user in User.objects.filter(email__iexact=email) if not is_abandoned_legacy_signup(user)),
             None,
         )
-        if owner is not None:
+        if existing is not None:
             # The password is hashed all the same and thrown away: a new
             # address spends seconds on it, and answering this one at once
             # would tell the two apart just by how long the reply took.
@@ -397,7 +396,7 @@ class RegisterView(generics.CreateAPIView):
             if cache.add(notice_key, True, self.EXISTING_NOTICE_SECONDS):
                 threading.Thread(
                     target=_send_existing_account_notice_in_background,
-                    args=(owner, wants_tagalog(request)), daemon=True,
+                    args=(existing, wants_tagalog(request)), daemon=True,
                 ).start()
             return answer
 
@@ -932,6 +931,9 @@ class AdminUserDeleteView(generics.DestroyAPIView):
     DELETE /auth/admin/users/<id>/ -- platform-admin only, permanently
     removes an account.
 
+    Mothers and facility staff: any admin. Another admin account: only the
+    owner admin (accounts/owner.py), and the owner admin itself: nobody.
+
     A hard delete, not a deactivate (StaffUserSetActiveView above is the
     reversible version, left in place for facility staff to use on a
     mother account). Every other model's FK to User is CASCADE (milkbank
@@ -955,6 +957,21 @@ class AdminUserDeleteView(generics.DestroyAPIView):
         # admin can never delete the only account that could undo it.
         if instance.id == self.request.user.id:
             raise ValidationError("You cannot delete your own account.")
+        # Admins can't delete one another: one stolen admin login could
+        # otherwise remove every other admin. Only the owner admin (the one
+        # Render's ADMIN_EMAIL names -- accounts/owner.py) may, and nobody may
+        # delete the owner admin. A refused try is worth a line in the audit log.
+        if owner.is_admin(instance):
+            if owner.is_owner(instance):
+                reason = "This is the owner admin account (the one Render's ADMIN_EMAIL names). It can't be deleted."
+            elif not owner.is_owner(self.request.user):
+                reason = ("Only the owner admin (the account Render's ADMIN_EMAIL names) can delete another "
+                          "admin account.")
+            else:
+                reason = None
+            if reason:
+                log_action(self.request.user, "user.delete_refused", f"User:{instance.id} ({instance.email}, admin)")
+                raise PermissionDenied(reason)
         log_action(self.request.user, "user.deleted", f"User:{instance.id} ({instance.email}, {instance.role})")
         instance.delete()
 
@@ -1248,8 +1265,9 @@ class EmailChangeConfirmView(APIView):
 
     `admin_email_setting_outdated` in the answer is true when the old address
     is the one Render's ADMIN_EMAIL names: that setting needs the new address
-    now (ensure_admin won't recreate an admin under the old one, but it would
-    keep warning on every deploy).
+    now. It also marks the owner admin (accounts/owner.py), so until it's
+    updated there is none; ensure_admin won't recreate an admin under the old
+    address, but it warns on every deploy.
     """
 
     permission_classes = [permissions.IsAdminUser]
@@ -1350,5 +1368,5 @@ class EmailChangeConfirmView(APIView):
             "user": UserSerializer(account).data,
             "access": str(refresh.access_token),
             "refresh": str(refresh),
-            "admin_email_setting_outdated": os.environ.get("ADMIN_EMAIL", "").strip().lower() == old_email.lower(),
+            "admin_email_setting_outdated": owner.owner_email() == old_email.lower(),
         })

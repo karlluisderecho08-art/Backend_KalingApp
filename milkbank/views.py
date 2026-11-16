@@ -36,6 +36,7 @@ from .capacity import has_donor_slot_room, has_room
 from .models import DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .permissions import IsFacilityStaff, IsRequestOwner
 from .photo_checks import MAX_PHOTO_BYTES, detect_image, read_head
+from .removal import remove_facility, removal_summary, restore_facility
 from .collection import confirms_by_delivery_link, delivery_link_due, notify_collection_steps
 from .results import decline_notification
 from .scheduling import counter_offer_errors
@@ -76,10 +77,20 @@ class FacilityListView(generics.ListCreateAPIView):
     POST /milkbank/facilities/ -- add a new facility. Platform-admin only
     (is_staff, not the facility_staff role -- this is the "who runs
     KalingApp" panel, not a single facility's own staff).
+
+    Facilities removed from KalingApp (milkbank/removal.py) are left out.
+    GET ?removed=1 lists only those instead -- for platform admins (the admin
+    portal's "Removed facilities"); for anyone else it lists nothing.
     """
 
-    queryset = Facility.objects.all()
     serializer_class = FacilitySerializer
+
+    def get_queryset(self):
+        if self.request.query_params.get("removed") == "1":
+            if not (self.request.user and self.request.user.is_staff):
+                return Facility.objects.none()
+            return Facility.objects.filter(removed_at__isnull=False).order_by("-removed_at")
+        return Facility.objects.filter(removed_at__isnull=True)
 
     def get_permissions(self):
         if self.request.method == "POST":
@@ -112,11 +123,69 @@ class FacilityDetailView(generics.RetrieveUpdateDestroyAPIView):
             return Response({
                 "detail": (
                     f"{facility.name} has {count} booking{'' if count == 1 else 's'} on record, so it "
-                    "can't be deleted. Edit it and switch off \"operational\" to stop new bookings instead."
+                    "can't be erased. Remove it from KalingApp instead: its booking history is kept."
                 ),
+                "code": "has_bookings",
             }, status=400)
         log_action(request.user, "facility.deleted", target)
         return Response(status=204)
+
+
+class FacilityRemovalView(APIView):
+    """
+    GET  /milkbank/facilities/<id>/remove/ -- what removing it would do
+         {bookings_on_record, open_bookings, staff_logins, removed}
+    POST /milkbank/facilities/<id>/remove/ -- remove it from KalingApp
+         -> {detail, cancelled_bookings, staff_logins_switched_off}
+
+    Platform-admin only. For a facility with bookings on record, which can't
+    be deleted outright -- see milkbank/removal.py for exactly what removing
+    does. The admin portal asks GET first, then deletes (no bookings) or
+    removes (bookings) with one confirmation either way.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, pk):
+        facility = generics.get_object_or_404(Facility, pk=pk)
+        return Response(removal_summary(facility))
+
+    @extend_schema(request=None)
+    def post(self, request, pk):
+        facility = generics.get_object_or_404(Facility, pk=pk)
+        result = remove_facility(facility, request.user)
+        cancelled = result["cancelled_bookings"]
+        return Response({
+            "detail": (
+                f"{facility.name} was removed from KalingApp. Its booking history is kept"
+                + (f"; {cancelled} booking{'' if cancelled == 1 else 's'} in progress "
+                   f"{'was' if cancelled == 1 else 'were'} cancelled and the mothers were told." if cancelled else ".")
+            ),
+            **result,
+        })
+
+
+class FacilityRestoreView(APIView):
+    """
+    POST /milkbank/facilities/<id>/restore/ -- bring a removed facility back
+         -> {detail, staff_logins_switched_on, facility}
+
+    Platform-admin only. It comes back NOT operational: the admin switches
+    that on once it is ready to take bookings again.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    @extend_schema(request=None)
+    def post(self, request, pk):
+        facility = generics.get_object_or_404(Facility, pk=pk)
+        result = restore_facility(facility, request.user)
+        facility.refresh_from_db()
+        return Response({
+            "detail": f"{facility.name} is back on KalingApp. Switch on \"operational\" when it can take bookings.",
+            **result,
+            "facility": FacilitySerializer(facility, context={"request": request}).data,
+        })
 
 
 def _allocation_error_response(exc):

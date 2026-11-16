@@ -8,6 +8,8 @@ from .views import (
     DonorQuestionnaireView,
     FacilityDetailView,
     FacilityListView,
+    FacilityRemovalView,
+    FacilityRestoreView,
     MilkBankRequestCreateView,
     MilkBankRequestDetailView,
     MyLatestDonorQuestionnaireView,
@@ -28,6 +30,10 @@ from .views import (
 urlpatterns = [
     path("facilities/", FacilityListView.as_view(), name="facility-list"),
     path("facilities/<int:pk>/", FacilityDetailView.as_view(), name="facility-detail"),
+    # Taking a facility with booking history out of KalingApp, and back
+    # (milkbank/removal.py).
+    path("facilities/<int:pk>/remove/", FacilityRemovalView.as_view(), name="facility-remove"),
+    path("facilities/<int:pk>/restore/", FacilityRestoreView.as_view(), name="facility-restore"),
     path("allocate/", SmartAllocationView.as_view(), name="smart-allocate"),
 
     path("requests/", MilkBankRequestCreateView.as_view(), name="request-create"),

@@ -217,7 +217,10 @@ class FacilitySerializer(serializers.ModelSerializer):
             "limit_donor_slots", "donor_bookings_per_slot",
             "full_donor_slots", "donor_fully_booked_dates", "staff_emails",
             "staff_user_id", "new_staff_email", "new_staff_password",
+            "removed_at",
         ]
+        # Set only by removing/restoring (milkbank/removal.py), never by an edit.
+        read_only_fields = ["removed_at"]
         extra_kwargs = {
             "min_request_ml": {"min_value": 1, "max_value": REQUEST_ML_CEILING},
             "max_request_ml": {"min_value": 1, "max_value": REQUEST_ML_CEILING},

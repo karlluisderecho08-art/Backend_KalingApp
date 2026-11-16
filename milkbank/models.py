@@ -68,6 +68,13 @@ class Facility(models.Model):
     limit_donor_slots = models.BooleanField(default=False)
     donor_bookings_per_slot = models.PositiveIntegerField(default=3)
 
+    # When an admin removed this facility from KalingApp (milkbank/removal.py),
+    # or null while it is part of it. A facility with bookings on record can't
+    # be deleted outright -- they are mothers' history, and each one keeps
+    # pointing here (MilkBankRequest.allocated_facility is PROTECT). Removing
+    # takes it out of every list and out of booking instead, and can be undone.
+    removed_at = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return self.name
 

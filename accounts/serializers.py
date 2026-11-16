@@ -2,7 +2,7 @@ from django.contrib.auth.hashers import make_password
 from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
-from . import lockout
+from . import lockout, owner
 from .models import PendingRegistration, User
 from .passwords import mother_password_problems
 
@@ -169,9 +169,15 @@ class AdminUserListSerializer(serializers.ModelSerializer):
     # True only while the lock is still running -- locked_until alone would
     # stay set (in the past) after a lock has expired on its own.
     is_locked = serializers.SerializerMethodField()
+    # The admin Render's ADMIN_EMAIL names: the only one that may delete other
+    # admin accounts, and one nobody can delete (accounts/owner.py).
+    is_owner = serializers.SerializerMethodField()
 
     def get_is_locked(self, user) -> bool:
         return lockout.is_locked(user)
+
+    def get_is_owner(self, user) -> bool:
+        return owner.is_owner(user)
 
     class Meta:
         model = User
@@ -181,7 +187,7 @@ class AdminUserListSerializer(serializers.ModelSerializer):
             "mom_name", "baby_name", "baby_age_weeks",
             "total_drawn_ml", "total_received_ml", "location_consent_given",
             "is_active", "date_joined", "last_login",
-            "failed_login_attempts", "locked_until", "is_locked",
+            "failed_login_attempts", "locked_until", "is_locked", "is_owner",
         ]
 
 

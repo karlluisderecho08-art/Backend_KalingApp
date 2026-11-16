@@ -184,7 +184,8 @@ def advance_stage(req):
     return bool(moved)
 
 
-def apply_transition(req, new_status, actor, action_name, message_override=None, amount_ml=None):
+def apply_transition(req, new_status, actor, action_name, message_override=None, amount_ml=None,
+                     facility_removed=False):
     """
     The one place a MilkBankRequest's status is ever allowed to change.
     Rejects illegal jumps (e.g. declined -> completed), and writes an
@@ -208,9 +209,17 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
     available stock before calling this, so stock_level_ml going negative
     here would mean that check was bypassed, not that this function needs
     to re-guard it.
+
+    `facility_removed` is for milkbank/removal.py only: a facility leaving
+    KalingApp can't finish anything still in progress there, so each such
+    booking is declined -- from ANY open status, including the two the table
+    doesn't let staff decline from (awaiting attendance, counter-offered).
     """
     old_status = req.current_sub_status
-    if new_status not in ALLOWED_TRANSITIONS.get(old_status, set()):
+    allowed = ALLOWED_TRANSITIONS.get(old_status, set())
+    if facility_removed and new_status == Status.DECLINED and old_status not in FINAL_STATUSES:
+        allowed = allowed | {Status.DECLINED}
+    if new_status not in allowed:
         raise InvalidTransition(f"Cannot move from {old_status} to {new_status}")
 
     if new_status == Status.AWAITING_ATTENDANCE:

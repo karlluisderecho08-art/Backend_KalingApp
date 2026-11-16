@@ -98,6 +98,9 @@ def eligibility_filters(request_type, requested_ml=None, bottles=False):
     filters = {
         "is_operational": True,
         "capacity__gt": 0,
+        # Removed from KalingApp (milkbank/removal.py) -- even if switched
+        # back to operational before being restored.
+        "removed_at__isnull": True,
     }
     # A RECIPIENT can't be sent to a facility too low on stock to
     # actually give her milk -- that's a hard exclusion, not just a

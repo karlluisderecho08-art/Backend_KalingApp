@@ -235,6 +235,10 @@ MESSAGES = {
         "Kulang ang donasyong gatas sa ngayon",
     "The milk bank doesn't have enough donor milk at the moment to fill your request. Please try again later. We're sorry we couldn't help this time.":
         "Kulang ang donasyong gatas ng milk bank sa ngayon para matugunan ang iyong kahilingan. Subukan ulit mamaya. Pasensya na at hindi ka namin natulungan ngayon.",
+    "Booking cancelled":
+        "Kinansela ang reserbasyon",
+    "This facility is no longer on KalingApp, so your booking was cancelled. This is not about anything you did. Please make a new booking and KalingApp will match you with another facility.":
+        "Wala na sa KalingApp ang pasilidad na ito, kaya kinansela ang iyong reserbasyon. Hindi ito dahil sa anumang ginawa mo. Gumawa ng bagong reserbasyon at itutugma ka ng KalingApp sa ibang pasilidad.",
     "Request not accepted":
         "Hindi tinanggap ang kahilingan",
     "The facility wasn't able to accept your request. Please contact them if you have questions.":

@@ -199,10 +199,15 @@ class AdminConversationListView(_MessagingView):
         rows = []
         for facility in Facility.objects.order_by("name"):
             c = conversations.get(facility.id)
+            # A facility removed from KalingApp (milkbank/removal.py) has nobody
+            # left to write to: it is listed only to keep its past messages in
+            # reach, and only if there are any.
+            if facility.removed_at is not None and not (c and c.last_message_at):
+                continue
             last = c.messages.order_by("-created_at", "-id").first() if c and c.last_message_at else None
             rows.append({
                 "facility_id": facility.id,
-                "facility_name": facility.name,
+                "facility_name": facility.name + (" (removed)" if facility.removed_at is not None else ""),
                 "last_message_at": c.last_message_at if c else None,
                 "last_message_preview": (last.body[:120] if last else ""),
                 "last_message_side": (last.side if last else None),

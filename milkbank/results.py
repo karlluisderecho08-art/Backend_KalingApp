@@ -88,6 +88,17 @@ DECLINE_RESULTS = {
     ),
 }
 
+# Not a label staff can pick: milkbank/removal.py sets it on every booking
+# still in progress when an admin removes the facility from KalingApp.
+FACILITY_REMOVED_REASON = "Facility removed from KalingApp"
+DECLINE_RESULTS[FACILITY_REMOVED_REASON.lower()] = (
+    "Booking cancelled",
+    "This facility is no longer on KalingApp, so your booking was cancelled. This is not "
+    "about anything you did. Please make a new booking and KalingApp will match you with "
+    "another facility.",
+    False,
+)
+
 GENERIC_DECLINE = (
     "Request not accepted",
     "The facility wasn't able to accept your request. Please contact them if you "

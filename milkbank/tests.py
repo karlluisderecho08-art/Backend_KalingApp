@@ -2189,7 +2189,8 @@ class DeleteFacilityTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("1 booking on record", response.data["detail"])
-        self.assertIn("operational", response.data["detail"])
+        # It points at what to do instead (milkbank/removal.py).
+        self.assertIn("Remove it from KalingApp", response.data["detail"])
         self.assertTrue(Facility.objects.filter(pk=facility.id).exists())
         self.assertFalse(AuditLogEntry.objects.filter(action="facility.deleted").exists())
 

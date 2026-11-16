@@ -68,6 +68,9 @@ class Command(BaseCommand):
         if not password:
             self.stdout.write(f"{var} not set -- {email} not created.")
             return
+        if facility.removed_at is not None:
+            self.stdout.write(f"{facility.name} was removed from KalingApp -- {email} not created.")
+            return
         if password in duplicates:
             self.stdout.write(self.style.WARNING(
                 f"{var} is the same as another staff account's password -- {email} left as it is. "

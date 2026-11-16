@@ -142,6 +142,11 @@ services:
       # admin portal's sign-in page). Pointing ADMIN_EMAIL at a new address
       # creates a second admin on the next deploy; ADMIN_PASSWORD is only
       # ever used for that creation.
+      #
+      # ADMIN_EMAIL also names the OWNER admin (accounts/owner.py): the only
+      # admin that may delete other admin accounts, and one no admin can
+      # delete. So keep it pointing at your own admin account -- after
+      # "Change email" in the portal, set it to the new address.
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD

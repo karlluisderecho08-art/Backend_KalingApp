@@ -43,7 +43,8 @@ class Command(BaseCommand):
     moved away from (Settings -> Change email in the admin portal): the
     account still exists under its new address, and a fresh admin at the old
     one -- an inbox its owner may have given up -- would be a second way in.
-    It warns instead, until ADMIN_EMAIL is set to the new address (or removed).
+    It warns instead, until ADMIN_EMAIL is set to the new address -- which
+    also makes that account the owner admin again (accounts/owner.py).
 
     Role is a different story: create_superuser doesn't set one, so it
     fell back to the model default (Role.MOTHER) and the admin account
@@ -72,7 +73,8 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING(
                     f"ADMIN_EMAIL is {email}, but an admin account moved from that address to a new one on "
                     f"{moved:%Y-%m-%d} (Change email), so no admin was created there. In Render, set "
-                    "ADMIN_EMAIL to that account's new address, or delete ADMIN_EMAIL and ADMIN_PASSWORD."
+                    "ADMIN_EMAIL to that account's new address (it also marks the owner admin, the one "
+                    "that may delete other admins)."
                 ))
                 return
             User.objects.create_superuser(email=email, password=password, role=User.Role.FACILITY_STAFF)
