@@ -158,6 +158,18 @@ class User(AbstractUser):
     password_reset_sent_at = models.DateTimeField(null=True, blank=True)
     password_reset_attempts = models.PositiveSmallIntegerField(default=0)
 
+    # --- Changing the sign-in email (the admin portal's Settings; see
+    # accounts.views.EmailChangeRequestView) -- the same shape as the password
+    # reset above: a 6-digit code, a sent-at timestamp that is both its expiry
+    # and its resend clock, and a guess counter. `pending_email` is the address
+    # the code went to; `email` itself only changes once that code comes back.
+    # A pending address with a blank code is one that already belongs to
+    # another account: its owner was told so instead, and nothing can confirm it.
+    pending_email = models.EmailField(blank=True)
+    pending_email_code = models.CharField(max_length=6, blank=True)
+    pending_email_sent_at = models.DateTimeField(null=True, blank=True)
+    pending_email_attempts = models.PositiveSmallIntegerField(default=0)
+
     # --- Sign-in lockout (see accounts/lockout.py for the rule) ---
     # Wrong passwords in a row, when the last one was, and until when the
     # account refuses every sign-in. Lives on the account (not the IP) so

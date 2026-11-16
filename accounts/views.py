@@ -1,13 +1,16 @@
 import hashlib
 import logging
+import os
+import secrets
 import threading
 from datetime import timedelta
+from functools import partial
 
 from django.conf import settings
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth.models import update_last_login
 from django.core.cache import cache
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.http import Http404
 from django.utils import timezone
@@ -37,6 +40,10 @@ from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
     RESEND_COOLDOWN_SECONDS,
     VERIFICATION_CODE_TTL_MINUTES,
+    generate_code,
+    send_email_change_code,
+    send_email_changed_notice,
+    send_email_in_use_notice,
     send_existing_account_notice,
     send_password_reset_email,
     send_verification_email,
@@ -995,6 +1002,46 @@ class LocationConsentView(APIView):
         return Response(UserSerializer(user).data)
 
 
+def _check_password_again(request, user):
+    """
+    For an action that asks a signed-in account for its password again
+    (deleting a mother's account, changing an admin's email): checks
+    request.data's `password` under the same lockout as signing in
+    (accounts/lockout.py). So a device left signed in can't be used for the
+    action without the password, and the action can't be used to guess the
+    password either.
+
+    One check at a time per account, as at sign-in -- and, as at sign-in, a
+    trusted device (request.data's `device_token`) isn't held to an
+    account-wide lock that someone else's guesses set off; its own wrong
+    passwords lock only itself.
+
+    Returns None when the password is right, otherwise the response to send:
+    423 while locked, or 400 {"code": "wrong_password"}.
+    """
+    password = request.data.get("password") or ""
+    with lockout.one_attempt_at_a_time(user):
+        device = devices.device_id(request.data.get("device_token"), user)
+        if device is not None:
+            until = lockout.device_locked_until(device)
+            if until:
+                return ThrottledTokenObtainPairView._locked_response(user, until)
+        elif lockout.is_locked(user):
+            return ThrottledTokenObtainPairView._locked_response(user)
+        if not isinstance(password, str) or not user.check_password(password):
+            if device is not None:
+                lockout.register_device_failure(device)
+                until = lockout.device_locked_until(device)
+                if until:
+                    return ThrottledTokenObtainPairView._locked_response(user, until)
+            else:
+                lockout.register_failure(user)
+                if lockout.is_locked(user):
+                    return ThrottledTokenObtainPairView._locked_response(user)
+            return Response({"detail": "That password is incorrect.", "code": "wrong_password"}, status=400)
+    return None
+
+
 class DeleteMyAccountView(APIView):
     """
     POST /auth/me/delete/  {password}
@@ -1025,8 +1072,6 @@ class DeleteMyAccountView(APIView):
 
     @extend_schema(request=None)
     def post(self, request):
-        from django.db import transaction
-
         from milkbank.models import MilkBankRequest
 
         user = request.user
@@ -1035,29 +1080,9 @@ class DeleteMyAccountView(APIView):
                 {"detail": "Staff and admin accounts can only be removed by a platform admin."},
                 status=403,
             )
-        password = request.data.get("password") or ""
-        # One password check at a time for her account, the same as signing
-        # in -- and, the same as signing in, her own trusted device isn't held
-        # to an account-wide lock that someone else's guesses set off.
-        with lockout.one_attempt_at_a_time(user):
-            device = devices.device_id(request.data.get("device_token"), user)
-            if device is not None:
-                until = lockout.device_locked_until(device)
-                if until:
-                    return ThrottledTokenObtainPairView._locked_response(user, until)
-            elif lockout.is_locked(user):
-                return ThrottledTokenObtainPairView._locked_response(user)
-            if not isinstance(password, str) or not user.check_password(password):
-                if device is not None:
-                    lockout.register_device_failure(device)
-                    until = lockout.device_locked_until(device)
-                    if until:
-                        return ThrottledTokenObtainPairView._locked_response(user, until)
-                else:
-                    lockout.register_failure(user)
-                    if lockout.is_locked(user):
-                        return ThrottledTokenObtainPairView._locked_response(user)
-                return Response({"detail": "That password is incorrect.", "code": "wrong_password"}, status=400)
+        refusal = _check_password_again(request, user)
+        if refusal is not None:
+            return refusal
 
         open_statuses = [
             MilkBankRequest.Status.PENDING,
@@ -1085,3 +1110,245 @@ class DeleteMyAccountView(APIView):
             log_action(None, "user.self_deleted", f"User:{user.id} (mother)")
             user.delete()
         return Response(status=204)
+
+
+# --- Changing the sign-in email, keeping the same account -----------------
+#
+# Two steps, like a password reset: the password (step 1) sends a code to
+# the new address, and the code (step 2) makes the change. The account stays
+# the same row, so everything attached to it -- its audit log entries,
+# messages, notifications -- stays attached. Admin accounts only for now
+# (the admin portal's Settings); the same two views can later serve
+# facility staff, or the mother app.
+
+PENDING_EMAIL_FIELDS = ["pending_email", "pending_email_code", "pending_email_sent_at", "pending_email_attempts"]
+
+
+def _clear_pending_email(user):
+    user.pending_email = ""
+    user.pending_email_code = ""
+    user.pending_email_sent_at = None
+    user.pending_email_attempts = 0
+
+
+def _end_every_session(user):
+    """
+    Revokes every refresh token the account has been given (simplejwt's
+    token_blacklist), so every device signed in to it is signed out once its
+    short-lived access token runs out. The caller hands the device it is
+    answering a fresh pair, issued after this.
+    """
+    from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+
+    live = OutstandingToken.objects.filter(user=user, expires_at__gt=timezone.now(), blacklistedtoken__isnull=True)
+    BlacklistedToken.objects.bulk_create([BlacklistedToken(token=token) for token in live], ignore_conflicts=True)
+
+
+class EmailChangeRequestView(APIView):
+    """
+    POST /auth/me/email/  {new_email, password, device_token?} -- admin accounts only.
+
+    Step 1 of changing the email this account signs in with. The password is
+    checked first, under the sign-in lockout and trusted-device rules
+    (_check_password_again), then a 6-digit code goes to the NEW address --
+    the same lifetime (15 minutes), guess limit (5) and one-a-minute resend
+    clock as a password reset code. Nothing about the account changes until
+    EmailChangeConfirmView gets that code back.
+
+    An address that already belongs to another account gets the very same
+    answer: its inbox is sent a notice that it can't be used instead of a
+    code, so this can't be used to find out which addresses have accounts.
+
+    Asking again replaces the earlier code (and address).
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "login"
+    throttle_classes = [ClientIPScopedRateThrottle]
+
+    @extend_schema(
+        request=inline_serializer("EmailChangeRequest", {
+            "new_email": serializers.EmailField(),
+            "password": serializers.CharField(),
+            "device_token": serializers.CharField(required=False),
+        }),
+        responses={200: None},
+    )
+    def post(self, request):
+        user = request.user
+        raw = request.data.get("new_email")
+        if not isinstance(raw, str) or not raw.strip():
+            return Response({"new_email": ["Enter the new email address."]}, status=400)
+        try:
+            # The same as a signup's address: trimmed and lower-cased.
+            new_email = serializers.EmailField(max_length=254).run_validation(raw.strip()).lower()
+        except ValidationError as exc:
+            return Response({"new_email": exc.detail}, status=400)
+        if new_email == user.email.lower():
+            return Response({"new_email": ["That is already this account's email address."]}, status=400)
+
+        refusal = _check_password_again(request, user)
+        if refusal is not None:
+            return refusal
+
+        # Decided before the code is made, and answered the same either way.
+        in_use = email_is_taken(new_email)
+        now = timezone.now()
+        with transaction.atomic():
+            # Locked so two requests at once can't both send.
+            account = User.objects.select_for_update().get(pk=user.pk)
+            if account.pending_email_sent_at:
+                wait = RESEND_COOLDOWN_SECONDS - int((now - account.pending_email_sent_at).total_seconds())
+                if wait > 0:
+                    wait = min(wait, RESEND_COOLDOWN_SECONDS)
+                    return Response(
+                        {
+                            "detail": f"A code was sent less than a minute ago. Wait {wait} seconds, then try again.",
+                            "code": "code_recently_sent",
+                            "retry_after_seconds": wait,
+                        },
+                        status=429,
+                        headers={"Retry-After": str(wait)},
+                    )
+            account.pending_email = new_email
+            account.pending_email_code = "" if in_use else generate_code()
+            account.pending_email_sent_at = now
+            account.pending_email_attempts = 0
+            account.save(update_fields=PENDING_EMAIL_FIELDS)
+
+        if in_use:
+            send, kind = send_email_in_use_notice, "email_in_use_notice"
+        else:
+            send, kind = send_email_change_code, "email_change_code"
+        # Fire-and-forget, like every other email here (_send_in_background).
+        threading.Thread(target=_send_in_background, args=(send, account, kind), daemon=True).start()
+        log_action(user, "account.email_change_requested", f"User:{user.id} to {new_email}"[:255])
+
+        return Response({
+            "detail": f"We sent an email to {new_email}. Enter the 6-digit code from it to finish the change.",
+            "pending_email": new_email,
+            "code_minutes": VERIFICATION_CODE_TTL_MINUTES,
+            "resend_after_seconds": RESEND_COOLDOWN_SECONDS,
+        })
+
+
+class EmailChangeConfirmView(APIView):
+    """
+    POST /auth/me/email/confirm/  {code} -- admin accounts only.
+
+    Step 2: the code EmailChangeRequestView sent to the new address. Only now
+    does the account's email change. Then:
+      * every session of the account is signed out (its refresh tokens are
+        revoked), and this one is handed a fresh pair in the answer
+        (`access`, `refresh`) to carry on with;
+      * the OLD address is told about the change;
+      * the audit log records `account.email_changed` with both addresses;
+      * any password reset code still out (it went to the old address) stops
+        working.
+
+    `admin_email_setting_outdated` in the answer is true when the old address
+    is the one Render's ADMIN_EMAIL names: that setting needs the new address
+    now (ensure_admin won't recreate an admin under the old one, but it would
+    keep warning on every deploy).
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "verify"
+    throttle_classes = [ClientIPScopedRateThrottle]
+
+    @extend_schema(
+        request=inline_serializer("EmailChangeConfirm", {"code": serializers.CharField()}),
+        responses={200: None},
+    )
+    def post(self, request):
+        user = request.user
+        code = str(request.data.get("code") or "").strip()
+        user.refresh_from_db(fields=PENDING_EMAIL_FIELDS)
+
+        if not user.pending_email or not user.pending_email_sent_at:
+            return Response(
+                {"detail": "There's no email change waiting to be confirmed. Start again.", "code": "no_pending_change"},
+                status=400,
+            )
+        if timezone.now() - user.pending_email_sent_at > timedelta(minutes=VERIFICATION_CODE_TTL_MINUTES):
+            return Response({"detail": "This code has expired. Ask for a new one.", "code": "code_expired"}, status=400)
+
+        # Counted before it is compared, in one UPDATE that only succeeds while
+        # guesses are left -- see VerifyEmailView.
+        guesses_left = User.objects.filter(pk=user.pk, pending_email_attempts__lt=MAX_VERIFICATION_ATTEMPTS)
+        if not guesses_left.update(pending_email_attempts=F("pending_email_attempts") + 1):
+            return Response(
+                {"detail": "Too many incorrect codes. Ask for a new one.", "code": "too_many_attempts"}, status=400,
+            )
+        if (
+            not code
+            or not user.pending_email_code
+            or not secrets.compare_digest(code.encode(), user.pending_email_code.encode())
+        ):
+            return Response({"detail": "Incorrect code.", "code": "wrong_code"}, status=400)
+
+        unusable = Response(
+            {"detail": "That address now belongs to another KalingApp account, so it can't be used. "
+                       "Choose a different one.", "code": "email_in_use"},
+            status=400,
+        )
+        changed_at = timezone.now()
+        with transaction.atomic():
+            account = User.objects.select_for_update().get(pk=user.pk)
+            # A newer request may have replaced the code since it was read above.
+            if account.pending_email != user.pending_email or account.pending_email_code != user.pending_email_code:
+                return Response(
+                    {"detail": "A newer code was sent. Enter the code from the latest email.", "code": "code_replaced"},
+                    status=400,
+                )
+            old_email, new_email = account.email, account.pending_email
+
+            # Checked again: the address may have gained an account since the
+            # code was sent. An abandoned signup from before verification
+            # existed is the one kind of account that gives way (it would
+            # otherwise block the address forever) -- see legacy_signups.py.
+            for leftover in User.objects.filter(email__iexact=new_email, is_active=False).exclude(pk=account.pk):
+                if is_abandoned_legacy_signup(leftover):
+                    leftover.delete()
+            if email_is_taken(new_email):
+                _clear_pending_email(account)
+                account.save(update_fields=PENDING_EMAIL_FIELDS)
+                return unusable
+
+            account.email = new_email
+            # Proved just now, by the code that reached it.
+            account.email_verified = True
+            _clear_pending_email(account)
+            # A reset code still out went to the old address; it mustn't
+            # unlock the account at its new one.
+            account.password_reset_code = ""
+            account.password_reset_attempts = 0
+            try:
+                with transaction.atomic():
+                    account.save(update_fields=[
+                        "email", "email_verified", *PENDING_EMAIL_FIELDS,
+                        "password_reset_code", "password_reset_attempts",
+                    ])
+            except IntegrityError:
+                # Another account took the address at this very moment.
+                account.refresh_from_db()
+                _clear_pending_email(account)
+                account.save(update_fields=PENDING_EMAIL_FIELDS)
+                return unusable
+
+        _end_every_session(account)
+        refresh = RefreshToken.for_user(account)
+        notice = partial(send_email_changed_notice, old_email=old_email, changed_at=changed_at)
+        threading.Thread(
+            target=_send_in_background, args=(notice, account, "email_changed_notice"), daemon=True,
+        ).start()
+        log_action(account, "account.email_changed", f"User:{account.id} from {old_email} to {new_email}"[:255])
+
+        return Response({
+            "detail": f"Your sign-in email is now {new_email}. Every other device signed in to this account "
+                      "has been signed out.",
+            "user": UserSerializer(account).data,
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "admin_email_setting_outdated": os.environ.get("ADMIN_EMAIL", "").strip().lower() == old_email.lower(),
+        })

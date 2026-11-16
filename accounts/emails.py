@@ -1,4 +1,5 @@
 import secrets
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -109,5 +110,78 @@ def send_password_reset_email(user, tagalog=False):
         ), tagalog=tagalog),
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user.email],
+        fail_silently=False,
+    )
+
+
+# --- Changing an account's sign-in email (accounts.views.EmailChangeRequestView).
+# Only admins can change their email so far, from the admin portal, so these
+# are in English only. `tagalog` is accepted to fit views._send_in_background. ---
+
+def send_email_change_code(user, tagalog=False):
+    """
+    Emails the code that confirms an email change to the NEW address
+    (user.pending_email). The code was generated and saved by the view before
+    it answered, so the confirm step never races this send. The account's
+    current address is left out: if the new one was mistyped, a stranger
+    reads this.
+    """
+    send_mail(
+        subject="Confirm your new KalingApp email address",
+        message=(
+            "Hi,\n\n"
+            f"Your KalingApp code to confirm this email address is {user.pending_email_code}.\n"
+            f"It expires in {VERIFICATION_CODE_TTL_MINUTES} minutes.\n\n"
+            "Enter it in the KalingApp admin portal to make this the account's sign-in email.\n\n"
+            "If you didn't ask for this, you can safely ignore this email — nothing will change."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.pending_email],
+        fail_silently=False,
+    )
+
+
+def send_email_in_use_notice(user, tagalog=False):
+    """
+    Sent to the new address INSTEAD of a code when it already belongs to
+    another account. The admin portal is answered exactly as if a code had
+    gone out, so the form can't be used to find out which addresses have
+    accounts; whoever really reads this inbox learns why no code came.
+    """
+    send_mail(
+        subject="Your KalingApp email address",
+        message=(
+            "Hi,\n\n"
+            "Someone asked to move a KalingApp admin account to this email address. This address "
+            "already has a KalingApp account, so it can't be used for another one, and nothing was "
+            "changed.\n\n"
+            "If that was you, go back to the admin portal and choose a different address. If it "
+            "wasn't you, you can safely ignore this email."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.pending_email],
+        fail_silently=False,
+    )
+
+
+def send_email_changed_notice(user, old_email, changed_at, tagalog=False):
+    """
+    Tells the OLD address that the account now signs in with user.email, once
+    the change is done -- so a change its owner didn't make doesn't go unseen.
+    """
+    when = changed_at.astimezone(ZoneInfo("Asia/Manila"))
+    send_mail(
+        subject="Your KalingApp email address was changed",
+        message=(
+            "Hi,\n\n"
+            f"The KalingApp admin account that used this email address now signs in with "
+            f"{user.email} instead. The change was made on {when:%B} {when.day}, {when.year} at "
+            f"{when.hour % 12 or 12}:{when:%M %p} (Philippine time), confirmed with the account's password and a code "
+            "sent to the new address.\n\n"
+            "If you made this change, there's nothing else to do. If you didn't, contact another "
+            "KalingApp admin right away."
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[old_email],
         fail_silently=False,
     )

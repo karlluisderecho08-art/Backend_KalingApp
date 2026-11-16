@@ -9,6 +9,8 @@ from .views import (
     CheckInView,
     DeleteMyAccountView,
     DemoLoginView,
+    EmailChangeConfirmView,
+    EmailChangeRequestView,
     ForgotPasswordView,
     LocationConsentView,
     LogoutView,
@@ -40,6 +42,10 @@ urlpatterns = [
     path("demo-login/", DemoLoginView.as_view(), name="demo_login"),
     path("me/", MeView.as_view(), name="me"),
     path("me/delete/", DeleteMyAccountView.as_view(), name="me-delete"),
+    # Changing the sign-in email: the password sends a code to the new
+    # address, the code makes the change (admin accounts only, for now).
+    path("me/email/", EmailChangeRequestView.as_view(), name="me-email"),
+    path("me/email/confirm/", EmailChangeConfirmView.as_view(), name="me-email-confirm"),
     path("check-in/", CheckInView.as_view(), name="check-in"),
     path("location/", LocationConsentView.as_view(), name="location-consent"),
     path("users/", StaffUserListView.as_view(), name="staff-user-list"),
