@@ -13,28 +13,20 @@
 # actual name so that IF this blueprint is ever synced, Render adopts
 # the existing service instead of trying to stand up a duplicate.
 #
-# `plan: free` on both services -- fine for testing, but Render's free
-# Postgres expires after ~30 days (already flagged in the roadmap) and
-# the free web service "spins down" after 15 minutes of no traffic, so
-# the first request after a quiet period is slow to wake it up.
+# `plan: free` -- the free web service "spins down" after 15 minutes of
+# no traffic, so the first request after a quiet period is slow to wake
+# it up.
 #
-# DATABASE_URL points at Supabase (kalingapp_db, ap-southeast-1), not
-# the kalingapp-db Postgres resource below -- migrated 2026-09-29
-# specifically to get off that 30-day expiry, which a Supabase project
-# doesn't have (it pauses after inactivity instead of deleting itself on
-# a fixed clock). See DATABASE_URL's own comment for why the wiring
-# changed from `fromDatabase` to a dashboard-set secret.
+# DATABASE_URL points at Supabase (kalingapp_db, ap-southeast-1) --
+# migrated there 2026-09-29 from a free Render Postgres (`kalingapp-db`),
+# to get off its 30-day expiry; a Supabase project pauses after
+# inactivity instead of deleting itself on a fixed clock. See
+# DATABASE_URL's own comment for why the wiring is a dashboard-set secret.
 #
-# The kalingapp-db Postgres block below is left in place, still
-# running, not deleted -- retiring it is a separate decision for
-# whoever owns the Render account to make once Supabase has proven
-# itself in production, not something to fold into this same change.
-#
-# The OLD kalingapp-backend web service (Oregon) still exists in
-# Render's dashboard too, outside this file entirely -- it was never
-# removed, just superseded. Same reasoning as kalingapp-db: retiring it
-# is a manual, deliberate call for whoever owns the account, not
-# something this file should decide.
+# Retired since: the old Render Postgres `kalingapp-db` (deleted by the
+# owner on 2026-11-16, so its `databases:` block is gone from this file)
+# and the old Oregon web service `kalingapp-backend` (its URL answers
+# Render's own "Not Found").
 
 services:
   - type: web
@@ -210,13 +202,3 @@ services:
         sync: false
       - key: SUPABASE_STORAGE_BUCKET
         sync: false
-
-# Still running, still owned by this blueprint, but no longer what
-# DATABASE_URL points at (see the top-of-file comment) -- nothing here
-# reads or writes to this database any more. Left in place rather than
-# removed: deleting this block would tell Render's next IaC sync to
-# tear the resource down, which is a real, immediate, irreversible data
-# loss and not this file's call to make silently.
-databases:
-  - name: kalingapp-db
-    plan: free
