@@ -155,7 +155,7 @@ DJANGO_ADMIN_ENABLED = env.bool("DJANGO_ADMIN_ENABLED", default=False)
 # One product version for every part of KalingApp (backend, admin portal,
 # facility console, mother app). Bump it here, in both package.json files and
 # in the app's versionName together, and tag each repository v<version>.
-KALINGAPP_VERSION = "1.3.2"
+KALINGAPP_VERSION = "1.3.3"
 
 # What the mother app is told by GET /app/version/. An installed app whose
 # versionCode is below APP_MIN_VERSION_CODE is blocked until it updates
@@ -164,10 +164,12 @@ KALINGAPP_VERSION = "1.3.2"
 # reaches copies too old to ask. Raise both codes when publishing a release.
 # The app sends its own code in the X-KalingApp-Version-Code header.
 APP_LATEST_VERSION_NAME = env("APP_LATEST_VERSION_NAME", default=KALINGAPP_VERSION)
-# 7 (1.3.2) is the latest, published 2026-11-16: trusted devices, sign-out
-# revoked on the server, the privacy notice naming Gemini. Not required --
-# 1.3.1 works with this server -- so the minimum below stays 6.
-APP_LATEST_VERSION_CODE = env.int("APP_LATEST_VERSION_CODE", default=7)
+# 8 (1.3.3) is the latest, published 2026-11-18: she can cancel a booking,
+# holidays are greyed out, the real deadlines to confirm or to answer a
+# proposed date, a notice when her day is closed, resending screening
+# answers. Not required -- 1.3.2 and 1.3.1 work with this server, which
+# refuses holidays and closed days itself -- so the minimum below stays 6.
+APP_LATEST_VERSION_CODE = env.int("APP_LATEST_VERSION_CODE", default=8)
 # 6 (1.3.1) is required: it asks a Pick up for its pin, address and landmark,
 # and a Drop off for its courier link to confirm -- reaching this minimum is
 # also what makes the server demand them from every app
