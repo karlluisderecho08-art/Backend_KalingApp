@@ -124,6 +124,43 @@ class EveryMotherMessageIsTranslatedTests(TestCase):
             self.assertTranslated(body.format(date="December 1, 2026", time="10:00 AM"))
         self.assertTranslated(REMINDER_BODY.format(time="10:00 AM"))
 
+    def test_closed_days_cancelling_and_deadlines(self):
+        from datetime import date, datetime
+
+        from milkbank import closures, scheduling, transitions, views
+        from milkbank.business_hours import BUSINESS_TZ
+
+        deadline = datetime(2026, 12, 3, 15, 0, tzinfo=BUSINESS_TZ)
+        for template in list(transitions.DEADLINE_NOTIFICATIONS.values()) + [transitions.COUNTER_OFFER_ACCEPTED_NOTIFICATION]:
+            text = transitions.deadline_notification(template, deadline)
+            self.assertTranslated(text)
+            self.assertIn("Disyembre 3, 2026", translate(text))
+        for message in (
+            transitions.DROP_OFF_COUNTER_OFFER_ACCEPTED_NOTIFICATION,
+            transitions.STATUS_NOTIFICATIONS[Status.CANCELLED],
+            "Milk Bank Request: Cancelled",
+            scheduling.INVALID_TIME, scheduling.WEEKEND_CLOSED, scheduling.PAST_SLOT,
+            scheduling.HOLIDAY_CLOSED.format(date="December 25, 2026"),
+            scheduling.FACILITY_CLOSED.format(facility="PGH Human Milk Bank", date="December 3, 2026"),
+            scheduling.NO_FACILITY_OPEN.format(date="December 3, 2026"),
+            views.DAY_CLOSED_FOR_HER.format(facility="PGH Human Milk Bank"),
+            views.APPOINTMENT_PASSED_FOR_HER, views.OFFER_DAY_CLOSED, views.CANCEL_AFTER_COLLECTION,
+            "This booking has just changed. Refresh it and try again.",
+            closures.MOTHER_TITLE,
+            closures.MOTHER_BODY.format(facility="PGH Human Milk Bank", date="December 3, 2026"),
+        ):
+            self.assertTranslated(message)
+        self.assertIn("Disyembre 25, 2026", translate(scheduling.HOLIDAY_CLOSED.format(date="December 25, 2026")))
+        for kind, closed_from in ((Status.EXPIRED, Status.COUNTER_OFFERED), (Status.CANCELLED, Status.PENDING)):
+            result = results.mother_result(MilkBankRequest(current_sub_status=kind, closed_from=closed_from))
+            self.assertTranslated(result["title"])
+            self.assertTranslated(result["message"])
+        from milkbank.collection import STEPS_CONFIRMED
+
+        for body in STEPS_CONFIRMED.values():
+            self.assertTranslated(body.format(date="December 1, 2026", time="10:00 AM"))
+        self.assertEqual(LABELS["Cancelled"], "Kinansela")
+
     def test_kali_fixed_replies(self):
         self.assertTranslated(OFF_TOPIC_RESPONSE)
         for prompt in ("latch", "milk supply", "storage", "donate", "hello", "something else"):

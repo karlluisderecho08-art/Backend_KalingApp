@@ -359,7 +359,10 @@ class OneBookingPerTapTests(APITestCase):
             email="staff@example.com", password=None, is_active=True,
             role=User.Role.FACILITY_STAFF, facility=facility,
         )
-        req = make_request(self.mother, facility, request_type=MilkBankRequest.RequestType.RECIPIENT)
+        # On Results, her pickup: the only step a booking is completed from.
+        req = make_request(
+            self.mother, facility, request_type=MilkBankRequest.RequestType.RECIPIENT, current_stage_index=3,
+        )
         apply_transition(req, Status.AWAITING_ATTENDANCE, staff, "accepted")
         apply_transition(req, Status.SCHEDULED, self.mother, "attendance_confirmed")
         # Read while the facility still had 100 mL ...

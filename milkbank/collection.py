@@ -17,7 +17,9 @@ rebooked) until her milk is collected.
 
 Notifications (all Bookings, all with a Tagalog line in core/tagalog_catalog.py):
   * when her appointment is confirmed (Scheduled), and whenever she changes the
-    method, the steps for that method, with her date and time;
+    method, the steps for that method, with her date and time. Sent while she
+    can still change it, they say so; sent at confirmation, they say to message
+    the facility instead -- the method is fixed from then on;
   * at the appointment hour, for a Drop off with no link yet, a reminder to
     book the courier and paste its link. Sent once per appointment, from the
     same sweep that expires overdue requests (transitions.sweep_expired_requests).
@@ -40,20 +42,34 @@ Status = MilkBankRequest.Status
 OPEN_STATUSES = (Status.AWAITING_ATTENDANCE, Status.SCHEDULED)
 
 STEPS_TITLE = "How your milk will reach the facility"
+# Sent while she can still change the method -- until her booking is confirmed.
 STEPS = {
     Method.PICKUP: (
         "Pick up: the facility will collect your milk from you on {date} at {time}. "
-        "Have your milk ready by then. You can change this in Booking Status until your milk is collected."
+        "Have your milk ready by then. You can change this in Booking Status until your booking is confirmed."
     ),
     Method.WALK_IN: (
         "Walk-in: bring your milk to the facility yourself on {date} at {time}. "
         "Keep it cold on the way, in a cooler or insulated bag. "
-        "You can change this in Booking Status until your milk is collected."
+        "You can change this in Booking Status until your booking is confirmed."
     ),
     Method.DROP_OFF: (
         "Drop off: book a courier (for example Lalamove or Grab) to bring your milk to the facility on "
         "{date} at {time}, then paste its delivery link in Booking Status. That confirms your booking "
         "and lets the facility track your milk."
+    ),
+}
+# Sent once her booking is confirmed: the method is fixed from then on
+# (views.CollectionMethodView), so these say what to do if something changes.
+STEPS_CONFIRMED = {
+    Method.PICKUP: (
+        "Pick up: the facility will collect your milk from you on {date} at {time}. "
+        "Have your milk ready by then. If something changes, message the facility in Chat from Booking Status."
+    ),
+    Method.WALK_IN: (
+        "Walk-in: bring your milk to the facility yourself on {date} at {time}. "
+        "Keep it cold on the way, in a cooler or insulated bag. "
+        "If something changes, message the facility in Chat from Booking Status."
     ),
 }
 # A Drop off whose link is already in (pasting it is what confirmed her booking).
@@ -77,16 +93,21 @@ def _appointment_day(req):
     return date.fromisoformat(day) if isinstance(day, str) else day
 
 
-def appointment_start(req):
-    """When her appointment begins, as an aware datetime (Manila), or None if the time can't be read."""
+def slot_start(day, time_label):
+    """When a slot ("10:00 AM" on `day`) begins, as an aware datetime (Manila), or None if it can't be read."""
     try:
-        clock = datetime.strptime((req.preferred_time or "").strip(), "%I:%M %p").time()
-        day = _appointment_day(req)
+        clock = datetime.strptime((time_label or "").strip(), "%I:%M %p").time()
+        day = date.fromisoformat(day) if isinstance(day, str) else day
     except (TypeError, ValueError):
         return None
-    if day is None:
+    if not isinstance(day, date):
         return None
     return datetime.combine(day, clock, tzinfo=BUSINESS_TZ)
+
+
+def appointment_start(req):
+    """When her appointment begins, as an aware datetime (Manila), or None if the time can't be read."""
+    return slot_start(req.preferred_date, req.preferred_time)
 
 
 def _collection_stage(req):
@@ -126,10 +147,16 @@ def drop_off_link_deadline(req, now=None):
 
 
 def notify_collection_steps(req):
-    """The steps for the way she chose, with her date and time. Nothing when no method is set."""
+    """
+    The steps for the way she chose, with her date and time. Nothing when no
+    method is set. Once her booking is confirmed (Scheduled) the method is
+    fixed, so the steps then say to message the facility if something changes.
+    """
     if req.request_type != MilkBankRequest.RequestType.DONOR or req.collection_method not in STEPS:
         return
     template = STEPS[req.collection_method]
+    if req.current_sub_status == Status.SCHEDULED:
+        template = STEPS_CONFIRMED.get(req.collection_method, template)
     if req.collection_method == Method.DROP_OFF and req.delivery_link:
         template = STEPS_DROP_OFF_LINKED
     notify(req.owner, STEPS_TITLE, template.format(**_when(req)), NotificationItem.Category.BOOKINGS)

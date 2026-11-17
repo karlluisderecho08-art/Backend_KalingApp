@@ -55,6 +55,23 @@ class DayFullyBooked(AllocationError):
         self.day = day
 
 
+class FacilityClosedOnDay(AllocationError):
+    """Every facility that could take her has closed the day she chose
+    (Facility.unavailable_donor_dates / unavailable_recipient_dates)."""
+
+    def __init__(self, day):
+        super().__init__(day)
+        self.day = day
+
+
+def closed_on(facility, request_type, day):
+    """Whether `facility` has closed `day` for this pathway."""
+    from .scheduling import unavailable_dates
+
+    iso = day.isoformat() if hasattr(day, "isoformat") else str(day)
+    return iso in unavailable_dates(facility, request_type)
+
+
 class TimeSlotFull(AllocationError):
     """A DONOR request: facilities have room that day, but every one that
     limits donor slots is full at the time she chose (and none is free)."""
@@ -132,8 +149,8 @@ def eligibility_filters(request_type, requested_ml=None, bottles=False):
 def claim_slot(facility, request_type, day, requested_ml=None, bottles=False, time=None):
     """
     Whether one more booking on `day` can be placed at `facility` right now.
-    Returns False if the facility stopped being eligible, or `day` filled up,
-    between being ranked and now.
+    Returns False if the facility stopped being eligible, closed `day`, or
+    `day` filled up, between being ranked and now.
 
     MUST be called inside transaction.atomic(), with the booking created in
     that same transaction. The facility's row is locked (SELECT ... FOR
@@ -158,6 +175,9 @@ def claim_slot(facility, request_type, day, requested_ml=None, bottles=False, ti
     )
     if locked is None:
         return False
+    # Read again under the lock: staff may have closed the day a moment ago.
+    if closed_on(locked, request_type, day):
+        return False
     if slots_taken(locked.pk, day) >= locked.capacity:
         return False
     # A donor also needs room in her hour, when the facility limits that --
@@ -174,11 +194,12 @@ def get_ranked_facilities(user, request_type, requested_ml=None, day=None, bottl
     exists in one place.
 
     `day` is the date she is booking for. When given (the real booking),
-    facilities with no slot left on that day are dropped, and if that is
-    all of them DayFullyBooked is raised. The preview runs before she has
-    picked a date, so it passes none: it ranks every eligible facility, and
-    the scheduler then greys out that facility's full days
-    (Facility.fully_booked_dates).
+    facilities that have closed that day for her pathway are dropped
+    (FacilityClosedOnDay if that is all of them), then those with no slot
+    left on it (DayFullyBooked if that is all of the rest). The preview runs
+    before she has picked a date, so it passes none: it ranks every eligible
+    facility, and the scheduler then greys out that facility's closed and
+    full days (Facility.unavailable_*_dates, fully_booked_dates).
     """
     from .capacity import counts_by_day, has_donor_slot_room, today
     from .models import Facility
@@ -237,6 +258,9 @@ def get_ranked_facilities(user, request_type, requested_ml=None, day=None, bottl
         facility.slots_taken = counts.get((facility.pk, load_day), 0)
 
     if day is not None:
+        candidates = [f for f in candidates if not closed_on(f, request_type, day)]
+        if not candidates:
+            raise FacilityClosedOnDay(day)
         candidates = [f for f in candidates if f.slots_taken < f.capacity]
         if not candidates:
             raise DayFullyBooked(day)

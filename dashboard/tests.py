@@ -1,10 +1,11 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from accounts.models import User
+from milkbank.business_hours import BUSINESS_TZ
 from milkbank.models import Facility, MilkBankRequest
 
 from .views import TREND_MONTHS, _month_start, _trend_window
@@ -29,7 +30,8 @@ class TrendWindowTests(APITestCase):
     def test_window_is_twelve_months_ending_this_month(self):
         window = _trend_window()
         self.assertEqual(len(window), TREND_MONTHS)
-        self.assertEqual(window[-1], _month_start(timezone.now()))
+        # Months are counted on the Manila calendar, not the server's UTC one.
+        self.assertEqual(window[-1], _month_start(datetime.now(BUSINESS_TZ)))
         self.assertEqual(window, sorted(window))
 
     def test_month_labels_are_unique(self):

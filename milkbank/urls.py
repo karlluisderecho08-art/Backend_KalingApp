@@ -12,6 +12,8 @@ from .views import (
     FacilityRestoreView,
     MilkBankRequestCreateView,
     MilkBankRequestDetailView,
+    MotherCancelView,
+    MyFacilityClosedDaysView,
     MyLatestDonorQuestionnaireView,
     MyMilkBankRequestsView,
     MyTransactionsView,
@@ -30,6 +32,8 @@ from .views import (
 urlpatterns = [
     path("facilities/", FacilityListView.as_view(), name="facility-list"),
     path("facilities/<int:pk>/", FacilityDetailView.as_view(), name="facility-detail"),
+    # A facility's own staff closing days (milkbank/closures.py).
+    path("facilities/mine/closed-days/", MyFacilityClosedDaysView.as_view(), name="facility-closed-days"),
     # Taking a facility with booking history out of KalingApp, and back
     # (milkbank/removal.py).
     path("facilities/<int:pk>/remove/", FacilityRemovalView.as_view(), name="facility-remove"),
@@ -45,6 +49,7 @@ urlpatterns = [
     path("requests/<int:pk>/collection-method/", CollectionMethodView.as_view(), name="request-collection-method"),
     path("requests/<int:pk>/accept-counter-offer/", AcceptCounterOfferView.as_view(), name="request-accept-counter-offer"),
     path("requests/<int:pk>/reject-counter-offer/", RejectCounterOfferView.as_view(), name="request-reject-counter-offer"),
+    path("requests/<int:pk>/cancel/", MotherCancelView.as_view(), name="request-cancel"),
 
     path("requests/<int:pk>/accept/", StaffAcceptView.as_view(), name="request-staff-accept"),
     path("requests/<int:pk>/decline/", StaffDeclineView.as_view(), name="request-staff-decline"),

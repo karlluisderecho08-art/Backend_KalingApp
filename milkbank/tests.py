@@ -29,11 +29,12 @@ Status = MilkBankRequest.Status
 
 
 def _first_weekday_after(days):
-    """The first Mon-Fri at least `days` days from now (Manila), as yyyy-mm-dd.
-    Counter-offers must be on a future weekday, so tests that offer one can't
-    hard-code a calendar date -- it goes stale, and the one they used was a Sunday."""
+    """The first open day (Mon-Fri, not a holiday) at least `days` days from now
+    (Manila), as yyyy-mm-dd. Bookings and counter-offers must be on a future day
+    the facilities are open, so tests that make one can't hard-code a calendar
+    date -- it goes stale, and the one they used was a Sunday."""
     day = datetime.now(BUSINESS_TZ).date() + timedelta(days=days)
-    while day.weekday() >= 5:
+    while not is_business_day(day):
         day += timedelta(days=1)
     return day.isoformat()
 
@@ -95,6 +96,20 @@ def make_request(owner, facility, **overrides):
     )
     defaults.update(overrides)
     return MilkBankRequest.objects.create(**defaults)
+
+
+def screen(req):
+    """
+    Her screening answers, as the app sends them right after a donor books.
+    Staff can't accept a donor without them (StaffAcceptView), so a test that
+    accepts one gives her these first.
+    """
+    return DonorQuestionnaire.objects.create(
+        request=req, good_general_health=True, lactating_with_excess_supply=True,
+        free_of_infectious_disease=True, recent_transfusion_or_transplant=False,
+        uses_tobacco_alcohol_or_drugs=False, on_medication_or_supplements=False,
+        has_recent_serology_test=False,
+    )
 
 
 _filler_count = 0
@@ -321,13 +336,17 @@ class TransitionsTests(APITestCase):
         # new proposed slot -- it should get a full new response window,
         # not inherit whatever was left (or cleared) from before.
         apply_transition(self.req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
+        self.req.counter_offer_date = COUNTER_OFFER_DATE
+        self.req.counter_offer_time = "2:00 PM"
         apply_transition(self.req, Status.COUNTER_OFFERED, self.staff, "counter_offer_proposed")
         self.req.refresh_from_db()
-        self.assertIsNone(self.req.response_deadline)  # counter_offered has no clock of its own
+        offer_deadline = self.req.response_deadline  # hers, to answer the offer
+        self.assertIsNotNone(offer_deadline)
 
         apply_transition(self.req, Status.PENDING, self.mother, "counter_offer_rejected")
         self.req.refresh_from_db()
         self.assertIsNotNone(self.req.response_deadline)
+        self.assertGreaterEqual(self.req.response_deadline, offer_deadline)
 
     def test_declining_clears_the_deadline(self):
         apply_transition(self.req, Status.DECLINED, self.staff, "declined")
@@ -731,6 +750,7 @@ class BookingEndpointPermissionTests(APITestCase):
             email="unassigned-staff@example.com", password="x", is_active=True, role=User.Role.FACILITY_STAFF,
         )
         self.req = make_request(self.mother, self.facility)
+        screen(self.req)
 
     def test_mother_cannot_call_staff_accept(self):
         self.client.force_authenticate(user=self.mother)
@@ -861,8 +881,11 @@ class ConfirmCompletionEndpointTests(APITestCase):
         )
 
     def _schedule(self, req):
+        # Scheduled and on Results, the only step a booking is completed from.
         apply_transition(req, Status.AWAITING_ATTENDANCE, self.staff, "accepted")
         apply_transition(req, Status.SCHEDULED, self.mother, "attendance_confirmed")
+        MilkBankRequest.objects.filter(pk=req.pk).update(current_stage_index=len(req.stages) - 1)
+        req.current_stage_index = len(req.stages) - 1
 
     def test_amount_ml_is_required(self):
         req = make_request(self.mother, self.facility)
@@ -980,6 +1003,7 @@ class BookingStageIndexTests(APITestCase):
 
     def test_staff_accept_advances_stage_for_donor_request(self):
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        screen(req)
         self.client.force_authenticate(user=self.staff)
         response = self.client.post(f"/milkbank/requests/{req.id}/accept/")
         self.assertEqual(response.status_code, 200)
@@ -1003,6 +1027,7 @@ class BookingStageIndexTests(APITestCase):
         # The donor pathway is unchanged: nothing is asked of the facility
         # until she turns up, so the next move is hers.
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
+        screen(req)
         self.client.force_authenticate(user=self.staff)
         response = self.client.post(f"/milkbank/requests/{req.id}/accept/")
         self.assertEqual(response.status_code, 200)
@@ -1246,18 +1271,21 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         req.refresh_from_db()
         self.assertEqual(req.staff_message, "Please bring your medical abstract.")
 
-    def test_counter_offering_holds_her_slot_and_starts_no_clock_against_her(self):
-        # The delay is the facility's, so nothing should count down against
-        # the mother -- and the slot she already holds must not be released
-        # while she decides.
+    def test_counter_offering_holds_the_offered_slot_and_gives_her_until_a_deadline(self):
+        # An offer used to have no clock at all, so one she never answered
+        # stayed open forever, holding a slot. Now she has 8 business hours (or
+        # until the offered time, if sooner) to answer, and while she decides
+        # the slot held is the OFFERED one -- her original day is free again.
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
         self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 1)
 
         self._propose(req)
 
         req.refresh_from_db()
-        self.assertIsNone(req.response_deadline)
-        self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 1)
+        self.assertIsNotNone(req.response_deadline)
+        self.assertGreater(req.response_deadline, timezone.now())
+        self.assertEqual(slots_taken(self.facility.pk, req.preferred_date), 0)
+        self.assertEqual(slots_taken(self.facility.pk, date.fromisoformat(COUNTER_OFFER_DATE)), 1)
 
     def test_she_keeps_her_questionnaire_through_a_rejected_counter_offer(self):
         # The whole reason this replaced a decline: a declined request made
@@ -1354,20 +1382,21 @@ class ProposeCounterOfferFromPendingTests(APITestCase):
         self.assertEqual(req.stages[req.current_stage_index], "Results")
 
     def test_accepting_a_counter_offer_starts_a_fresh_clock_against_her(self):
-        # COUNTER_OFFERED itself carries no clock (that delay is the
-        # facility's). Once she has agreed to the new date the wait is
-        # hers, so the 8-business-hour confirmation window opens then.
+        # Once she has agreed to the new date, a fresh confirmation window
+        # opens for it: 8 business hours, never past the new appointment.
         req = make_request(self.mother, self.facility, request_type=MilkBankRequest.RequestType.DONOR)
         self._propose(req)
         req.refresh_from_db()
-        self.assertIsNone(req.response_deadline)
+        offer_deadline = req.response_deadline
 
         self.client.force_authenticate(user=self.mother)
         self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/")
 
         req.refresh_from_db()
+        self.assertEqual(req.current_sub_status, Status.AWAITING_ATTENDANCE)
         self.assertIsNotNone(req.response_deadline)
         self.assertGreater(req.response_deadline, timezone.now())
+        self.assertGreaterEqual(req.response_deadline, offer_deadline)
 
     def test_a_recipient_accepting_a_counter_offer_is_not_held_at_booking_confirmation(self):
         # The RECIPIENT pathway puts staff review before attendance, so
@@ -2072,8 +2101,10 @@ class DeclineFromAPhaseTests(APITestCase):
         self.assertEqual(req.current_sub_status, Status.DECLINED)
         self.assertEqual(req.decline_reason, "")
 
-    def test_only_a_pending_or_scheduled_booking_can_be_declined(self):
-        for status in (Status.AWAITING_ATTENDANCE, Status.COUNTER_OFFERED, Status.COMPLETED, Status.EXPIRED):
+    def test_only_a_pending_scheduled_or_counter_offered_booking_can_be_declined(self):
+        # A proposed date she hasn't answered can be declined too (it used to
+        # have no way to end at all); one waiting for her to confirm can't.
+        for status in (Status.AWAITING_ATTENDANCE, Status.COMPLETED, Status.EXPIRED, Status.CANCELLED):
             with self.subTest(status=status):
                 req = make_request(self.mother, self.facility)
                 req.current_sub_status = status

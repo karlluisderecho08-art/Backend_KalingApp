@@ -86,6 +86,23 @@ DECLINE_RESULTS = {
         "request. Please try again later. We're sorry we couldn't help this time.",
         False,
     ),
+    # Staff record a no-show with this instead of "Others" -- at Counseling
+    # and Testing, Breastmilk Collection or a recipient's pickup -- so missed
+    # appointments can be counted.
+    "missed the appointment": (
+        "Missed appointment",
+        "The facility recorded that your appointment didn't take place, so this booking "
+        "was closed. You're welcome to make a new booking when you're ready.",
+        False,
+    ),
+    # A donor request whose questionnaire never arrived (the upload failed
+    # after booking and was never sent again from Booking Status).
+    "screening answers missing": (
+        "Screening answers missing",
+        "Your health screening answers didn't reach the facility, so this request couldn't "
+        "go ahead. Please submit a new request and answer the screening questions again.",
+        False,
+    ),
 }
 
 # Not a label staff can pick: milkbank/removal.py sets it on every booking
@@ -120,6 +137,17 @@ EXPIRED_DROP_OFF = (
     "Request expired",
     "No courier delivery link was sent in time after the facility accepted your "
     "request, so it expired. Please submit a new request.",
+)
+# The facility proposed another date and she didn't answer in time.
+EXPIRED_COUNTER_OFFER = (
+    "Request expired",
+    "The facility's proposed date wasn't answered in time, so your request expired. "
+    "Please submit a new request.",
+)
+# She cancelled it herself (views.MotherCancelView).
+CANCELLED_BY_HER = (
+    "Booking cancelled",
+    "You cancelled this booking. You can make a new booking whenever you're ready.",
 )
 
 
@@ -164,15 +192,32 @@ def mother_result(req):
         }
 
     if req.current_sub_status == Status.EXPIRED:
-        waiting_on_her = (
-            req.stages[req.current_stage_index] == "Booking Confirmation" and not req.attendance_confirmed
+        # Whose clock ran out: the status it expired from, when that was kept
+        # (closed_from); for requests closed before it was, where it stood.
+        if req.closed_from:
+            waiting_on_her = req.closed_from == Status.AWAITING_ATTENDANCE
+            unanswered_offer = req.closed_from == Status.COUNTER_OFFERED
+        else:
+            waiting_on_her = (
+                req.stages[req.current_stage_index] == "Booking Confirmation" and not req.attendance_confirmed
+            )
+            unanswered_offer = False
+        drop_off = (
+            req.request_type == MilkBankRequest.RequestType.DONOR
+            and req.collection_method == MilkBankRequest.CollectionMethod.DROP_OFF
         )
-        if not waiting_on_her:
+        if unanswered_offer:
+            title, message = EXPIRED_COUNTER_OFFER
+        elif not waiting_on_her:
             title, message = EXPIRED_FACILITY
-        elif req.request_type == MilkBankRequest.RequestType.DONOR and req.collection_method == MilkBankRequest.CollectionMethod.DROP_OFF:
+        elif drop_off:
             title, message = EXPIRED_DROP_OFF
         else:
             title, message = EXPIRED_MOTHER
+        return {"title": title, "message": message, "health_followup": False, "facility_note": ""}
+
+    if req.current_sub_status == Status.CANCELLED:
+        title, message = CANCELLED_BY_HER
         return {"title": title, "message": message, "health_followup": False, "facility_note": ""}
 
     if req.current_sub_status == Status.COMPLETED:

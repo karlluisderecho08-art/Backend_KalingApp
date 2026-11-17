@@ -127,6 +127,8 @@ class MilkBankRequest(models.Model):
         EXPIRED = "expired", "Expired"
         COUNTER_OFFERED = "counter_offered", "Counter Offer"
         COMPLETED = "completed", "Completed"
+        # She cancelled it herself, from the app's Booking Status (MotherCancelView).
+        CANCELLED = "cancelled", "Cancelled"
 
     DONOR_STAGES = [
         # Index 2 renamed from "Counseling & Serology Screening" per the
@@ -145,7 +147,19 @@ class MilkBankRequest(models.Model):
     DROP_OFF_DONOR_STAGES = ["Status", "Booking Confirmation", "Breastmilk Collection", "Results"]
     RECIPIENT_STAGES = ["Requirements", "Status", "Booking Confirmation", "Results"]
 
-    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="milkbank_requests")
+    # Null only for a COMPLETED booking whose mother has since deleted her
+    # account: what was donated or dispensed stays in the facility's records,
+    # without her (accounts/deletion.py), so the milk can still be traced.
+    # Every other booking of hers is deleted with her account (CASCADE).
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="milkbank_requests",
+        null=True, blank=True,
+    )
+    # Set together with owner=None: one random code per deleted account, the
+    # same on all of her kept bookings, so a facility can still tell which
+    # donations came from the same donor -- without anything that leads back
+    # to who she was.
+    former_owner_ref = models.CharField(max_length=12, blank=True)
     request_type = models.CharField(max_length=20, choices=RequestType.choices)
     # PROTECT, not CASCADE/SET_NULL: a facility with real booking history
     # attached to it should never be silently deletable.
@@ -281,6 +295,11 @@ class MilkBankRequest(models.Model):
     # expired) -- set by transitions.apply_transition(). The retention clock
     # for the pickup representative's details starts here.
     closed_at = models.DateTimeField(null=True, blank=True)
+    # The status it was in when it reached its final status -- so an expired
+    # request can tell her whose clock ran out (the facility's, hers, or an
+    # unanswered counter-offer: results.mother_result). Blank until then, and
+    # for requests closed before this was kept.
+    closed_from = models.CharField(max_length=30, blank=True)
 
     @property
     def stages(self):

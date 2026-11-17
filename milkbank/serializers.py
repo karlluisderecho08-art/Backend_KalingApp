@@ -8,8 +8,10 @@ from core.audit import log_action
 
 from .allocation import REQUEST_ML_CEILING
 from .capacity import day_summary
+from .closures import normalise_dates
 from .collection import appointment_start, delivery_link_due
 from .results import mother_result
+from .scheduling import appointment_day_closed, can_mother_cancel, holiday_dates
 from .models import BOTTLE_ML, DonorQuestionnaire, Facility, MilkBankRequest, TransactionRecord
 from .photo_checks import MAX_PHOTO_BYTES, detect_image, random_photo_name, read_head
 
@@ -199,6 +201,10 @@ class FacilitySerializer(serializers.ModelSerializer):
     # Who can sign in to this facility's console, so the admin can see it
     # before adding another account.
     staff_emails = serializers.SerializerMethodField()
+    # The Philippine holidays from today for a little over a year -- the
+    # facilities are closed on them, so the mother's scheduler and the
+    # console's "Propose New Date" grey them out (scheduling.holiday_dates).
+    holiday_dates = serializers.SerializerMethodField()
 
     staff_user_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     new_staff_email = serializers.EmailField(write_only=True, required=False)
@@ -215,7 +221,7 @@ class FacilitySerializer(serializers.ModelSerializer):
             "latitude", "longitude",
             "min_request_ml", "max_request_ml", "dispenses_bottles",
             "limit_donor_slots", "donor_bookings_per_slot",
-            "full_donor_slots", "donor_fully_booked_dates", "staff_emails",
+            "full_donor_slots", "donor_fully_booked_dates", "staff_emails", "holiday_dates",
             "staff_user_id", "new_staff_email", "new_staff_password",
             "removed_at",
         ]
@@ -254,6 +260,21 @@ class FacilitySerializer(serializers.ModelSerializer):
 
     def get_donor_fully_booked_dates(self, obj) -> list:
         return self._calendar(obj)["donor_fully_booked_dates"]
+
+    def get_holiday_dates(self, obj) -> list:
+        return holiday_dates()
+
+    def _closed_days(self, value):
+        try:
+            return normalise_dates(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+
+    def validate_unavailable_donor_dates(self, value):
+        return self._closed_days(value)
+
+    def validate_unavailable_recipient_dates(self, value):
+        return self._closed_days(value)
 
     def _viewer_is_platform_admin(self):
         request = self.context.get("request")
@@ -432,9 +453,21 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
     stages = serializers.ListField(child=serializers.CharField(), read_only=True)
     allocated_facility_name = serializers.CharField(source="allocated_facility.name", read_only=True)
     # Owner contact, for the facility-staff list/detail views -- harmless
-    # to also hand back to the owner themselves, it's their own info.
-    owner_email = serializers.EmailField(source="owner.email", read_only=True)
-    owner_name = serializers.CharField(source="owner.mom_name", read_only=True)
+    # to also hand back to the owner themselves, it's their own info. Both ""
+    # for a completed booking kept after its mother deleted her account
+    # (owner_deleted, with former_owner_ref in place of who she was).
+    owner_email = serializers.SerializerMethodField()
+    owner_name = serializers.SerializerMethodField()
+    owner_deleted = serializers.SerializerMethodField()
+    # DONOR only (null for a RECIPIENT): whether her screening answers arrived.
+    # They are sent right after the booking, and that can fail -- the app then
+    # offers to send them again, and staff can't accept her without them.
+    has_questionnaire = serializers.SerializerMethodField()
+    # While it is open: whether the day it holds is now closed at her facility
+    # (closures.py) -- staff need to propose a new date.
+    appointment_day_closed = serializers.SerializerMethodField()
+    # Whether she can cancel it herself from the app (scheduling.can_mother_cancel).
+    can_cancel = serializers.SerializerMethodField()
     # How the request ended, in plain words for the mother -- null while it is
     # still in progress. See milkbank/results.py for why her app shows this
     # instead of staff_message.
@@ -455,6 +488,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "closed_at", "representative_purged_at", "collection_method", "delivery_link",
             "pickup_address", "pickup_landmark", "pickup_latitude", "pickup_longitude",
             "appointment_start_ms", "delivery_link_due",
+            "owner_deleted", "former_owner_ref", "has_questionnaire", "appointment_day_closed", "can_cancel",
         ]
         read_only_fields = [
             "allocated_facility", "current_stage_index", "current_sub_status",
@@ -466,6 +500,7 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
             "has_cooler", "has_medical_abstract", "requested_ml", "requested_bottles",
             "closed_at", "representative_purged_at", "collection_method", "delivery_link",
             "pickup_address", "pickup_landmark", "pickup_latitude", "pickup_longitude",
+            "former_owner_ref",
         ]
 
     # When her appointment begins (epoch ms; null when its time can't be read),
@@ -483,6 +518,34 @@ class MilkBankRequestSerializer(serializers.ModelSerializer):
 
     def get_result(self, obj):
         return mother_result(obj)
+
+    def get_owner_email(self, obj) -> str:
+        return obj.owner.email if obj.owner_id else ""
+
+    def get_owner_name(self, obj) -> str:
+        return (obj.owner.mom_name or "") if obj.owner_id else ""
+
+    def get_owner_deleted(self, obj) -> bool:
+        return obj.owner_id is None
+
+    def get_has_questionnaire(self, obj) -> bool | None:
+        if obj.request_type != MilkBankRequest.RequestType.DONOR:
+            return None
+        return hasattr(obj, "donor_questionnaire")
+
+    def get_appointment_day_closed(self, obj) -> bool:
+        if obj.current_sub_status not in _OPEN_FOR_CLOSING:
+            return False
+        return appointment_day_closed(obj)
+
+    def get_can_cancel(self, obj) -> bool:
+        return can_mother_cancel(obj)
+
+
+_OPEN_FOR_CLOSING = (
+    MilkBankRequest.Status.PENDING, MilkBankRequest.Status.AWAITING_ATTENDANCE,
+    MilkBankRequest.Status.SCHEDULED, MilkBankRequest.Status.COUNTER_OFFERED,
+)
 
 
 class MilkBankRequestCreateSerializer(serializers.Serializer):

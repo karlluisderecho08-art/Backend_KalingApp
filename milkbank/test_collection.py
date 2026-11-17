@@ -13,7 +13,8 @@ from notifications.models import NotificationItem
 
 from .business_hours import BUSINESS_TZ
 from .collection import (
-    REMINDER_TITLE, STEPS, STEPS_TITLE, appointment_start, delivery_link_due, send_delivery_link_reminders,
+    REMINDER_TITLE, STEPS, STEPS_CONFIRMED, STEPS_TITLE, appointment_start, delivery_link_due,
+    send_delivery_link_reminders,
 )
 from .models import MilkBankRequest
 from .tests import make_facility, make_request
@@ -87,7 +88,10 @@ class CollectionTimingTests(APITestCase):
                 apply_transition(req, Status.SCHEDULED, self.mother, "attendance_confirmed")
                 self.assertEqual(self.steps().count(), 1)
                 body = self.steps().get().description
-                self.assertEqual(body, STEPS[method].format(date="December 1, 2026", time="10:00 AM"))
+                # Confirmed: the method is fixed now, so the steps say what to
+                # do if something changes rather than offering a change.
+                template = STEPS_CONFIRMED.get(method, STEPS[method])
+                self.assertEqual(body, template.format(date="December 1, 2026", time="10:00 AM"))
 
     def test_no_steps_without_a_method(self):
         req = make_request(self.mother, self.facility, current_sub_status=Status.AWAITING_ATTENDANCE)

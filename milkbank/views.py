@@ -20,15 +20,18 @@ from core.versioning import RequiresSupportedApp
 from notifications.models import NotificationItem
 from notifications.services import notify, notify_many
 
+from . import closures
 from .allocation import (
     AllocationError,
     DayFullyBooked,
     AmountOutsideLimits,
+    FacilityClosedOnDay,
     InsufficientStock,
     LocationRequired,
     NoOperationalFacility,
     TimeSlotFull,
     claim_slot,
+    closed_on,
     get_ranked_facilities,
 )
 from .business_hours import add_business_hours
@@ -39,7 +42,11 @@ from .photo_checks import MAX_PHOTO_BYTES, detect_image, read_head
 from .removal import remove_facility, removal_summary, restore_facility
 from .collection import confirms_by_delivery_link, delivery_link_due, notify_collection_steps
 from .results import decline_notification
-from .scheduling import appointment_label, counter_offer_errors, slot_has_started
+from .scheduling import (
+    NO_FACILITY_OPEN, PAST_SLOT, appointment_day_closed, appointment_label, appointment_still_ahead,
+    booking_slot_problem, can_mother_cancel, closed_reason, counter_offer_errors, day_label, held_day,
+    held_time, holiday_dates, slot_has_started,
+)
 from .serializers import (
     AllocationRequestSerializer,
     CollectionMethodSerializer,
@@ -71,7 +78,38 @@ Method = MilkBankRequest.CollectionMethod
 UPLOAD_FORM_OVERHEAD_BYTES = 256 * 1024
 
 # A mother picking a time that has already begun (scheduling.slot_has_started).
-PAST_SLOT_DETAIL = "This time has already passed. Please choose a later time."
+PAST_SLOT_DETAIL = PAST_SLOT
+
+# What a mother is told when the facility has closed the day she holds.
+DAY_CLOSED_FOR_HER = (
+    "{facility} is closed on your appointment date. The facility will propose a new date for you, "
+    "or you can cancel your booking."
+)
+APPOINTMENT_PASSED_FOR_HER = "Your appointment time has passed, so it can no longer be confirmed."
+OFFER_DAY_CLOSED = "The facility is now closed on the date it offered. Please choose a new time instead."
+CANCEL_AFTER_COLLECTION = (
+    "Your milk has already been collected, so this booking can't be cancelled. "
+    "Message the facility in Chat if something has changed."
+)
+
+
+def _slot_problem_response(problem, day=None):
+    """A 400 for booking_slot_problem()'s (field, message, code)."""
+    field, message, code = problem
+    body = {field: [message], "detail": message, "code": code}
+    if code == "day_closed" and day is not None:
+        body["closed_date"] = day.isoformat()
+    return Response(body, status=400)
+
+
+def _staff_at(facility):
+    return User.objects.filter(facility=facility, role=User.Role.FACILITY_STAFF, is_active=True)
+
+
+def _confirmed(request):
+    """Whether a closing-days save was sent again to confirm it (closures.py)."""
+    value = request.data.get("confirm_closing")
+    return value is True or str(value).lower() in ("true", "1")
 
 
 class FacilityListView(generics.ListCreateAPIView):
@@ -102,7 +140,14 @@ class FacilityListView(generics.ListCreateAPIView):
 
 
 class FacilityDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """GET is public; PUT/PATCH/DELETE are platform-admin only (see FacilityListView)."""
+    """
+    GET is public; PUT/PATCH/DELETE are platform-admin only (see FacilityListView).
+
+    An edit that closes days with bookings on them, or switches off a
+    facility that has bookings in progress, is answered 409 with what it
+    would affect until it is sent again with `confirm_closing: true`; then
+    the mothers and staff concerned are told (milkbank/closures.py).
+    """
 
     queryset = Facility.objects.all()
     serializer_class = FacilitySerializer
@@ -111,6 +156,27 @@ class FacilityDetailView(generics.RetrieveUpdateDestroyAPIView):
         if self.request.method == "GET":
             return [permissions.AllowAny()]
         return [permissions.IsAdminUser()]
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        with transaction.atomic():
+            # Locked, so the closed days compared against are the saved ones
+            # (staff may be changing them from the console at the same time).
+            facility = Facility.objects.select_for_update().get(pk=self.get_object().pk)
+            serializer = self.get_serializer(facility, data=request.data, partial=partial)
+            serializer.is_valid(raise_exception=True)
+            data = serializer.validated_data
+            closing = closures.plan(
+                facility,
+                donor_dates=data.get("unavailable_donor_dates"),
+                recipient_dates=data.get("unavailable_recipient_dates"),
+                is_operational=data.get("is_operational"),
+            )
+            if closing.needs_confirmation and not _confirmed(request):
+                return Response(closing.confirmation(), status=409)
+            serializer.save()
+            closures.carry_out(closing, actor=request.user, by_admin=True)
+        return Response(serializer.data)
 
     def destroy(self, request, *args, **kwargs):
         facility = self.get_object()
@@ -132,6 +198,95 @@ class FacilityDetailView(generics.RetrieveUpdateDestroyAPIView):
             }, status=400)
         log_action(request.user, "facility.deleted", target)
         return Response(status=204)
+
+
+class MyFacilityClosedDaysView(APIView):
+    """
+    GET  /milkbank/facilities/mine/closed-days/
+         -> {facility_id, facility_name, unavailable_donor_dates,
+             unavailable_recipient_dates, holiday_dates, bookings_on_closed_days}
+    POST /milkbank/facilities/mine/closed-days/
+         {start, end?, close_for: "both" | "donors" | "recipients" | "none", confirm_closing?}
+
+    A facility's own staff closing (or reopening) days at their facility --
+    a doctor on leave, a lab out of service -- from the console's Closed Days
+    page. Every weekday from `start` to `end` (inclusive, `end` defaulting to
+    `start`) is set to `close_for`; "none" opens them again. Weekends and
+    holidays are always closed and are skipped.
+
+    Closing days that bookings fall on is answered 409 with those bookings
+    until it is sent again with `confirm_closing: true`; then each mother and
+    the other staff are told (milkbank/closures.py). The answer lists every
+    booking still on a closed day, so the page can show what needs a new date.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsFacilityStaff]
+
+    def _facility(self, request, lock=False):
+        if not request.user.facility_id:
+            raise Http404
+        queryset = Facility.objects.select_for_update() if lock else Facility.objects
+        return generics.get_object_or_404(queryset, pk=request.user.facility_id, removed_at__isnull=True)
+
+    @staticmethod
+    def _payload(facility):
+        on_closed = [
+            req for req in MilkBankRequest.objects.filter(
+                allocated_facility=facility, current_sub_status__in=closures.OPEN_STATUSES,
+            ).select_related("owner", "allocated_facility")
+            if appointment_still_ahead(req) and appointment_day_closed(req)
+        ]
+        on_closed.sort(key=lambda r: (held_day(r), r.id))
+        return {
+            "facility_id": facility.id,
+            "facility_name": facility.name,
+            "unavailable_donor_dates": sorted(facility.unavailable_donor_dates or []),
+            "unavailable_recipient_dates": sorted(facility.unavailable_recipient_dates or []),
+            "holiday_dates": holiday_dates(),
+            "bookings_on_closed_days": [closures.booking_summary(req) for req in on_closed],
+        }
+
+    def get(self, request):
+        return Response(self._payload(self._facility(request)))
+
+    @extend_schema(request=None)
+    def post(self, request):
+        from datetime import date as _date, timedelta as _timedelta
+
+        close_for = request.data.get("close_for")
+        if close_for not in ("both", "donors", "recipients", "none"):
+            return Response({"close_for": ["Choose who the day is closed for."]}, status=400)
+        try:
+            start = _date.fromisoformat(str(request.data.get("start") or ""))
+            end = _date.fromisoformat(str(request.data.get("end") or start.isoformat()))
+        except ValueError:
+            return Response({"start": ["Choose a date."], "detail": "Choose a date."}, status=400)
+        if end < start:
+            return Response({"end": ["The last day can't be before the first."],
+                             "detail": "The last day can't be before the first."}, status=400)
+        if start < closures.today():
+            return Response({"start": ["Choose today or a later date."],
+                             "detail": "Choose today or a later date."}, status=400)
+        if end - start >= _timedelta(days=closures.MAX_RANGE_DAYS):
+            message = f"Close at most {closures.MAX_RANGE_DAYS} days at a time."
+            return Response({"end": [message], "detail": message}, status=400)
+
+        with transaction.atomic():
+            facility = self._facility(request, lock=True)
+            donor, recipient = closures.set_days(facility, start, end, close_for)
+            closing = closures.plan(facility, donor_dates=donor, recipient_dates=recipient)
+            if closing.needs_confirmation and not _confirmed(request):
+                return Response(closing.confirmation(), status=409)
+            facility.unavailable_donor_dates = donor
+            facility.unavailable_recipient_dates = recipient
+            facility.save(update_fields=["unavailable_donor_dates", "unavailable_recipient_dates"])
+            if close_for == "none":
+                log_action(
+                    request.user, "facility.days_reopened",
+                    f"Facility:{facility.id} -- {start.isoformat()} to {end.isoformat()}"[:255],
+                )
+            closures.carry_out(closing, actor=request.user, by_admin=False)
+        return Response(self._payload(facility))
 
 
 class FacilityRemovalView(APIView):
@@ -205,6 +360,13 @@ def _allocation_error_response(exc):
             {"detail": "No facility is available right now — they're either closed or fully booked. Please try again later."},
             status=404,
         )
+    if isinstance(exc, FacilityClosedOnDay):
+        # Every facility that could take her has closed that day.
+        return Response({
+            "detail": NO_FACILITY_OPEN.format(date=day_label(exc.day)),
+            "closed_date": exc.day.isoformat(),
+            "code": "day_closed",
+        }, status=409)
     if isinstance(exc, DayFullyBooked):
         # Unlike the catch-all above, this one she can act on: pick another day.
         return Response({
@@ -303,11 +465,14 @@ class MilkBankRequestCreateView(APIView):
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        # The app's calendar only offers times still ahead; this is what
-        # actually refuses a past one (a form left open past its hour, a
-        # direct call).
-        if slot_has_started(data["preferred_date"], data["preferred_time"]):
-            return Response({"detail": PAST_SLOT_DETAIL, "code": "slot_passed"}, status=400)
+        # The app's calendar only offers real slot times still ahead, on days
+        # the milk banks are open; this is what actually refuses anything else
+        # (a form left open past its hour, an older app that doesn't grey out
+        # holidays, a direct call). A day her matched facility alone has
+        # closed is allocation's job: she can still go to another one.
+        problem = booking_slot_problem(data["preferred_date"], data["preferred_time"])
+        if problem:
+            return _slot_problem_response(problem, data["preferred_date"])
 
         # One open request per user (roadmap Phase 4 concurrency
         # decision: simplest option, matches the Kotlin app's single
@@ -368,6 +533,11 @@ class MilkBankRequestCreateView(APIView):
                 None,
             )
             if facility is None:
+                # Every one of them had closed the day by now, or filled it.
+                if all(closed_on(f, data["request_type"], data["preferred_date"]) for f in Facility.objects.filter(
+                    pk__in=[candidate.pk for candidate in ranked],
+                )):
+                    return _allocation_error_response(FacilityClosedOnDay(data["preferred_date"]))
                 return _allocation_error_response(DayFullyBooked(data["preferred_date"]))
 
             req = MilkBankRequest.objects.create(
@@ -441,7 +611,11 @@ class MyMilkBankRequestsView(generics.ListAPIView):
         # just because nothing else happened to sweep it first.
         sweep_expired_requests()
         maybe_purge()  # data retention, at most hourly -- see core/retention.py
-        return MilkBankRequest.objects.filter(owner=self.request.user).order_by("-submitted_at", "-id")
+        return (
+            MilkBankRequest.objects.filter(owner=self.request.user)
+            .select_related("owner", "allocated_facility", "donor_questionnaire")
+            .order_by("-submitted_at", "-id")
+        )
 
 
 class AllMilkBankRequestsView(generics.ListAPIView):
@@ -466,7 +640,7 @@ class AllMilkBankRequestsView(generics.ListAPIView):
         qs = (
             MilkBankRequest.objects
             .filter(allocated_facility=self.request.user.facility_id)
-            .select_related("owner", "allocated_facility")
+            .select_related("owner", "allocated_facility", "donor_questionnaire")
             .order_by("-submitted_at", "-id")
         )
         status_param = self.request.query_params.get("status")
@@ -523,6 +697,25 @@ def _delivery_link_error(link):
         URLValidator(schemes=["http", "https"])(link)
     except DjangoValidationError:
         return DELIVERY_LINK_INVALID
+    return None
+
+
+def _confirmation_refusal(req):
+    """
+    Why she can't confirm this booking right now, as a response, or None:
+    -- unless it is a Drop off, which sends its courier link up to two hours
+    after -- its time has already begun; or the facility has closed the day
+    it is on (staff will propose a new one).
+    """
+    if req.current_sub_status != Status.AWAITING_ATTENDANCE:
+        return None  # the transition itself refuses it, with the usual message
+    if not confirms_by_delivery_link(req) and slot_has_started(req.preferred_date, req.preferred_time):
+        return Response({"detail": APPOINTMENT_PASSED_FOR_HER, "code": "appointment_passed"}, status=400)
+    if appointment_day_closed(req):
+        return Response({
+            "detail": DAY_CLOSED_FOR_HER.format(facility=req.allocated_facility.name),
+            "code": "day_closed",
+        }, status=409)
     return None
 
 
@@ -600,6 +793,17 @@ class CollectionMethodView(generics.GenericAPIView):
             return Response(MilkBankRequestSerializer(req).data)
 
         current_rules = collection_details_required(request)
+        # Pasting a Drop off's link while it waits on her confirms it -- not on
+        # a day the facility has since closed.
+        if (
+            current_rules and wanted == Method.DROP_OFF and str(request.data.get("delivery_link") or "").strip()
+            and req.request_type == MilkBankRequest.RequestType.DONOR
+            and req.current_sub_status == Status.AWAITING_ATTENDANCE and appointment_day_closed(req)
+        ):
+            return Response({
+                "detail": DAY_CLOSED_FOR_HER.format(facility=req.allocated_facility.name),
+                "code": "day_closed",
+            }, status=409)
         before = req.collection_method
         req.collection_method = wanted
         serializer = self.get_serializer(data=request.data, context={
@@ -656,6 +860,9 @@ class ConfirmAttendanceView(generics.GenericAPIView):
     @extend_schema(request=None)
     def post(self, request, pk):
         req = self.get_object()
+        refusal = _confirmation_refusal(req)
+        if refusal is not None:
+            return refusal
         link_required = confirms_by_delivery_link(req) and collection_details_required(request)
         if link_required:
             link = str(request.data.get("delivery_link") or "").strip()
@@ -725,7 +932,12 @@ class AcceptCounterOfferView(generics.GenericAPIView):
         #         serology test and questionnaire first, and she must not
         #         sit in a status with a running clock for something she
         #         has already done.
-        if req.stages[req.current_stage_index] == "Booking Confirmation":
+        #
+        #   From SCHEDULED (a confirmed appointment that had to move -- its day
+        #     was closed, say). She is past Booking Confirmation, and goes back
+        #     to it: the new date is one she hasn't said she can make yet.
+        confirmation = req.stages.index("Booking Confirmation")
+        if req.current_stage_index >= confirmation:
             target_status = Status.AWAITING_ATTENDANCE
             target_stage = "Booking Confirmation"
         elif req.request_type == MilkBankRequest.RequestType.DONOR:
@@ -734,6 +946,7 @@ class AcceptCounterOfferView(generics.GenericAPIView):
         else:
             target_status = Status.SCHEDULED
             target_stage = "Status"
+        was_confirmed = req.current_stage_index > confirmation
         # An offer she opens after its time has passed can't be taken up: the
         # same answer as a slot that filled up meanwhile, so the app offers
         # her "Choose New Time" in the same way.
@@ -750,6 +963,9 @@ class AcceptCounterOfferView(generics.GenericAPIView):
             # other mothers may have filled it since. Locked so two
             # acceptances can't both take the last one (see claim_slot).
             facility = Facility.objects.select_for_update().get(pk=req.allocated_facility_id)
+            # ...and it must still be open: the facility may have closed it since.
+            if req.counter_offer_date and closed_reason(req.counter_offer_date, facility, req.request_type):
+                return Response({"detail": OFFER_DAY_CLOSED, "code": "offer_unavailable"}, status=409)
             if req.counter_offer_date and not has_room(facility, req.counter_offer_date, exclude_request_id=req.pk):
                 return Response({
                     "detail": "The date the facility offered has filled up since. "
@@ -768,17 +984,25 @@ class AcceptCounterOfferView(generics.GenericAPIView):
                     "detail": "The time the facility offered has filled up since. "
                               "Please choose a new time instead.",
                 }, status=409)
+            # The new appointment is set on the request before the transition,
+            # so the deadline it starts (and tells her) is reckoned from it.
+            if req.counter_offer_date:
+                req.preferred_date = req.counter_offer_date
+                req.preferred_time = req.counter_offer_time
+            req.current_stage_index = req.stages.index(target_stage)
+            if was_confirmed:
+                # She confirms the new date afresh -- a Drop off with a courier
+                # booked for it, not the one booked for the old date.
+                req.attendance_confirmed = False
+                if confirms_by_delivery_link(req):
+                    req.delivery_link = ""
             try:
                 apply_transition(req, target_status, request.user, "counter_offer_accepted")
             except InvalidTransition as exc:
                 return Response({"detail": str(exc)}, status=400)
-            req.preferred_date = req.counter_offer_date
-            req.preferred_time = req.counter_offer_time
-            req.current_stage_index = req.stages.index(target_stage)
-            req.save(update_fields=["preferred_date", "preferred_time", "current_stage_index"])
-            # A Drop off waits for its courier link until after the NEW
-            # appointment time -- reckoned again now the date has moved.
-            refresh_attendance_deadline(req)
+            req.save(update_fields=[
+                "preferred_date", "preferred_time", "current_stage_index", "attendance_confirmed", "delivery_link",
+            ])
         return Response(MilkBankRequestSerializer(req).data)
 
 
@@ -799,10 +1023,14 @@ class RejectCounterOfferView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         new_date = serializer.validated_data["preferred_date"]
-        # The app's calendar only offers times still ahead; this is what
-        # actually refuses a past one (a stale screen, a direct call).
-        if slot_has_started(new_date, serializer.validated_data["preferred_time"]):
-            return Response({"detail": PAST_SLOT_DETAIL, "code": "slot_passed"}, status=400)
+        # The app's calendar only offers real times still ahead on days her
+        # facility is open; this is what actually refuses anything else (a
+        # stale screen, a direct call).
+        problem = booking_slot_problem(
+            new_date, serializer.validated_data["preferred_time"], req.allocated_facility, req.request_type,
+        )
+        if problem:
+            return _slot_problem_response(problem, new_date)
 
         with transaction.atomic():
             # Her request moves to the day she picked, so that day needs a
@@ -834,10 +1062,55 @@ class RejectCounterOfferView(generics.GenericAPIView):
             # Back to square one for the facility to review, not still parked on
             # "Booking Confirmation" -- see StaffAcceptView's comment for why the
             # stage tracker (not just current_sub_status) has to move here too.
+            # Anything confirmed for the old date (a confirmed appointment that
+            # had to move) is for that date only.
             req.current_stage_index = req.stages.index("Status")
+            req.attendance_confirmed = False
+            if confirms_by_delivery_link(req):
+                req.delivery_link = ""
             req.save(update_fields=[
                 "preferred_date", "preferred_time", "counter_offer_date", "counter_offer_time", "current_stage_index",
+                "attendance_confirmed", "delivery_link",
             ])
+        return Response(MilkBankRequestSerializer(req).data)
+
+
+class MotherCancelView(generics.GenericAPIView):
+    """
+    POST /milkbank/requests/<id>/cancel/
+
+    She cancels her own booking from Booking Status, at any point while it is
+    open -- except, as a donor, once her milk has been collected
+    (scheduling.can_mother_cancel). The slot is free again at once, the chat
+    closes, and her facility's staff are told. She can book again straight
+    away (one open booking at a time).
+    """
+
+    queryset = MilkBankRequest.objects.all()
+    serializer_class = MilkBankRequestSerializer
+    permission_classes = [permissions.IsAuthenticated, IsRequestOwner]
+
+    @extend_schema(request=None)
+    def post(self, request, pk):
+        req = self.get_object()
+        if req.current_sub_status in FINAL_STATUSES:
+            return Response({"detail": "This booking has already ended."}, status=400)
+        if not can_mother_cancel(req):
+            return Response({"detail": CANCEL_AFTER_COLLECTION, "code": "milk_collected"}, status=400)
+        # The slot it frees: the offered one, for a counter-offer she hadn't answered.
+        when = appointment_label(held_day(req), held_time(req))
+        try:
+            apply_transition(req, Status.CANCELLED, request.user, "cancelled_by_mother")
+        except InvalidTransition:
+            return Response({"detail": "This booking has just changed. Refresh it and try again."}, status=409)
+        kind = "donation" if req.request_type == MilkBankRequest.RequestType.DONOR else "milk request"
+        name = req.owner.mom_name or req.owner.email
+        notify_many(
+            _staff_at(req.allocated_facility),
+            "Booking Cancelled",
+            f"{name} cancelled her {kind} booking for {when}. The slot is free again.",
+            NotificationItem.Category.BOOKINGS,
+        )
         return Response(MilkBankRequestSerializer(req).data)
 
 
@@ -867,6 +1140,32 @@ class StaffAcceptView(generics.GenericAPIView):
                     "passed, so this request can't be accepted as it is. Propose a new date, or decline it."
                 ),
                 "code": "appointment_passed",
+            }, status=400)
+        # A day the facility has since closed (or a holiday) can't be accepted
+        # either: propose a new date instead.
+        if req.current_sub_status == Status.PENDING and appointment_day_closed(req):
+            return Response({
+                "detail": (
+                    f"The facility is closed on her appointment date ({day_label(req.preferred_date)}). "
+                    "Propose a new date, or decline it."
+                ),
+                "code": "day_closed",
+            }, status=400)
+        # A donor's health screening answers are what Counseling and Testing
+        # starts from. They are sent right after booking, and that can fail:
+        # she can send them again from Booking Status.
+        if (
+            req.current_sub_status == Status.PENDING
+            and req.request_type == MilkBankRequest.RequestType.DONOR
+            and not DonorQuestionnaire.objects.filter(request=req).exists()
+        ):
+            return Response({
+                "detail": (
+                    "Her health screening answers haven't arrived, so this request can't be accepted yet. "
+                    "She can send them again from Booking Status in her app, or you can decline it "
+                    "(\u201cScreening answers missing\u201d)."
+                ),
+                "code": "screening_missing",
             }, status=400)
         # Where accepting lands depends on the pathway, because the two
         # pathways order their steps differently.
@@ -912,13 +1211,14 @@ class StaffDeclineView(generics.GenericAPIView):
     """
     POST /milkbank/requests/<id>/decline/  {reason?, staff_message?}
 
-    Declines a request from the Booking Request desk (pending) or from any
-    in-person phase (scheduled) -- a failed blood test, a failed breastmilk
-    collection, documents that don't check out. Either way the request ends
-    here: DECLINED is terminal, so it can't be advanced or completed, and
-    apply_transition releases the facility's slot. Declining from any other
-    status (awaiting attendance, counter-offered, already closed) is
-    refused by the transition table.
+    Declines a request from the Booking Request desk (pending, or a
+    counter-offer she hasn't answered) or from any in-person phase
+    (scheduled) -- a failed blood test, a failed breastmilk collection,
+    documents that don't check out, a missed appointment. Either way the
+    request ends here: DECLINED is terminal, so it can't be advanced or
+    completed, and apply_transition releases the facility's slot. Declining
+    while it waits on her to confirm (awaiting attendance), or once it is
+    closed, is refused by the transition table.
 
     `reason` is the short label the admin statistics group by. The mother is
     shown a plain explanation of that reason (milkbank/results.py);
@@ -1024,11 +1324,17 @@ class StaffProposeCounterOfferView(generics.GenericAPIView):
                            (questionnaire, serology photo and all) just
                            to move a date she never chose badly.
       AWAITING_ATTENDANCE  an already-accepted booking that has to move.
+      SCHEDULED            a confirmed appointment that has to move -- its
+                           day was closed, say -- while it is still ahead
+                           (scheduling.appointment_still_ahead).
+      COUNTER_OFFERED      replacing an offer she hasn't answered yet.
 
     Either way nothing is refused and nothing is re-submitted: she gets
     Accept / Choose New Time in the app, and choosing a new time returns
     the request to PENDING with her new slot, questionnaire intact (see
-    RejectCounterOfferView).
+    RejectCounterOfferView). She has until 8 business hours later, or the
+    offered time if that comes first, to answer
+    (transitions.counter_offer_deadline).
     """
 
     queryset = MilkBankRequest.objects.all()
@@ -1039,9 +1345,16 @@ class StaffProposeCounterOfferView(generics.GenericAPIView):
         req = self.get_object()
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        # Refuse a slot nobody could attend (past, weekend, facility closed,
-        # her own slot) before anything moves -- the dashboard greys these
-        # out, this is what makes that binding.
+        # A confirmed booking can be moved only while its appointment is
+        # still ahead -- not once she has been seen, or her milk collected.
+        if req.current_sub_status == Status.SCHEDULED and not appointment_still_ahead(req):
+            return Response({
+                "detail": "Her appointment has already taken place, so its date can't be changed now.",
+                "code": "appointment_done",
+            }, status=400)
+        # Refuse a slot nobody could attend (past, weekend, holiday, facility
+        # closed, her own slot) before anything moves -- the dashboard greys
+        # these out, this is what makes that binding.
         slot_errors = counter_offer_errors(
             req,
             serializer.validated_data["counter_offer_date"],
@@ -1051,12 +1364,16 @@ class StaffProposeCounterOfferView(generics.GenericAPIView):
             # Per-field messages for any client that wants them, plus the
             # `detail` the dashboard already shows in its dialog.
             return Response({**slot_errors, "detail": " ".join(slot_errors.values())}, status=400)
+        # Set before the transition: the offer's deadline (and what she is
+        # told) is reckoned from the offered slot.
+        before = (req.counter_offer_date, req.counter_offer_time)
+        req.counter_offer_date = serializer.validated_data["counter_offer_date"]
+        req.counter_offer_time = serializer.validated_data["counter_offer_time"]
         try:
             apply_transition(req, Status.COUNTER_OFFERED, request.user, "counter_offer_proposed")
         except InvalidTransition as exc:
+            req.counter_offer_date, req.counter_offer_time = before
             return Response({"detail": str(exc)}, status=400)
-        req.counter_offer_date = serializer.validated_data["counter_offer_date"]
-        req.counter_offer_time = serializer.validated_data["counter_offer_time"]
         update_fields = ["counter_offer_date", "counter_offer_time"]
         # Only overwrite an existing message when a new one was actually
         # given -- same treatment StaffAcceptView gives it, so a blank
@@ -1102,6 +1419,20 @@ class StaffAdvanceStageView(generics.GenericAPIView):
             return Response({"detail": "Only a scheduled request can move between phases."}, status=400)
         if req.current_stage_index >= len(req.stages) - 1:
             return Response({"detail": "Already at the final phase."}, status=400)
+        # A recipient moving on to Booking Confirmation is asked to confirm her
+        # appointment -- not one already begun, or on a day now closed.
+        next_stage = req.stages[req.current_stage_index + 1]
+        if next_stage == "Booking Confirmation":
+            if slot_has_started(req.preferred_date, req.preferred_time):
+                return Response({
+                    "detail": "Her appointment time has passed. Propose a new date first.",
+                    "code": "appointment_passed",
+                }, status=400)
+            if appointment_day_closed(req):
+                return Response({
+                    "detail": "The facility is closed on her appointment date. Propose a new date first.",
+                    "code": "day_closed",
+                }, status=400)
         if not advance_stage(req):
             return Response({"detail": STAGE_CHANGED}, status=409)
 
@@ -1160,6 +1491,14 @@ class StaffConfirmCompletionView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         amount_ml = serializer.validated_data["amount_ml"]
+        # Only from the Results step, where the console offers it -- never
+        # past a phase nobody ticked off (a donor still at Counseling and
+        # Testing has given no milk to record).
+        if req.current_sub_status == Status.SCHEDULED and req.current_stage_index != len(req.stages) - 1:
+            return Response({
+                "detail": "Only a booking on its Results phase can be completed. Move it through its phases first.",
+                "code": "not_at_results",
+            }, status=400)
 
         with transaction.atomic():
             # The facility's row is locked and its stock read fresh, until this

@@ -20,11 +20,15 @@ Which requests hold their day's slot:
     mothers can never both be given the last slot.
   - completed: yes. The appointment happened on that day and used that
     day's slot; finishing it does not give the day a spare one.
-  - declined, expired: no. The slot goes back the moment either happens.
+  - declined, expired, cancelled: no. The slot goes back the moment any of
+    them happens.
 
-A counter-offered request keeps holding its ORIGINAL day until she accepts
-the new one; accepting moves it (and is refused if the new day has filled
-up in the meantime -- see AcceptCounterOfferView).
+A counter-offered request holds the OFFERED day and time, not the one she
+first asked for: that is where she is going if she accepts, and the facility
+offered it, so nobody else may take it from under her while she decides.
+Her original day is free again for other mothers. If she picks a new time
+instead, that day has to have room (RejectCounterOfferView); accepting still
+re-checks the offered day under a lock (AcceptCounterOfferView).
 
 Per-time-slot limit for donors (optional, per facility):
 
@@ -33,12 +37,13 @@ one of scheduling.SLOTS) on a day takes at most donor_bookings_per_slot DONOR
 bookings -- the lab can only run so many donor screenings at once. It sits
 alongside the daily capacity, it does not replace it: a donor booking needs
 room in BOTH its day and its hour. The same requests hold an hour as hold a
-day (everything but declined / expired), counting donors only.
+day (everything but declined / expired / cancelled, at the hour it holds),
+counting donors only.
 """
 
 from datetime import date, datetime, timedelta
 
-from django.db.models import Count
+from django.db.models import Case, CharField, Count, DateField, F, Q, When
 
 from .business_hours import BUSINESS_TZ
 from .models import MilkBankRequest
@@ -46,7 +51,7 @@ from .models import MilkBankRequest
 Status = MilkBankRequest.Status
 
 # The only statuses that give their day's slot back.
-RELEASED_STATUSES = (Status.DECLINED, Status.EXPIRED)
+RELEASED_STATUSES = (Status.DECLINED, Status.EXPIRED, Status.CANCELLED)
 
 # How far ahead fully_booked_dates() looks -- comfortably past anything the
 # mother's scheduler lets her pick.
@@ -58,14 +63,28 @@ def today() -> date:
     return datetime.now(BUSINESS_TZ).date()
 
 
+def _offered():
+    return Q(current_sub_status=Status.COUNTER_OFFERED, counter_offer_date__isnull=False)
+
+
 def holding_requests():
-    """Requests that currently occupy a slot on their preferred_date."""
-    return MilkBankRequest.objects.exclude(current_sub_status__in=RELEASED_STATUSES)
+    """
+    Requests that currently occupy a slot, each annotated with the day and
+    time it holds (`slot_day`, `slot_time`): the offered ones for a
+    counter-offer waiting on her answer, otherwise the ones she booked.
+    """
+    return MilkBankRequest.objects.exclude(current_sub_status__in=RELEASED_STATUSES).annotate(
+        slot_day=Case(When(_offered(), then=F("counter_offer_date")), default=F("preferred_date"), output_field=DateField()),
+        slot_time=Case(
+            When(_offered(), then=F("counter_offer_time")),
+            default=F("preferred_time"), output_field=CharField(),
+        ),
+    )
 
 
 def slots_taken(facility_id, day, exclude_request_id=None) -> int:
     """How many of `day`'s slots at the facility are taken."""
-    queryset = holding_requests().filter(allocated_facility_id=facility_id, preferred_date=day)
+    queryset = holding_requests().filter(allocated_facility_id=facility_id, slot_day=day)
     if exclude_request_id is not None:
         queryset = queryset.exclude(pk=exclude_request_id)
     return queryset.count()
@@ -86,7 +105,7 @@ def has_room(facility, day, exclude_request_id=None) -> bool:
 def donor_slot_taken(facility_id, day, time, exclude_request_id=None) -> int:
     """How many DONOR bookings hold the `time` slot on `day` at the facility."""
     queryset = holding_requests().filter(
-        allocated_facility_id=facility_id, preferred_date=day, preferred_time=time,
+        allocated_facility_id=facility_id, slot_day=day, slot_time=time,
         request_type=MilkBankRequest.RequestType.DONOR,
     )
     if exclude_request_id is not None:
@@ -112,16 +131,16 @@ def full_donor_slots(facility, start: date, end: date) -> dict:
     rows = (
         holding_requests()
         .filter(
-            allocated_facility_id=facility.pk, preferred_date__gte=start, preferred_date__lt=end,
+            allocated_facility_id=facility.pk, slot_day__gte=start, slot_day__lt=end,
             request_type=MilkBankRequest.RequestType.DONOR,
         )
-        .values("preferred_date", "preferred_time")
+        .values("slot_day", "slot_time")
         .annotate(n=Count("id"))
         .filter(n__gte=facility.donor_bookings_per_slot)
     )
     full = {}
     for row in rows:
-        full.setdefault(row["preferred_date"].isoformat(), []).append(row["preferred_time"])
+        full.setdefault(_iso(row["slot_day"]), []).append(row["slot_time"])
     return {day: sorted(times, key=_slot_order) for day, times in sorted(full.items())}
 
 
@@ -134,11 +153,21 @@ def counts_by_day(facility_ids, start: date, end: date) -> dict:
     """{(facility_id, day): slots taken} for start <= day < end, one query."""
     rows = (
         holding_requests()
-        .filter(allocated_facility_id__in=list(facility_ids), preferred_date__gte=start, preferred_date__lt=end)
-        .values("allocated_facility_id", "preferred_date")
+        .filter(allocated_facility_id__in=list(facility_ids), slot_day__gte=start, slot_day__lt=end)
+        .values("allocated_facility_id", "slot_day")
         .annotate(n=Count("id"))
     )
-    return {(row["allocated_facility_id"], row["preferred_date"]): row["n"] for row in rows}
+    return {(row["allocated_facility_id"], _as_date(row["slot_day"])): row["n"] for row in rows}
+
+
+def _as_date(value):
+    # A Case() over two date columns comes back as a date on Postgres, but as
+    # text on SQLite (which the tests run on).
+    return date.fromisoformat(value) if isinstance(value, str) else value
+
+
+def _iso(value):
+    return _as_date(value).isoformat()
 
 
 def day_summary(facility, start=None, days=BOOKING_HORIZON_DAYS) -> dict:

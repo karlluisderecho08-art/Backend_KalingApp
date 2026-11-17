@@ -18,7 +18,7 @@ from core.i18n import translate
 from .business_hours import BUSINESS_TZ
 from .models import MilkBankRequest
 from .scheduling import appointment_label, slot_has_started
-from .tests import make_facility, make_request
+from .tests import make_facility, make_request, screen
 from .transitions import sweep_expired_requests
 
 Status = MilkBankRequest.Status
@@ -106,6 +106,7 @@ class PastAppointmentTests(ThrottleIsolatedTestCase):
 
     def test_staff_can_still_accept_before_the_time(self):
         req = self.pending(time="1:00 PM")
+        screen(req)
         self.as_staff()
 
         response = self.client.post(f"/milkbank/requests/{req.id}/accept/")

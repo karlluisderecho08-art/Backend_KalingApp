@@ -23,7 +23,7 @@ from .collection import STEPS, STEPS_DROP_OFF_LINKED, STEPS_TITLE
 from .models import MilkBankRequest
 from .results import EXPIRED_DROP_OFF, mother_result
 from .serializers import DELIVERY_LINK_INVALID, DELIVERY_LINK_REQUIRED
-from .tests import make_facility, make_request
+from .tests import make_facility, make_request, screen
 from .transitions import (
     DROP_OFF_ACCEPTED_NOTIFICATION, DROP_OFF_EXPIRY_MESSAGE, sweep_expired_requests,
 )
@@ -62,11 +62,13 @@ class DropOffConfirmationTests(APITestCase):
         )
 
     def booking(self, method=Method.DROP_OFF):
-        # Appointment: December 1, 2026, 10:00 AM (Manila).
-        return make_request(
+        # Appointment: December 1, 2026, 10:00 AM (Manila), screening answers in.
+        req = make_request(
             self.mother, self.facility, collection_method=method,
             preferred_date="2026-12-01", preferred_time="10:00 AM",
         )
+        screen(req)
+        return req
 
     def accept(self, req):
         self.client.force_authenticate(user=self.staff)
@@ -170,13 +172,14 @@ class DropOffConfirmationTests(APITestCase):
         self.client.force_authenticate(user=self.staff)
         response = self.client.post(
             f"/milkbank/requests/{req.id}/propose-counter-offer/",
-            {"counter_offer_date": "2026-12-08", "counter_offer_time": "2:00 PM"}, format="json",
+            # Not Dec 8: the Feast of the Immaculate Conception, a holiday.
+            {"counter_offer_date": "2026-12-09", "counter_offer_time": "2:00 PM"}, format="json",
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.client.force_authenticate(user=self.mother)
         self.assertEqual(self.client.post(f"/milkbank/requests/{req.id}/accept-counter-offer/").status_code, 200)
         req.refresh_from_db()
-        self.assertEqual(req.response_deadline, manila(2026, 12, 8, 16))
+        self.assertEqual(req.response_deadline, manila(2026, 12, 9, 16))
 
     # --- Expiry -------------------------------------------------------------------
 

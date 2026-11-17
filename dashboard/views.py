@@ -1,14 +1,15 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db.models import Count
 from django.db.models.functions import TruncMonth
-from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from articles.models import Article, ArticleComment
+from milkbank.business_hours import BUSINESS_TZ
 from milkbank.models import Facility, MilkBankRequest
+from milkbank.results import FACILITY_REMOVED_REASON
 
 # A rolling window of exactly this many months, including the current one.
 # Twelve is also what keeps the "%b" labels ("Jan", "Feb", ...) unique --
@@ -23,8 +24,13 @@ def _month_start(moment):
 
 
 def _trend_window():
-    """The last TREND_MONTHS month-start datetimes, oldest first."""
-    cursor = _month_start(timezone.now())
+    """
+    The last TREND_MONTHS month-start datetimes, oldest first -- on the
+    Manila calendar, like everything else a facility counts by (the server's
+    own clock is UTC, where a booking made before 8 AM on the 1st would still
+    fall in the previous month).
+    """
+    cursor = _month_start(datetime.now(BUSINESS_TZ))
     months = []
     for _ in range(TREND_MONTHS):
         months.append(cursor)
@@ -65,7 +71,7 @@ class AdminDashboardStatsView(APIView):
             (row["month"].year, row["month"].month): row["count"]
             for row in (
                 MilkBankRequest.objects.filter(submitted_at__gte=window[0])
-                .annotate(month=TruncMonth("submitted_at"))
+                .annotate(month=TruncMonth("submitted_at", tzinfo=BUSINESS_TZ))
                 .values("month")
                 .annotate(count=Count("id"))
             )
@@ -90,11 +96,15 @@ class AdminDashboardStatsView(APIView):
 
         # Why requests were declined, most common first -- feeds the "top
         # reasons" chart. Only DECLINED (a person said no), never EXPIRED
-        # (a clock ran out), since those are different problems to fix. A
-        # decline with no recorded reason is still a decline, so it is
-        # counted as "Not specified" rather than silently dropped.
+        # (a clock ran out) or CANCELLED (she withdrew), since those are
+        # different problems to fix. Nor the bookings cancelled because their
+        # facility was removed from KalingApp (milkbank/removal.py): nobody
+        # turned those mothers down. A decline with no recorded reason is
+        # still a decline, so it is counted as "Not specified" rather than
+        # silently dropped.
         decline_rows = (
             MilkBankRequest.objects.filter(current_sub_status=MilkBankRequest.Status.DECLINED)
+            .exclude(decline_reason=FACILITY_REMOVED_REASON)
             .values("decline_reason")
             .annotate(count=Count("id"))
             .order_by("-count", "decline_reason")
@@ -104,13 +114,20 @@ class AdminDashboardStatsView(APIView):
             for row in decline_rows
         ]
 
-        return Response({
-            "total_bookings": MilkBankRequest.objects.count(),
+        def people(queryset):
             # Distinct owners, not raw request rows -- "how many donors/
             # recipients" means people, and one person can have more than
-            # one request over time (a completed one, then a new one).
-            "total_donors": donor_requests.values("owner_id").distinct().count(),
-            "total_recipients": recipient_requests.values("owner_id").distinct().count(),
+            # one request over time (a completed one, then a new one). A
+            # mother who deleted her account still counts once, through the
+            # reference her kept bookings share (accounts/deletion.py).
+            current = queryset.filter(owner__isnull=False).values("owner_id").distinct().count()
+            former = queryset.filter(owner__isnull=True).exclude(former_owner_ref="")
+            return current + former.values("former_owner_ref").distinct().count()
+
+        return Response({
+            "total_bookings": MilkBankRequest.objects.count(),
+            "total_donors": people(donor_requests),
+            "total_recipients": people(recipient_requests),
             "active_facilities": Facility.objects.filter(is_operational=True).count(),
             "total_articles": Article.objects.count(),
             "pending_comment_reports": ArticleComment.objects.filter(is_reported=True).count(),

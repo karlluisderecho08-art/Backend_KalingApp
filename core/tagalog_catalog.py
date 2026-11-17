@@ -371,6 +371,67 @@ MESSAGES = {
         "Walang naipadalang delivery link ng courier sa takdang oras matapos tanggapin ng pasilidad ang iyong kahilingan, kaya nag-expire ito. Magpasa ng bagong kahilingan.",
     "Your collection method can't be changed after your booking is confirmed. Message the facility in Chat if something has changed.":
         "Hindi na mapapalitan ang paraan ng pagkolekta kapag nakumpirma na ang iyong reserbasyon. Mag-message sa pasilidad sa Chat kung may nagbago.",
+    # --- Closed days, cancelling, deadlines (C16, 2026-11-18) ---
+    "Milk Bank Request: Cancelled":
+        "Kahilingan sa Milk Bank: Kinansela",
+    "You cancelled your booking. You can make a new one whenever you're ready.":
+        "Kinansela mo ang iyong reserbasyon. Puwede kang gumawa ng bago kahit kailan ka handa.",
+    "The facility accepted your request. Please confirm your attendance in Booking Status before {time} on {date}, or the request expires.":
+        "Tinanggap ng pasilidad ang iyong kahilingan. Kumpirmahin ang iyong pagdalo sa Katayuan ng Reserbasyon bago mag-{time} sa {date}, kung hindi ay mag-e-expire ang kahilingan.",
+    "The facility proposed a new date for your appointment. Please accept it or choose a new time in Booking Status before {time} on {date}, or the request expires.":
+        "Nagmungkahi ang pasilidad ng bagong petsa para sa iyong appointment. Tanggapin ito o pumili ng bagong oras sa Katayuan ng Reserbasyon bago mag-{time} sa {date}, kung hindi ay mag-e-expire ang kahilingan.",
+    "You accepted the new date. Please confirm your attendance in Booking Status before {time} on {date}, or the request expires.":
+        "Tinanggap mo ang bagong petsa. Kumpirmahin ang iyong pagdalo sa Katayuan ng Reserbasyon bago mag-{time} sa {date}, kung hindi ay mag-e-expire ang kahilingan.",
+    "You accepted the new date. Book a courier for your appointment and paste its delivery link in Booking Status. That confirms your booking.":
+        "Tinanggap mo ang bagong petsa. Mag-book ng courier para sa iyong appointment at i-paste ang delivery link nito sa Katayuan ng Reserbasyon. Iyon ang magkukumpirma ng iyong reserbasyon.",
+    "Your request expired because your attendance wasn't confirmed by the deadline after the facility accepted it. Please submit a new request.":
+        "Nag-expire ang iyong kahilingan dahil hindi nakumpirma ang pagdalo mo bago ang takdang oras matapos itong tanggapin ng pasilidad. Magpasa ng bagong kahilingan.",
+    "Your request expired because the facility's proposed date wasn't answered in time. Please submit a new request.":
+        "Nag-expire ang iyong kahilingan dahil hindi nasagot sa takdang oras ang bagong petsang mungkahi ng pasilidad. Magpasa ng bagong kahilingan.",
+    "The facility's proposed date wasn't answered in time, so your request expired. Please submit a new request.":
+        "Hindi nasagot sa takdang oras ang bagong petsang mungkahi ng pasilidad, kaya nag-expire ang iyong kahilingan. Magpasa ng bagong kahilingan.",
+    "You cancelled this booking. You can make a new booking whenever you're ready.":
+        "Kinansela mo ang reserbasyong ito. Puwede kang gumawa ng bagong reserbasyon kahit kailan ka handa.",
+    "Missed appointment":
+        "Hindi natuloy ang appointment",
+    "The facility recorded that your appointment didn't take place, so this booking was closed. You're welcome to make a new booking when you're ready.":
+        "Naitala ng pasilidad na hindi natuloy ang iyong appointment, kaya isinara na ang reserbasyong ito. Puwede kang gumawa ng bagong reserbasyon kapag handa ka na.",
+    "Screening answers missing":
+        "Kulang ang mga sagot sa screening",
+    "Your health screening answers didn't reach the facility, so this request couldn't go ahead. Please submit a new request and answer the screening questions again.":
+        "Hindi nakarating sa pasilidad ang mga sagot mo sa health screening, kaya hindi naituloy ang kahilingang ito. Magpasa ng bagong kahilingan at sagutin ulit ang mga tanong sa screening.",
+    "Pick up: the facility will collect your milk from you on {date} at {time}. Have your milk ready by then. You can change this in Booking Status until your booking is confirmed.":
+        "Pick up: kukunin ng pasilidad ang iyong gatas mula sa iyo sa {date}, {time}. Ihanda na ang iyong gatas bago ang oras na iyon. Puwede mo itong palitan sa Katayuan ng Reserbasyon hangga't hindi pa nakukumpirma ang iyong reserbasyon.",
+    "Walk-in: bring your milk to the facility yourself on {date} at {time}. Keep it cold on the way, in a cooler or insulated bag. You can change this in Booking Status until your booking is confirmed.":
+        "Walk-in: ikaw mismo ang magdadala ng iyong gatas sa pasilidad sa {date}, {time}. Panatilihin itong malamig habang nasa biyahe, sa cooler o insulated bag. Puwede mo itong palitan sa Katayuan ng Reserbasyon hangga't hindi pa nakukumpirma ang iyong reserbasyon.",
+    "Pick up: the facility will collect your milk from you on {date} at {time}. Have your milk ready by then. If something changes, message the facility in Chat from Booking Status.":
+        "Pick up: kukunin ng pasilidad ang iyong gatas mula sa iyo sa {date}, {time}. Ihanda na ang iyong gatas bago ang oras na iyon. Kung may magbago, mag-message sa pasilidad sa Chat mula sa Katayuan ng Reserbasyon.",
+    "Walk-in: bring your milk to the facility yourself on {date} at {time}. Keep it cold on the way, in a cooler or insulated bag. If something changes, message the facility in Chat from Booking Status.":
+        "Walk-in: ikaw mismo ang magdadala ng iyong gatas sa pasilidad sa {date}, {time}. Panatilihin itong malamig habang nasa biyahe, sa cooler o insulated bag. Kung may magbago, mag-message sa pasilidad sa Chat mula sa Katayuan ng Reserbasyon.",
+    "Choose one of the offered times: 8:00 AM, 9:00 AM, 10:00 AM, 11:00 AM, 12:00 PM, 1:00 PM, 2:00 PM, 3:00 PM, 4:00 PM.":
+        "Pumili ng isa sa mga oras na nakalista: 8:00 AM, 9:00 AM, 10:00 AM, 11:00 AM, 12:00 PM, 1:00 PM, 2:00 PM, 3:00 PM, 4:00 PM.",
+    "The milk banks are closed on weekends. Please choose a weekday.":
+        "Sarado ang mga milk bank tuwing Sabado at Linggo. Pumili ng araw mula Lunes hanggang Biyernes.",
+    "{date} is a holiday, and the milk banks are closed. Please choose another date.":
+        "Pista opisyal ang {date}, kaya sarado ang mga milk bank. Pumili ng ibang petsa.",
+    "{facility} is closed on {date}. Please choose another date.":
+        "Sarado ang {facility} sa {date}. Pumili ng ibang petsa.",
+    "No milk bank is open on {date}. Please choose another date.":
+        "Walang bukas na milk bank sa {date}. Pumili ng ibang petsa.",
+    "{facility} is closed on your appointment date. The facility will propose a new date for you, or you can cancel your booking.":
+        "Sarado ang {facility} sa petsa ng iyong appointment. Magmumungkahi ang pasilidad ng bagong petsa para sa iyo, o puwede mong kanselahin ang iyong reserbasyon.",
+    "Your appointment time has passed, so it can no longer be confirmed.":
+        "Lumipas na ang oras ng iyong appointment, kaya hindi na ito makukumpirma.",
+    "The facility is now closed on the date it offered. Please choose a new time instead.":
+        "Sarado na ngayon ang pasilidad sa petsang inalok nito. Pumili na lang ng bagong oras.",
+    "Your milk has already been collected, so this booking can't be cancelled. Message the facility in Chat if something has changed.":
+        "Nakolekta na ang iyong gatas, kaya hindi na makakansela ang reserbasyong ito. Mag-message sa pasilidad sa Chat kung may nagbago.",
+    "This booking has just changed. Refresh it and try again.":
+        "Nagbago ang reserbasyong ito. I-refresh ito at subukan ulit.",
+    "Facility closed on your appointment day":
+        "Sarado ang pasilidad sa araw ng iyong appointment",
+    "{facility} will be closed on {date}, the day of your appointment. The facility will propose a new date in Booking Status, or you can cancel your booking there.":
+        "Sarado ang {facility} sa {date}, ang araw ng iyong appointment. Magmumungkahi ang pasilidad ng bagong petsa sa Katayuan ng Reserbasyon, o puwede mong kanselahin doon ang iyong reserbasyon.",
 }
 
 # Values that are inserted into a message's {slot}: translated there, but
@@ -390,6 +451,7 @@ LABELS = {
     "Counter Offer": "Bagong Mungkahi",
     "Counter-Offer": "Bagong Mungkahi",
     "Completed": "Tapos na",
+    "Cancelled": "Kinansela",
     "pending": "Naghihintay",
     "awaiting_attendance": "Hinihintay ang Pagdalo",
     "scheduled": "Nakaiskedyul",
@@ -397,4 +459,5 @@ LABELS = {
     "expired": "Nag-expire",
     "counter_offered": "Bagong Mungkahi",
     "completed": "Tapos na",
+    "cancelled": "Kinansela",
 }

@@ -43,7 +43,9 @@ class DeleteMyAccountTests(ThrottleIsolatedTestCase):
         return self.client.post(URL, {"password": password}, format="json")
 
     def test_everything_of_hers_is_deleted(self):
-        req = make_request(self.mother, self.facility, current_sub_status=Status.COMPLETED)
+        # Every booking that didn't happen goes with her. A completed one stays
+        # in the facility's records without her (test_a_completed_donation_is_kept_without_her).
+        req = make_request(self.mother, self.facility, current_sub_status=Status.DECLINED)
         DonorQuestionnaire.objects.create(
             request=req, good_general_health=True, lactating_with_excess_supply=True,
             free_of_infectious_disease=True, recent_transfusion_or_transplant=False,
@@ -73,6 +75,31 @@ class DeleteMyAccountTests(ThrottleIsolatedTestCase):
                       ChatSession, ChatMessage):
             self.assertFalse(model.objects.exists(), model.__name__)
         self.assertFalse(NotificationItem.objects.filter(owner_id=self.mother.id).exists())
+        self.assertFalse(photo_path.exists(), "the serology photo file must leave storage too")
+
+    def test_a_completed_donation_is_kept_without_her(self):
+        req = make_request(
+            self.mother, self.facility, current_sub_status=Status.COMPLETED, amount_ml=120,
+            collection_method=MilkBankRequest.CollectionMethod.PICKUP, pickup_address="12 Rizal St.",
+        )
+        DonorQuestionnaire.objects.create(
+            request=req, good_general_health=True, lactating_with_excess_supply=True,
+            free_of_infectious_disease=True, recent_transfusion_or_transplant=False,
+            uses_tobacco_alcohol_or_drugs=False, on_medication_or_supplements=False,
+            has_recent_serology_test=True,
+            serology_photo=SimpleUploadedFile("test.jpg", b"\xff\xd8\xff\xe0data", content_type="image/jpeg"),
+        )
+        photo_path = Path(self.media) / DonorQuestionnaire.objects.get(request=req).serology_photo.name
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.delete().status_code, 204)
+
+        kept = MilkBankRequest.objects.get(pk=req.pk)
+        self.assertIsNone(kept.owner_id)
+        self.assertTrue(kept.former_owner_ref.startswith("M-"))
+        self.assertEqual((kept.amount_ml, kept.current_sub_status), (120, Status.COMPLETED))
+        self.assertEqual(kept.pickup_address, "")
+        self.assertFalse(DonorQuestionnaire.objects.exists())
         self.assertFalse(photo_path.exists(), "the serology photo file must leave storage too")
 
     def test_an_open_booking_is_cancelled_and_the_facility_told(self):

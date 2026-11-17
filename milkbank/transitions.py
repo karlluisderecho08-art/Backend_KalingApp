@@ -8,39 +8,63 @@ from notifications.services import notify
 
 from .business_hours import add_business_hours
 from .collection import (
-    confirms_by_delivery_link, drop_off_link_deadline, notify_collection_steps, send_delivery_link_reminders,
+    appointment_start, confirms_by_delivery_link, drop_off_link_deadline, notify_collection_steps,
+    send_delivery_link_reminders, slot_start,
 )
 from .models import Facility, MilkBankRequest, TransactionRecord
+from .scheduling import clock_label
 
 Status = MilkBankRequest.Status
 
 # Which statuses have an active SLA clock, and therefore get a fresh
-# response_deadline (8 business hours from *now*) the moment a request
-# enters them: PENDING because the facility hasn't answered yet (set both
-# here, for the counter-offer-rejected/rebook path, and in
-# MilkBankRequestCreateView, for a brand-new request), AWAITING_ATTENDANCE
-# because the mother hasn't confirmed yet. Every other status means
-# nobody is waiting on anyone, so the clock is cleared instead.
-STATUSES_WITH_SLA_CLOCK = {Status.PENDING, Status.AWAITING_ATTENDANCE}
+# response_deadline the moment a request enters them: PENDING because the
+# facility hasn't answered yet (set both here, for the counter-offer-
+# rejected/rebook path, and in MilkBankRequestCreateView, for a brand-new
+# request); AWAITING_ATTENDANCE because the mother hasn't confirmed yet; and
+# COUNTER_OFFERED because she hasn't answered the facility's proposed date
+# (without a clock an unanswered offer stayed open forever, holding a slot).
+# Every other status means nobody is waiting on anyone, so the clock is
+# cleared instead.
+STATUSES_WITH_SLA_CLOCK = {Status.PENDING, Status.AWAITING_ATTENDANCE, Status.COUNTER_OFFERED}
 
 # The statuses a request can never leave (see ALLOWED_TRANSITIONS below).
-FINAL_STATUSES = {Status.COMPLETED, Status.DECLINED, Status.EXPIRED}
+FINAL_STATUSES = {Status.COMPLETED, Status.DECLINED, Status.EXPIRED, Status.CANCELLED}
 
 # What to tell the mother when her booking reaches each status. This is
 # the server-side replacement for the Kotlin app hand-writing a
 # notification at each call site (e.g. finalizeAppointment()) -- one
 # table here instead of scattered addNotification() calls.
 STATUS_NOTIFICATIONS = {
-    Status.AWAITING_ATTENDANCE: "The facility accepted your request. Please confirm your attendance.",
     Status.SCHEDULED: "Your appointment is scheduled.",
     Status.DECLINED: "The facility declined your request.",
     Status.EXPIRED: "Your request has expired.",
-    Status.COUNTER_OFFERED: "The facility proposed a new date for your appointment.",
     Status.COMPLETED: "Your booking is complete. Thank you!",
+    Status.CANCELLED: "You cancelled your booking. You can make a new one whenever you're ready.",
 }
+# The two statuses that wait on her tell her exactly until when: {date} and
+# {time} are the request's response_deadline on the Manila clock.
+DEADLINE_NOTIFICATIONS = {
+    Status.AWAITING_ATTENDANCE: (
+        "The facility accepted your request. Please confirm your attendance in Booking Status "
+        "before {time} on {date}, or the request expires."
+    ),
+    Status.COUNTER_OFFERED: (
+        "The facility proposed a new date for your appointment. Please accept it or choose a new "
+        "time in Booking Status before {time} on {date}, or the request expires."
+    ),
+}
+# She accepted the facility's proposed date herself: still to confirm it.
+COUNTER_OFFER_ACCEPTED_NOTIFICATION = (
+    "You accepted the new date. Please confirm your attendance in Booking Status "
+    "before {time} on {date}, or the request expires."
+)
 # A Drop off donor confirms by pasting her courier's delivery link instead.
 DROP_OFF_ACCEPTED_NOTIFICATION = (
     "The facility accepted your request. Book a courier for your appointment and paste its "
+    "delivery link in Booking Status. That confirms your booking."
+)
+DROP_OFF_COUNTER_OFFER_ACCEPTED_NOTIFICATION = (
+    "You accepted the new date. Book a courier for your appointment and paste its "
     "delivery link in Booking Status. That confirms your booking."
 )
 
@@ -48,16 +72,38 @@ DROP_OFF_ACCEPTED_NOTIFICATION = (
 def attendance_deadline(req, now=None):
     """
     When a request waiting on the mother (AWAITING_ATTENDANCE) expires: 8
-    business hours to confirm attendance -- or, for a Drop off, which she
-    confirms with the courier's link, usually on the day, until shortly after
-    her appointment time (collection.drop_off_link_deadline).
+    business hours to confirm attendance, but never later than the start of
+    the appointment itself -- confirming a visit that has already begun means
+    nothing (accepted on a Friday at 3 PM for Monday at 8 AM, she has until
+    Monday 8 AM, not 2 PM). A Drop off, which she confirms with the courier's
+    link, usually on the day, waits until shortly after her appointment time
+    instead (collection.drop_off_link_deadline).
     """
     now = now or timezone.now()
     if confirms_by_delivery_link(req):
         deadline = drop_off_link_deadline(req, now)
         if deadline is not None:
             return deadline
-    return add_business_hours(now)
+    deadline = add_business_hours(now)
+    start = appointment_start(req)
+    return min(deadline, start) if start is not None else deadline
+
+
+def counter_offer_deadline(req, now=None):
+    """
+    When a counter-offer she hasn't answered expires: 8 business hours after
+    it was made, but never later than the start of the offered appointment
+    (it can't be accepted once that time has begun).
+    """
+    deadline = add_business_hours(now or timezone.now())
+    start = slot_start(req.counter_offer_date, req.counter_offer_time)
+    return min(deadline, start) if start is not None else deadline
+
+
+def deadline_notification(template, deadline):
+    """A DEADLINE_NOTIFICATIONS-style template with its deadline filled in."""
+    day, time = clock_label(deadline)
+    return template.format(date=day, time=time)
 
 
 def refresh_attendance_deadline(req):
@@ -127,17 +173,39 @@ def refresh_attendance_deadline(req):
 #     the confirmation entirely: the mobile app gates its "Confirm My
 #     Attendance" button on the Booking Confirmation stage, so she would
 #     either never be shown it or get a 400 when she was.
+#
+#   SCHEDULED -> COUNTER_OFFERED, COUNTER_OFFERED -> COUNTER_OFFERED
+#     A confirmed appointment can need a new date too -- the facility closes
+#     that day, or no doctor turns out to be available. Staff propose one
+#     while her appointment is still ahead (views.appointment_still_ahead);
+#     accepting it puts her back on Booking Confirmation to confirm the new
+#     date. An offer she hasn't answered can be replaced by another.
+#
+#   COUNTER_OFFERED -> DECLINED, -> EXPIRED
+#     An offer used to have no way to end: no clock, and staff could not
+#     decline it. It now expires like any other wait on her (see
+#     STATUSES_WITH_SLA_CLOCK), and staff can decline it.
+#
+#   every open status -> CANCELLED
+#     She cancels it herself from Booking Status -- except, as a donor, once
+#     her milk has been collected (views.MotherCancelView).
 ALLOWED_TRANSITIONS = {
     Status.PENDING: {
         Status.AWAITING_ATTENDANCE, Status.SCHEDULED, Status.COUNTER_OFFERED,
-        Status.DECLINED, Status.EXPIRED,
+        Status.DECLINED, Status.EXPIRED, Status.CANCELLED,
     },
-    Status.AWAITING_ATTENDANCE: {Status.SCHEDULED, Status.COUNTER_OFFERED, Status.EXPIRED},
-    Status.COUNTER_OFFERED: {Status.SCHEDULED, Status.PENDING, Status.AWAITING_ATTENDANCE},
-    Status.SCHEDULED: {Status.COMPLETED, Status.AWAITING_ATTENDANCE, Status.DECLINED},
+    Status.AWAITING_ATTENDANCE: {Status.SCHEDULED, Status.COUNTER_OFFERED, Status.EXPIRED, Status.CANCELLED},
+    Status.COUNTER_OFFERED: {
+        Status.SCHEDULED, Status.PENDING, Status.AWAITING_ATTENDANCE, Status.COUNTER_OFFERED,
+        Status.DECLINED, Status.EXPIRED, Status.CANCELLED,
+    },
+    Status.SCHEDULED: {
+        Status.COMPLETED, Status.AWAITING_ATTENDANCE, Status.DECLINED, Status.COUNTER_OFFERED, Status.CANCELLED,
+    },
     Status.DECLINED: set(),
     Status.EXPIRED: set(),
     Status.COMPLETED: set(),
+    Status.CANCELLED: set(),
 }
 
 
@@ -224,15 +292,20 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
 
     if new_status == Status.AWAITING_ATTENDANCE:
         deadline = attendance_deadline(req)
+    elif new_status == Status.COUNTER_OFFERED:
+        # The view sets counter_offer_date/time on `req` before calling this.
+        deadline = counter_offer_deadline(req)
     elif new_status in STATUSES_WITH_SLA_CLOCK:
         deadline = add_business_hours(timezone.now())
     else:
         deadline = None
     changes = {"current_sub_status": new_status, "response_deadline": deadline}
     # A final status starts the retention clock for the pickup
-    # representative's details (core/retention.py).
+    # representative's details (core/retention.py), and remembers where it
+    # ended from (results.mother_result says whose clock ran out).
     if new_status in FINAL_STATUSES:
         changes["closed_at"] = timezone.now()
+        changes["closed_from"] = old_status
 
     # Compare-and-set, not a plain save: the status only changes if it is
     # still the one `req` was read with. The server answers several requests
@@ -255,9 +328,7 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
         delete_booking_chat(req)
     log_action(actor, f"booking.{action_name}", f"MilkBankRequest:{req.id}")
 
-    message = message_override or STATUS_NOTIFICATIONS.get(new_status)
-    if not message_override and new_status == Status.AWAITING_ATTENDANCE and confirms_by_delivery_link(req):
-        message = DROP_OFF_ACCEPTED_NOTIFICATION
+    message = message_override or _status_notification(req, new_status, action_name, deadline)
     if message:
         notify(req.owner, f"Milk Bank Request: {req.get_current_sub_status_display()}", message, NotificationItem.Category.BOOKINGS)
     # Her appointment is now fixed: the steps for how her milk reaches the facility.
@@ -303,7 +374,20 @@ def apply_transition(req, new_status, actor, action_name, message_override=None,
         req.save(update_fields=update_fields)
 
 
-# Different wording depending on *whose* clock ran out, even though both
+def _status_notification(req, new_status, action_name, deadline):
+    """What she is told on reaching `new_status` (see the tables above)."""
+    accepted_offer = action_name == "counter_offer_accepted"
+    if new_status == Status.AWAITING_ATTENDANCE and confirms_by_delivery_link(req):
+        return DROP_OFF_COUNTER_OFFER_ACCEPTED_NOTIFICATION if accepted_offer else DROP_OFF_ACCEPTED_NOTIFICATION
+    if new_status in DEADLINE_NOTIFICATIONS and deadline is not None:
+        template = DEADLINE_NOTIFICATIONS[new_status]
+        if accepted_offer and new_status == Status.AWAITING_ATTENDANCE:
+            template = COUNTER_OFFER_ACCEPTED_NOTIFICATION
+        return deadline_notification(template, deadline)
+    return STATUS_NOTIFICATIONS.get(new_status)
+
+
+# Different wording depending on *whose* clock ran out, even though all
 # land on the same EXPIRED status -- see apply_transition's message_override.
 SLA_EXPIRY_MESSAGES = {
     Status.PENDING: (
@@ -311,8 +395,12 @@ SLA_EXPIRY_MESSAGES = {
         "so it has expired. Please submit a new request."
     ),
     Status.AWAITING_ATTENDANCE: (
-        "Your request expired because attendance wasn't confirmed within "
-        "8 business hours of the facility's acceptance. Please submit a new request."
+        "Your request expired because your attendance wasn't confirmed by the deadline "
+        "after the facility accepted it. Please submit a new request."
+    ),
+    Status.COUNTER_OFFERED: (
+        "Your request expired because the facility's proposed date wasn't answered in time. "
+        "Please submit a new request."
     ),
 }
 DROP_OFF_EXPIRY_MESSAGE = (
@@ -323,8 +411,9 @@ DROP_OFF_EXPIRY_MESSAGE = (
 
 def sweep_expired_requests(now=None):
     """
-    Expires every PENDING/AWAITING_ATTENDANCE request whose response_deadline
-    has passed, and returns the list of requests that were actually expired.
+    Expires every request waiting on someone (PENDING, AWAITING_ATTENDANCE,
+    COUNTER_OFFERED) whose response_deadline has passed, and returns the
+    list of requests that were actually expired.
 
     There's no Celery/cron worker in front of this app (Render's free tier
     web service is the only process that ever runs), so this has two
@@ -361,9 +450,9 @@ def sweep_expired_requests(now=None):
             )
         except InvalidTransition:
             # Another request in this same sweep (or a concurrent request
-            # from the owner/facility) already moved it off PENDING/
-            # AWAITING_ATTENDANCE between the query above and this save --
-            # nothing to do, it's no longer overdue in whatever it became.
+            # from the owner/facility) already moved it off the status it was
+            # waiting in between the query above and this save -- nothing to
+            # do, it's no longer overdue in whatever it became.
             continue
         expired.append(req)
     # Same timer, same callers: the Drop off reminders due at their hour.

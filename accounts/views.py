@@ -34,6 +34,7 @@ from core.i18n import wants_tagalog
 from notifications.services import notify_many
 
 from . import devices, lockout, owner
+from .deletion import delete_mother_account
 from .legacy_signups import email_is_taken, is_abandoned_legacy_signup
 from .emails import (
     MAX_VERIFICATION_ATTEMPTS,
@@ -943,6 +944,11 @@ class AdminUserDeleteView(generics.DestroyAPIView):
     actor is the one exception (SET_NULL), so the "who did what" audit
     trail survives the account itself being gone.
 
+    A mother's account goes exactly as when she deletes it herself
+    (accounts/deletion.py): her facility's staff are told about any booking
+    that was still open, and her completed bookings stay in the facility's
+    records without her.
+
     Logged BEFORE the delete runs, not after: once the row is gone
     there's no User left to log_action() against, and the target string
     has to say who this was while it still can.
@@ -973,7 +979,10 @@ class AdminUserDeleteView(generics.DestroyAPIView):
                 log_action(self.request.user, "user.delete_refused", f"User:{instance.id} ({instance.email}, admin)")
                 raise PermissionDenied(reason)
         log_action(self.request.user, "user.deleted", f"User:{instance.id} ({instance.email}, {instance.role})")
-        instance.delete()
+        if instance.role == User.Role.MOTHER and not instance.is_staff:
+            delete_mother_account(instance, by_admin=True, actor=self.request.user)
+        else:
+            instance.delete()
 
 
 class LocationConsentView(APIView):
@@ -1072,11 +1081,14 @@ class DeleteMyAccountView(APIView):
     Any booking still open is cancelled: the facility's staff are told which
     slot was freed (without her name -- she is deleting her data), and the
     slot frees itself because capacity is counted from the requests that
-    exist. Then the account is deleted, and with it, through CASCADE, her
-    requests and their questionnaires (the serology photo files go too --
-    milkbank/signals.py), pickup representative details, transactions,
-    comments and reports, saved articles, notifications and Kali chat. Audit
-    entries stay (their actor is cleared) until the retention period ends.
+    exist. Her completed bookings stay in the facility's records, anonymised,
+    so donor milk can still be traced. Then the account is deleted, and with
+    it, through CASCADE, her other requests and their questionnaires (the
+    serology photo files go too -- milkbank/signals.py), pickup representative
+    details, transactions, comments and reports, saved articles, notifications
+    and Kali chat. Audit entries stay (their actor is cleared) until the
+    retention period ends. All of it is accounts/deletion.py, shared with an
+    admin deleting her account.
 
     Facility staff and platform admin accounts are removed by a platform admin
     instead: one of them deleting itself could leave a facility, or the whole
@@ -1089,8 +1101,6 @@ class DeleteMyAccountView(APIView):
 
     @extend_schema(request=None)
     def post(self, request):
-        from milkbank.models import MilkBankRequest
-
         user = request.user
         if user.is_staff or user.role != User.Role.MOTHER:
             return Response(
@@ -1100,32 +1110,7 @@ class DeleteMyAccountView(APIView):
         refusal = _check_password_again(request, user)
         if refusal is not None:
             return refusal
-
-        open_statuses = [
-            MilkBankRequest.Status.PENDING,
-            MilkBankRequest.Status.AWAITING_ATTENDANCE,
-            MilkBankRequest.Status.SCHEDULED,
-            MilkBankRequest.Status.COUNTER_OFFERED,
-        ]
-        with transaction.atomic():
-            for req in MilkBankRequest.objects.filter(owner=user, current_sub_status__in=open_statuses).select_related(
-                "allocated_facility"
-            ):
-                kind = "donation" if req.request_type == MilkBankRequest.RequestType.DONOR else "milk request"
-                when = f"{req.preferred_date:%B} {req.preferred_date.day}, {req.preferred_date.year} at {req.preferred_time}"
-                notify_many(
-                    User.objects.filter(
-                        facility=req.allocated_facility, role=User.Role.FACILITY_STAFF, is_active=True,
-                    ),
-                    "Booking Cancelled",
-                    f"A {kind} booking for {when} was cancelled because the mother deleted her KalingApp "
-                    "account. The slot is free again.",
-                    NotificationItem.Category.BOOKINGS,
-                )
-                log_action(None, "booking.cancelled_account_deleted", f"MilkBankRequest:{req.id}")
-            # Logged without her email: she is deleting her personal data.
-            log_action(None, "user.self_deleted", f"User:{user.id} (mother)")
-            user.delete()
+        delete_mother_account(user, by_admin=False)
         return Response(status=204)
 
 

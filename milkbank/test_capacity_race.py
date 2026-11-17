@@ -349,8 +349,12 @@ class MovingABookingToAnotherDayTests(APITestCase):
         self.assertEqual(taken(self.facility, BOOKING_DAY), 0)
 
     def test_accepting_is_refused_if_the_offered_day_filled_up_meanwhile(self):
+        # An offer now holds its slot on the offered day (capacity.py), so
+        # through the API nobody else can take it while she decides. The check
+        # on accepting still guards against it -- here two bookings forced onto
+        # that day behind its back.
         self.propose(NEXT_DAY)
-        fill_day(self.facility, NEXT_DAY, 2)  # other mothers took it after the offer
+        fill_day(self.facility, NEXT_DAY, 2)
         self.client.force_authenticate(user=self.mother)
 
         response = self.client.post(f"/milkbank/requests/{self.req.id}/accept-counter-offer/")
@@ -359,7 +363,7 @@ class MovingABookingToAnotherDayTests(APITestCase):
         self.req.refresh_from_db()
         self.assertEqual(self.req.current_sub_status, Status.COUNTER_OFFERED)
         self.assertEqual(self.req.preferred_date, BOOKING_DAY)
-        self.assertEqual(taken(self.facility, NEXT_DAY), 2)
+        self.assertEqual(taken(self.facility, NEXT_DAY), 3)  # the two, and her offer
 
     def test_rejecting_and_choosing_a_full_day_is_refused(self):
         self.propose(NEXT_DAY)
