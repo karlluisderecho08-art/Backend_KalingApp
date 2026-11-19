@@ -1,9 +1,10 @@
 """
 A Drop off donor confirms her booking by pasting the courier's delivery link
 instead of confirming attendance: any time after the facility accepts, until 2
-hours after her appointment time. She has no Counseling and Testing stage, so
-confirming takes her straight to Breastmilk Collection. After confirmation the
-collection method is locked; only a Drop off's link can still be replaced.
+hours after her appointment time. Like every donor she then goes through
+Counseling and Testing before Breastmilk Collection (the owner's rule,
+2026-11-19; migration 0025). After confirmation the collection method is
+locked; only a Drop off's link can still be replaced.
 """
 
 import importlib
@@ -87,10 +88,12 @@ class DropOffConfirmationTests(APITestCase):
 
     # --- Stages -----------------------------------------------------------------
 
-    def test_a_drop_off_has_no_counseling_and_testing(self):
-        self.assertNotIn("Counseling and Testing", self.booking().stages)
-        self.assertIn("Counseling and Testing", self.booking(Method.WALK_IN).stages)
-        self.assertEqual(self.booking().stages, ["Status", "Booking Confirmation", "Breastmilk Collection", "Results"])
+    def test_every_way_of_sending_milk_has_every_stage(self):
+        for method in (Method.DROP_OFF, Method.WALK_IN, Method.PICKUP):
+            with self.subTest(method=method):
+                self.assertEqual(self.booking(method).stages, [
+                    "Status", "Booking Confirmation", "Counseling and Testing", "Breastmilk Collection", "Results",
+                ])
 
     # --- Acceptance and deadline -----------------------------------------------
 
@@ -114,27 +117,40 @@ class DropOffConfirmationTests(APITestCase):
         req.refresh_from_db()
         self.assertEqual((req.current_sub_status, req.delivery_link), (Status.AWAITING_ATTENDANCE, ""))
 
-    def test_the_link_confirms_and_goes_straight_to_breastmilk_collection(self):
+    def test_the_link_confirms_and_goes_to_counseling_and_testing(self):
         req = self.accept(self.booking())
         response = self.confirm(req, delivery_link=LINK)
         self.assertEqual(response.status_code, 200, response.data)
         req.refresh_from_db()
         self.assertEqual((req.current_sub_status, req.delivery_link), (Status.SCHEDULED, LINK))
-        self.assertEqual(self.stage(req), "Breastmilk Collection")
-        self.assertTrue(NotificationItem.objects.filter(owner=self.staff, title="Delivery Link Sent").exists())
+        self.assertEqual(self.stage(req), "Counseling and Testing")
+        told = NotificationItem.objects.get(owner=self.staff, title="Delivery Link Sent")
+        self.assertEqual(
+            told.description,
+            "Ana sent her courier's delivery link, so her drop off is confirmed and she is now on Counseling and Testing.",
+        )
         steps = NotificationItem.objects.filter(owner=self.mother, title=STEPS_TITLE).get()
         self.assertEqual(steps.description, STEPS_DROP_OFF_LINKED.format(date="December 1, 2026", time="10:00 AM"))
-        # The facility sees her on its Breastmilk Collection queue right away.
+        # The facility sees her on its Counseling and Testing queue right away.
         self.client.force_authenticate(user=self.staff)
         row = next(r for r in self.client.get("/milkbank/requests/all/").data if r["id"] == req.id)
-        self.assertEqual(row["stages"][row["current_stage_index"]], "Breastmilk Collection")
+        self.assertEqual(row["stages"][row["current_stage_index"]], "Counseling and Testing")
+
+    def test_staff_take_a_drop_off_through_every_stage(self):
+        req = self.accept(self.booking())
+        self.confirm(req, delivery_link=LINK)
+        self.client.force_authenticate(user=self.staff)
+        for expected in ("Breastmilk Collection", "Results"):
+            response = self.client.post(f"/milkbank/requests/{req.id}/advance-stage/")
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual(self.stage(req), expected)
 
     def test_pasting_the_link_in_booking_status_also_confirms(self):
         req = self.accept(self.booking())
         url = f"/milkbank/requests/{req.id}/collection-method/"
         response = self.client.post(url, {"collection_method": "drop_off", "delivery_link": LINK}, format="json", **NEW_APP)
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(self.stage(req), "Breastmilk Collection")
+        self.assertEqual(self.stage(req), "Counseling and Testing")
         self.assertEqual(req.current_sub_status, Status.SCHEDULED)
         self.assertEqual(NotificationItem.objects.filter(owner=self.mother, title=STEPS_TITLE).count(), 1)
 
@@ -216,7 +232,12 @@ class DropOffConfirmationTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         req.refresh_from_db()
         self.assertEqual(req.delivery_link, new_link)
-        self.assertEqual(self.stage(req), "Breastmilk Collection")
+        self.assertEqual(self.stage(req), "Counseling and Testing")
+        # Still on Breastmilk Collection, before her milk is in.
+        req.current_stage_index = req.stages.index("Breastmilk Collection")
+        req.save(update_fields=["current_stage_index"])
+        response = self.client.post(url, {"collection_method": "drop_off", "delivery_link": LINK}, format="json", **NEW_APP)
+        self.assertEqual(response.status_code, 200, response.data)
         response = self.client.post(url, {"collection_method": "drop_off", "delivery_link": ""}, format="json", **NEW_APP)
         self.assertEqual(response.data["delivery_link"], [DELIVERY_LINK_REQUIRED])
         response = self.client.post(url, {"collection_method": "walk_in"}, format="json", **NEW_APP)
@@ -242,20 +263,65 @@ class TranslationTests(APITestCase):
 
 
 class ExistingDropOffsMigrationTests(APITestCase):
-    def test_drop_offs_past_confirmation_keep_their_place(self):
-        facility = make_facility(name="PGH")
-        mother = User.objects.create_user(email="m@example.com", password="x", is_active=True)
-        made = {}
-        for old_index in (1, 2, 3, 4):
-            made[old_index] = make_request(mother, facility, collection_method=Method.DROP_OFF, current_stage_index=old_index)
-        walk_in = make_request(mother, facility, collection_method=Method.WALK_IN, current_stage_index=3)
+    """Migration 0025: Drop offs on 0022's short list move back onto the full one."""
 
-        migration = importlib.import_module("milkbank.migrations.0022_drop_off_skips_counseling")
-        migration.forwards(apps, None)
+    def setUp(self):
+        self.facility = make_facility(name="PGH")
+        self.mother = User.objects.create_user(email="m@example.com", password="x", is_active=True, mom_name="Ana")
+        self.staff = User.objects.create_user(
+            email="staff@example.com", password="x", is_active=True,
+            role=User.Role.FACILITY_STAFF, facility=self.facility,
+        )
+        self.migration = importlib.import_module("milkbank.migrations.0025_drop_off_keeps_counseling")
 
-        expected = {1: "Booking Confirmation", 2: "Breastmilk Collection", 3: "Breastmilk Collection", 4: "Results"}
-        for old_index, req in made.items():
+    def drop_off(self, index, status=Status.SCHEDULED):
+        return make_request(
+            self.mother, self.facility, collection_method=Method.DROP_OFF,
+            current_stage_index=index, current_sub_status=status,
+        )
+
+    def test_each_drop_off_lands_on_the_right_stage(self):
+        # (short-list index, status) -> stage on the full list
+        cases = {
+            (1, Status.AWAITING_ATTENDANCE): "Booking Confirmation",
+            (2, Status.SCHEDULED): "Counseling and Testing",   # milk not in yet: screened first
+            (2, Status.DECLINED): "Breastmilk Collection",     # ended there
+            (2, Status.EXPIRED): "Breastmilk Collection",
+            (3, Status.SCHEDULED): "Results",
+            (3, Status.COMPLETED): "Results",
+        }
+        made = {key: self.drop_off(*key) for key in cases}
+        walk_in = make_request(self.mother, self.facility, collection_method=Method.WALK_IN, current_stage_index=3)
+
+        self.migration.forwards(apps, None)
+
+        for key, req in made.items():
             req.refresh_from_db()
-            self.assertEqual(req.stages[req.current_stage_index], expected[old_index], old_index)
+            self.assertEqual(req.stages[req.current_stage_index], cases[key], key)
         walk_in.refresh_from_db()
         self.assertEqual(walk_in.current_stage_index, 3)
+
+    def test_only_those_sent_back_to_counseling_are_told(self):
+        back = self.drop_off(2)
+        self.drop_off(3)
+        self.drop_off(2, Status.DECLINED)
+        self.migration.forwards(apps, None)
+
+        told = NotificationItem.objects.filter(owner=self.mother, title=self.migration.MOTHER_TITLE)
+        self.assertEqual([n.description for n in told], [self.migration.MOTHER_BODY])
+        staff = NotificationItem.objects.filter(owner=self.staff, title=self.migration.STAFF_TITLE)
+        self.assertEqual(staff.count(), 1)
+        self.assertIn("Ana's drop off", staff.get().description)
+        back.refresh_from_db()
+        self.assertEqual(back.current_sub_status, Status.SCHEDULED)
+
+    def test_her_notice_has_tagalog(self):
+        for text in (self.migration.MOTHER_TITLE, self.migration.MOTHER_BODY):
+            with self.subTest(text=text[:40]):
+                self.assertNotEqual(translate(text), text)
+
+    def test_backwards_restores_the_short_list_indices(self):
+        reqs = [self.drop_off(i) for i in (1, 2, 3)]
+        self.migration.forwards(apps, None)
+        self.migration.backwards(apps, None)
+        self.assertEqual([MilkBankRequest.objects.get(pk=r.pk).current_stage_index for r in reqs], [1, 2, 3])

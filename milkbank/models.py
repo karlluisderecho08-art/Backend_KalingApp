@@ -139,12 +139,10 @@ class MilkBankRequest(models.Model):
         "Status", "Booking Confirmation", "Counseling and Testing",
         "Breastmilk Collection", "Results",
     ]
-    # A Drop off sends her milk by courier and never comes in, so there is no
-    # Counseling and Testing visit: confirming with the courier's delivery link
-    # takes her straight to Breastmilk Collection. The stages before it are the
-    # same as DONOR_STAGES, so changing the method -- possible only until her
-    # booking is confirmed -- never moves her.
-    DROP_OFF_DONOR_STAGES = ["Status", "Booking Confirmation", "Breastmilk Collection", "Results"]
+    # Every donor goes through every one of these, whichever way her milk
+    # reaches the facility (Pick up, Walk-in or Drop off): the owner's rule,
+    # 2026-11-19. A Drop off skipped Counseling and Testing from 1.3.1 until
+    # then (migrations 0022 and 0025).
     RECIPIENT_STAGES = ["Requirements", "Status", "Booking Confirmation", "Results"]
 
     # Null only for a COMPLETED booking whose mother has since deleted her
@@ -304,8 +302,6 @@ class MilkBankRequest(models.Model):
     @property
     def stages(self):
         if self.request_type == self.RequestType.DONOR:
-            if self.collection_method == self.CollectionMethod.DROP_OFF:
-                return self.DROP_OFF_DONOR_STAGES
             return self.DONOR_STAGES
         return self.RECIPIENT_STAGES
 

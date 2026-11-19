@@ -39,6 +39,16 @@ def _first_weekday_after(days):
     return day.isoformat()
 
 
+def next_open_day(day):
+    """The first open day (Mon-Fri, not a holiday) after the date `day`.
+    "The next weekday" alone can land on a holiday (Nov 30, Dec 8...), which
+    bookings refuse, so tests stepping from one day to the next use this."""
+    day += timedelta(days=1)
+    while not is_business_day(day):
+        day += timedelta(days=1)
+    return day
+
+
 COUNTER_OFFER_DATE = _first_weekday_after(14)
 # Two different future weekdays, for per-day capacity tests.
 BOOKED_DAY = _first_weekday_after(21)
@@ -2583,7 +2593,7 @@ class DonorSlotLimitTests(APITestCase):
         from .scheduling import SLOTS
         fill_slot(self.facility, self.DAY, "10:00 AM", 2)
         day = date.fromisoformat(self.DAY)
-        full_day = (day + timedelta(days=1 if day.weekday() < 4 else 3)).isoformat()  # the next weekday
+        full_day = next_open_day(day).isoformat()
         for label, _hour in SLOTS:
             fill_slot(self.facility, full_day, label, 2)
 

@@ -684,8 +684,7 @@ COLLECTION_LOCKED = (
 
 def _collection_locked(req):
     """Past Booking Confirmation, the way her milk reaches the facility is fixed:
-    the facility plans around it (and a Drop off has a shorter list of stages,
-    so changing the method then would move her)."""
+    the facility plans around it."""
     return req.current_stage_index > req.stages.index("Booking Confirmation")
 
 
@@ -727,9 +726,8 @@ def _confirm_attendance(req, user):
     The one place both pathways confirm through -- a DONOR reaches
     AWAITING_ATTENDANCE via StaffAcceptView, a RECIPIENT via
     StaffAdvanceStageView's "Booking Confirmation" branch. This is what puts
-    her on the facility's next queue: Counseling and Testing, or -- a Drop off,
-    which confirms with its courier link and has no Counseling and Testing --
-    Breastmilk Collection straight away.
+    her on the facility's next queue: Counseling and Testing for every donor --
+    a Drop off too, which confirms with its courier link.
     """
     apply_transition(req, Status.SCHEDULED, user, "attendance_confirmed")
     req.attendance_confirmed = True
@@ -740,7 +738,7 @@ def _confirm_attendance(req, user):
         title = "Delivery Link Sent"
         body = (
             f"{name} sent her courier's delivery link, so her drop off is confirmed "
-            f"and she is now on Breastmilk Collection."
+            f"and she is now on {req.stages[req.current_stage_index]}."
         )
     else:
         title = "Attendance Confirmed"

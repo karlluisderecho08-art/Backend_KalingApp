@@ -151,8 +151,8 @@ def appointment_still_ahead(req):
     Whether her appointment hasn't taken place yet, so its date can still be
     moved (or a day closed under it): any booking still waiting on the desk or
     on her, or a confirmed one on its appointment step -- a donor's first step
-    after confirming (Counseling and Testing; a Drop off's Breastmilk
-    Collection), or a recipient's document review or pickup.
+    after confirming (Counseling and Testing), or a recipient's document
+    review or pickup.
     """
     status = req.current_sub_status
     if status in (MilkBankRequest.Status.PENDING, MilkBankRequest.Status.AWAITING_ATTENDANCE,

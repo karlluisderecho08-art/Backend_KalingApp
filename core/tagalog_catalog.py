@@ -376,6 +376,9 @@ MESSAGES = {
         "Kahilingan sa Milk Bank: Kinansela",
     "You cancelled your booking. You can make a new one whenever you're ready.":
         "Kinansela mo ang iyong reserbasyon. Puwede kang gumawa ng bago kahit kailan ka handa.",
+    # Migration 0025: a Drop off on Breastmilk Collection back on Counseling and Testing.
+    "Every donation now includes Counseling and Testing, drop offs too: a short counseling session, a physical check and blood tests at the milk bank. Your booking is back on that step, before Breastmilk Collection. Your facility will tell you when to come, and you can message them in Chat from Booking Status.":
+        "Kasama na ngayon sa bawat donasyon ang Pagpapayo at Pagsusuri, pati sa drop off: maikling pagpapayo, pisikal na pagsusuri, at blood test sa milk bank. Bumalik ang iyong reserbasyon sa hakbang na iyon, bago ang Pagkolekta ng Gatas. Sasabihin sa iyo ng iyong pasilidad kung kailan pupunta, at puwede kang mag-message sa kanila sa Chat mula sa Katayuan ng Reserbasyon.",
     "The facility accepted your request. Please confirm your attendance in Booking Status before {time} on {date}, or the request expires.":
         "Tinanggap ng pasilidad ang iyong kahilingan. Kumpirmahin ang iyong pagdalo sa Katayuan ng Reserbasyon bago mag-{time} sa {date}, kung hindi ay mag-e-expire ang kahilingan.",
     "The facility proposed a new date for your appointment. Please accept it or choose a new time in Booking Status before {time} on {date}, or the request expires.":

@@ -15,7 +15,7 @@ sequence of reads and writes, made deterministic. (In production the
 facility row is locked before the day is counted -- see claim_slot.)
 """
 
-from datetime import date, timedelta
+from datetime import date
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -33,14 +33,14 @@ from .allocation import (
 )
 from .capacity import day_summary, slots_taken
 from .models import Facility, MilkBankRequest
-from .tests import _first_weekday_after, fill_day, make_facility, make_request
+from .tests import _first_weekday_after, fill_day, make_facility, make_request, next_open_day
 
 Status = MilkBankRequest.Status
 
 BOOKING_DATE = _first_weekday_after(7)
 BOOKING_DAY = date.fromisoformat(BOOKING_DATE)
-# A different weekday from BOOKING_DATE, guaranteed.
-NEXT_DAY = BOOKING_DAY + timedelta(days=1 if BOOKING_DAY.weekday() < 4 else 3)
+# A different open day from BOOKING_DATE, guaranteed.
+NEXT_DAY = next_open_day(BOOKING_DAY)
 
 
 def make_mother(n):
@@ -367,7 +367,7 @@ class MovingABookingToAnotherDayTests(APITestCase):
 
     def test_rejecting_and_choosing_a_full_day_is_refused(self):
         self.propose(NEXT_DAY)
-        third_day = NEXT_DAY + timedelta(days=1 if NEXT_DAY.weekday() < 4 else 3)
+        third_day = next_open_day(NEXT_DAY)
         fill_day(self.facility, third_day, 2)
         self.client.force_authenticate(user=self.mother)
 
@@ -384,7 +384,7 @@ class MovingABookingToAnotherDayTests(APITestCase):
 
     def test_rejecting_and_choosing_a_day_with_room_moves_her_there(self):
         self.propose(NEXT_DAY)
-        third_day = NEXT_DAY + timedelta(days=1 if NEXT_DAY.weekday() < 4 else 3)
+        third_day = next_open_day(NEXT_DAY)
         self.client.force_authenticate(user=self.mother)
 
         response = self.client.post(
