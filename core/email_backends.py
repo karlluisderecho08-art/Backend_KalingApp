@@ -85,6 +85,15 @@ class BrevoApiEmailBackend(BaseEmailBackend):
             "subject": message.subject,
             "textContent": message.body,
         }
+        # send_mail(html_message=...) adds an HTML alternative (the code
+        # emails' designed version); Brevo shows it, with textContent as the
+        # plain-text part for mail apps that can't.
+        html = next(
+            (content for content, mimetype in getattr(message, "alternatives", []) if mimetype == "text/html"),
+            None,
+        )
+        if html:
+            payload["htmlContent"] = html
 
         request = urllib.request.Request(
             BREVO_SEND_URL,

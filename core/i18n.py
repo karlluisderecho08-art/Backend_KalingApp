@@ -140,8 +140,10 @@ def tr(text, request=None, tagalog=None):
     return translate(text) if tagalog else text
 
 
-# Fields and template slots that hold the facility staff's own words.
-_VERBATIM_SLOTS = {"facility_note"}
+# Never translated: fields and template slots holding the facility staff's own
+# words, and (a slot) a mother's own name -- a name like "May" or "Results" must
+# reach her as she typed it.
+_VERBATIM_SLOTS = {"facility_note", "mom_name"}
 _VERBATIM_KEYS = {"facility_note", "staff_message"}
 
 

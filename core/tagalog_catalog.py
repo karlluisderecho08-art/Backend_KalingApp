@@ -61,6 +61,25 @@ MESSAGES = {
         "Kumusta, {mom_name}!\n\nMay sumubok na gumawa ng bagong KalingApp account gamit ang email address na ito. May account na ang email na ito, kaya walang bagong account na ginawa.\n\nKung ikaw iyon, mag-log in ka lang gamit ang iyong password. Kung nakalimutan mo ito, puwede kang gumawa ng bago mula sa screen ng pag-log in. Kung hindi ka pa rin makapag-log in, makipag-ugnayan sa admin ng KalingApp para sa tulong.\n\nKung hindi ikaw iyon, puwede mo na lang balewalain ang email na ito — walang nagbago sa iyong account.",
     "Hi there,\n\nSomeone just tried to create a new KalingApp account with this email address. There's already an account with this email, so no new one was made.\n\nIf that was you, just sign in with your password. If you've forgotten it, you can set a new one from the sign-in screen. If you still can't sign in, contact the KalingApp admin for help.\n\nIf it wasn't you, you can safely ignore this email — nothing about your account has changed.":
         "Kumusta!\n\nMay sumubok na gumawa ng bagong KalingApp account gamit ang email address na ito. May account na ang email na ito, kaya walang bagong account na ginawa.\n\nKung ikaw iyon, mag-log in ka lang gamit ang iyong password. Kung nakalimutan mo ito, puwede kang gumawa ng bago mula sa screen ng pag-log in. Kung hindi ka pa rin makapag-log in, makipag-ugnayan sa admin ng KalingApp para sa tulong.\n\nKung hindi ikaw iyon, puwede mo na lang balewalain ang email na ito — walang nagbago sa iyong account.",
+    # The code emails' HTML version (accounts.emails.code_email_html), line by line.
+    "Verify your KalingApp account":
+        "Beripikahin ang iyong KalingApp account",
+    "Reset your KalingApp password":
+        "I-reset ang iyong KalingApp password",
+    "Hi {mom_name},":
+        "Kumusta, {mom_name}!",
+    "Hi there,":
+        "Kumusta!",
+    "Your 6-digit verification code is:":
+        "Ang iyong 6-digit na code para sa pagberipika ay:",
+    "Your 6-digit password reset code is:":
+        "Ang iyong 6-digit na code para sa pag-reset ng password ay:",
+    "This code expires in {minutes} minutes.":
+        "Mag-e-expire ang code na ito pagkalipas ng {minutes} minuto.",
+    "If you didn't try to create a KalingApp account, you can safely ignore this email.":
+        "Kung hindi ikaw ang sumubok na gumawa ng KalingApp account, puwede mo na lang balewalain ang email na ito.",
+    "If you didn't ask to reset your KalingApp password, you can safely ignore this email — your password hasn't been changed.":
+        "Kung hindi ikaw ang humiling na i-reset ang iyong KalingApp password, puwede mo na lang balewalain ang email na ito — hindi binago ang iyong password.",
     "Your KalingApp password reset code":
         "Ang iyong KalingApp code para sa pag-reset ng password",
     "Hi {mom_name},\n\nYour KalingApp password reset code is {code}.\nIt expires in {minutes} minutes.\n\nIf you didn't ask to reset your KalingApp password, you can safely ignore this email — your password hasn't been changed.":

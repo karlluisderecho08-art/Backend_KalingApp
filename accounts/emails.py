@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
+from django.utils.html import escape
 
 from core.i18n import tr
 
@@ -13,6 +14,75 @@ from core.i18n import tr
 VERIFICATION_CODE_TTL_MINUTES = 15
 RESEND_COOLDOWN_SECONDS = 60
 MAX_VERIFICATION_ATTEMPTS = 5
+
+
+# The code emails' HTML version: one card, the code large in its own box (as
+# the owner asked, 2026-11-20). KalingApp's colours (the app's ui/theme/Color.kt):
+# deep raspberry headings and code, blush pink code box, warm beige page.
+# Tables and inline styles only, so mail apps that strip <style> still show it.
+# Every value is escaped: her name is hers to type.
+_CODE_EMAIL_HTML = """<!DOCTYPE html>
+<html lang="{lang}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{heading}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#FFF6F1;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#FFF6F1;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;background-color:#FFFFFF;border:1px solid #F7D3DF;border-radius:16px;">
+<tr><td style="padding:32px 28px;font-family:Arial,Helvetica,sans-serif;color:#111111;">
+<h1 style="margin:0 0 20px 0;font-size:24px;line-height:30px;font-weight:bold;color:#9E1C4B;">{heading}</h1>
+<p style="margin:0 0 12px 0;font-size:16px;line-height:24px;">{greeting}</p>
+<p style="margin:0 0 12px 0;font-size:16px;line-height:24px;">{intro}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px 0;">
+<tr><td align="center" style="padding:18px 12px 18px 22px;background-color:#FFE8EF;border:1px solid #D4A437;border-radius:12px;font-family:'Courier New',Courier,monospace;font-size:34px;line-height:40px;font-weight:bold;letter-spacing:10px;color:#9E1C4B;">{code}</td></tr>
+</table>
+<p style="margin:0 0 16px 0;font-size:16px;line-height:24px;">{expiry}</p>
+{after}<p style="margin:0;font-size:13px;line-height:20px;color:#6B6B6B;">{ignore}</p>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
+"""
+
+
+def code_email_html(*, heading, greeting, intro, code, minutes, ignore, after="", tagalog=False):
+    """
+    A code email's HTML version. Every line is given in English and sent
+    through tr() (core/tagalog_catalog.py), so a mother who signed up in
+    Tagalog gets it in Tagalog, like the plain-text version beside it.
+    """
+    expiry = escape(tr(f"This code expires in {minutes} minutes.", tagalog=tagalog))
+    for unit in ("minutes", "minuto"):
+        expiry = expiry.replace(f"{minutes} {unit}", f"<strong>{minutes} {unit}</strong>", 1)
+    return _CODE_EMAIL_HTML.format(
+        lang="fil" if tagalog else "en",
+        heading=escape(tr(heading, tagalog=tagalog)),
+        greeting=escape(tr(greeting, tagalog=tagalog)),
+        intro=escape(tr(intro, tagalog=tagalog)),
+        code=escape(code),
+        expiry=expiry,
+        after=(f'<p style="margin:0 0 16px 0;font-size:16px;line-height:24px;">{escape(tr(after, tagalog=tagalog))}</p>\n'
+               if after else ""),
+        ignore=escape(tr(ignore, tagalog=tagalog)),
+    )
+
+
+def _greeting(name):
+    return f"Hi {name}," if name else "Hi there,"
+
+
+VERIFY_IGNORE = "If you didn't try to create a KalingApp account, you can safely ignore this email."
+RESET_IGNORE = (
+    "If you didn't ask to reset your KalingApp password, you can safely ignore this email — "
+    "your password hasn't been changed."
+)
 
 
 def generate_code():
@@ -44,18 +114,28 @@ def send_verification_email(pending, tagalog=False):
     pending.save(update_fields=["code", "sent_at", "attempts"])
 
     # Written in English, sent in Tagalog when she signed up from the app in
-    # Tagalog (core/tagalog_catalog.py has both versions of each email).
+    # Tagalog (core/tagalog_catalog.py has both versions of each email). The
+    # HTML version is what mail apps show; the plain text is for any that can't.
     send_mail(
         subject=tr("Your KalingApp verification code", tagalog=tagalog),
         message=tr((
             f"Hi {pending.mom_name or 'there'},\n\n"
             f"Your KalingApp verification code is {pending.code}.\n"
             f"It expires in {VERIFICATION_CODE_TTL_MINUTES} minutes.\n\n"
-            "If you didn't try to create a KalingApp account, you can safely ignore this email."
+            f"{VERIFY_IGNORE}"
         ), tagalog=tagalog),
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[pending.email],
         fail_silently=False,
+        html_message=code_email_html(
+            heading="Verify your KalingApp account",
+            greeting=_greeting(pending.mom_name),
+            intro="Your 6-digit verification code is:",
+            code=pending.code,
+            minutes=VERIFICATION_CODE_TTL_MINUTES,
+            ignore=VERIFY_IGNORE,
+            tagalog=tagalog,
+        ),
     )
 
 
@@ -105,12 +185,20 @@ def send_password_reset_email(user, tagalog=False):
             f"Hi {user.mom_name or 'there'},\n\n"
             f"Your KalingApp password reset code is {user.password_reset_code}.\n"
             f"It expires in {VERIFICATION_CODE_TTL_MINUTES} minutes.\n\n"
-            "If you didn't ask to reset your KalingApp password, you can safely ignore this "
-            "email — your password hasn't been changed."
+            f"{RESET_IGNORE}"
         ), tagalog=tagalog),
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user.email],
         fail_silently=False,
+        html_message=code_email_html(
+            heading="Reset your KalingApp password",
+            greeting=_greeting(user.mom_name),
+            intro="Your 6-digit password reset code is:",
+            code=user.password_reset_code,
+            minutes=VERIFICATION_CODE_TTL_MINUTES,
+            ignore=RESET_IGNORE,
+            tagalog=tagalog,
+        ),
     )
 
 
@@ -138,6 +226,15 @@ def send_email_change_code(user, tagalog=False):
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user.pending_email],
         fail_silently=False,
+        html_message=code_email_html(
+            heading="Confirm your new KalingApp email address",
+            greeting="Hi,",
+            intro="Your 6-digit code to confirm this email address is:",
+            code=user.pending_email_code,
+            minutes=VERIFICATION_CODE_TTL_MINUTES,
+            after="Enter it in the KalingApp admin portal to make this the account's sign-in email.",
+            ignore="If you didn't ask for this, you can safely ignore this email — nothing will change.",
+        ),
     )
 
 
