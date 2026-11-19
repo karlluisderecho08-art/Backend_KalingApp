@@ -34,7 +34,7 @@ from .collection import STEPS, STEPS_CONFIRMED, STEPS_TITLE
 from .models import DonorQuestionnaire, Facility, MilkBankRequest
 from .results import mother_result
 from .scheduling import booking_slot_problem, counter_offer_errors, holiday_dates
-from .tests import _first_weekday_after, make_facility, make_request, screen
+from .tests import _first_weekday_after, make_facility, make_request, next_open_day, screen
 from .transitions import apply_transition, attendance_deadline, counter_offer_deadline, sweep_expired_requests
 
 Status = MilkBankRequest.Status
@@ -535,7 +535,7 @@ class ClosingDaysTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "day_closed")
         # A new date can be proposed, and once she accepts it the flag is gone.
-        new_day = _first_weekday_after(17)
+        new_day = next_open_day(date.fromisoformat(self.day)).isoformat()  # never the closed day itself
         self.assertEqual(self.client.post(f"/milkbank/requests/{self.req.id}/propose-counter-offer/", {
             "counter_offer_date": new_day, "counter_offer_time": "9:00 AM",
         }).status_code, 200)
@@ -572,7 +572,7 @@ class ClosingDaysTests(APITestCase):
         self.req.attendance_confirmed = True
         self.req.save()
         self.close(confirm_closing=True)
-        new_day = _first_weekday_after(17)
+        new_day = next_open_day(date.fromisoformat(self.day)).isoformat()  # never the closed day itself
         response = self.client.post(f"/milkbank/requests/{self.req.id}/propose-counter-offer/", {
             "counter_offer_date": new_day, "counter_offer_time": "9:00 AM",
         })
